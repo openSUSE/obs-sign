@@ -1,0 +1,161 @@
+--- gnupg-1.4.7/g10/gpg.c.orig	2007-03-05 10:02:57.000000000 +0100
++++ gnupg-1.4.7/g10/gpg.c	2007-03-14 11:35:25.000000000 +0100
+@@ -344,6 +344,7 @@ enum cmd_and_opt_values
+     oTTYtype,
+     oLCctype,
+     oLCmessages,
++    oFilesAreDigests,
+     oGroup,
+     oUnGroup,
+     oNoGroups,
+@@ -689,6 +690,7 @@ static ARGPARSE_OPTS opts[] = {
+     { oTTYtype,    "ttytype",     2, "@" },
+     { oLCctype,    "lc-ctype",    2, "@" },
+     { oLCmessages, "lc-messages", 2, "@" },
++    { oFilesAreDigests, "files-are-digests", 0, "@" },
+     { oGroup,      "group",       2, "@" },
+     { oUnGroup,    "ungroup",     2, "@" },
+     { oNoGroups,   "no-groups",    0, "@" },
+@@ -2725,6 +2727,7 @@ main (int argc, char **argv )
+           case oTTYtype: opt.ttytype = pargs.r.ret_str; break;
+           case oLCctype: opt.lc_ctype = pargs.r.ret_str; break;
+           case oLCmessages: opt.lc_messages = pargs.r.ret_str; break;
++	  case oFilesAreDigests: opt.files_are_digests = 1; break;
+ 	  case oGroup: add_group(pargs.r.ret_str); break;
+ 	  case oUnGroup: rm_group(pargs.r.ret_str); break;
+ 	  case oNoGroups:
+--- gnupg-1.4.7/g10/options.h.orig	2007-03-05 10:02:57.000000000 +0100
++++ gnupg-1.4.7/g10/options.h	2007-03-14 11:35:25.000000000 +0100
+@@ -195,6 +195,7 @@ struct
+   int no_auto_check_trustdb;
+   int preserve_permissions;
+   int no_homedir_creation;
++  int files_are_digests;
+   struct groupitem *grouplist;
+   int strict;
+   int mangle_dos_filenames;
+--- gnupg-1.4.7/g10/sign.c.orig	2007-02-04 17:27:40.000000000 +0100
++++ gnupg-1.4.7/g10/sign.c	2007-03-14 11:35:25.000000000 +0100
+@@ -692,8 +692,12 @@ write_signature_packets (SK_LIST sk_list
+ 	    build_sig_subpkt_from_sig (sig);
+ 	mk_notation_policy_etc (sig, NULL, sk);
+ 
+-        hash_sigversion_to_magic (md, sig);
+-	md_final (md);
++	if (!opt.files_are_digests) {
++	    hash_sigversion_to_magic (md, sig);
++	    md_final (md);
++	} else if (sig->version >= 4) {
++	    log_bug("files-are-digests doesn't work with v4 sigs\n");
++	}
+ 
+ 	rc = do_sign( sk, sig, md, hash_for (sk) );
+ 	md_close (md);
+@@ -751,6 +755,7 @@ sign_file( STRLIST filenames, int detach
+     SK_LIST sk_rover = NULL;
+     int multifile = 0;
+     u32 create_time=make_timestamp(),duration=0;
++    int sigclass = 0x00;
+ 
+     memset( &afx, 0, sizeof afx);
+     memset( &zfx, 0, sizeof zfx);
+@@ -766,7 +771,16 @@ sign_file( STRLIST filenames, int detach
+ 	fname = NULL;
+ 
+     if( fname && filenames->next && (!detached || encryptflag) )
+-	log_bug("multiple files can only be detached signed");
++	log_bug("multiple files can only be detached signed\n");
++
++    if (opt.files_are_digests && (multifile || !fname))
++	log_bug("files-are-digests only works with one file\n");
++    if (opt.files_are_digests && !detached)
++	log_bug("files-are-digests can only write detached signatures\n");
++    if (opt.files_are_digests && !opt.def_digest_algo)
++	log_bug("files-are-digests needs --digest-algo\n");
++    if (opt.files_are_digests && opt.textmode)
++	log_bug("files-are-digests doesn't work with --textmode\n");
+ 
+     if(encryptflag==2
+        && (rc=setup_symkey(&efx.symkey_s2k,&efx.symkey_dek)))
+@@ -794,7 +808,7 @@ sign_file( STRLIST filenames, int detach
+       goto leave;
+ 
+     /* prepare iobufs */
+-    if( multifile )  /* have list of filenames */
++    if( multifile || opt.files_are_digests)  /* have list of filenames */
+ 	inp = NULL; /* we do it later */
+     else {
+       inp = iobuf_open(fname);
+@@ -924,7 +938,7 @@ sign_file( STRLIST filenames, int detach
+ 	md_enable(mfx.md, hash_for(sk));
+     }
+ 
+-    if( !multifile )
++    if( !multifile && !opt.files_are_digests )
+ 	iobuf_push_filter( inp, md_filter, &mfx );
+ 
+     if( detached && !encryptflag && !RFC1991 )
+@@ -979,6 +993,8 @@ sign_file( STRLIST filenames, int detach
+ 
+     write_status (STATUS_BEGIN_SIGNING);
+ 
++    sigclass = opt.textmode && !outfile? 0x01 : 0x00;
++
+     /* Setup the inner packet. */
+     if( detached ) {
+ 	if( multifile ) {
+@@ -1019,6 +1035,45 @@ sign_file( STRLIST filenames, int detach
+ 	    if( opt.verbose )
+ 		putc( '\n', stderr );
+ 	}
++	else if (opt.files_are_digests) {
++	    byte *mdb, ts[5];
++	    size_t mdlen;
++	    const char *fp;
++	    int c, d;
++
++	    md_final(mfx.md);
++	    /* this assumes md_read returns the same buffer */
++	    mdb = md_read(mfx.md, opt.def_digest_algo);
++	    (void)md_asn_oid(opt.def_digest_algo, (size_t)0, &mdlen);
++	    if (strlen(fname) != mdlen * 2 + 11)
++	        log_bug("digests must be %d + @ + 5 bytes\n", mdlen);
++	    d = -1;
++	    for (fp = fname ; *fp; ) {
++		c = *fp++;
++		if (c >= '0' && c <= '9')
++		    c -= '0';
++		else if (c >= 'a' && c <= 'f')
++		    c -= 'a' - 10;
++		else if (c >= 'A' && c <= 'F')
++		    c -= 'A' - 10;
++		else
++		    log_bug("filename is not hex\n");
++		if (d >= 0) {
++		    *mdb++ = d << 4 | c;
++		    c = -1;
++		    if (--mdlen == 0) {
++			mdb = ts;
++			if (*fp++ != '@')
++			    log_bug("missing time separator\n");
++		    }
++		}
++		d = c;
++	    }
++	    sigclass = ts[0];
++	    if (sigclass != 0x00 && sigclass != 0x01)
++		log_bug("bad cipher class\n");
++	    create_time = buffer_to_u32(ts + 1);
++	}
+ 	else {
+ 	    /* read, so that the filter can calculate the digest */
+ 	    while( iobuf_get(inp) != -1 )
+@@ -1037,7 +1092,7 @@ sign_file( STRLIST filenames, int detach
+ 
+     /* write the signatures */
+     rc = write_signature_packets (sk_list, out, mfx.md,
+-                                  opt.textmode && !outfile? 0x01 : 0x00,
++                                  sigclass,
+ 				  create_time, duration, detached ? 'D':'S');
+     if( rc )
+         goto leave;

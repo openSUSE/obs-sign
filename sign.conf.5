@@ -1,0 +1,62 @@
+.\" man page for sign.conf
+.TH sign.conf 8 "Apr 2007"
+.SH NAME
+sign.conf \- sign and signd configuration file
+
+.SH SYNOPSIS
+/etc/sign.conf
+
+.SH DESCRIPTION
+This file holds the configuration both for the sign program and
+the signd daemon. Each line in the file has the format
+"key: value [value...]". Empty lines or lines starting with "#" are
+ignored.
+
+The following keys are recognized:
+
+.TP 4
+.BR server: " hostname"
+Forward all unknown requests to the specified server.
+.TP 4
+.BR port: " port"
+Use the specified port number instead of the default port "5167".
+Also sets the proxyport.
+.TP 4
+.BR proxyport: " port"
+Listen on the specified port number for incoming requests.
+.TP 4
+.BR user: " user"
+Set a default user to use for signing.
+.TP 4
+.BR hash: " hash"
+Set a default hash to use for signing. The default hash
+is SHA1.
+.TP 4
+.BR allow: " ip1 ip2 ip3..."
+Allow only connections from the specified ip addresses.
+Must be present.
+.TP 4
+.BR gpg: " path_to_gpg"
+Select the gpg program to use instead of "/usr/bin/gpg".
+.TP 4
+.BR phrases: " phrases_directory"
+Set the directory containing gpg phrases for every user.
+A phrase file is fed into gpg with the "--passphrase-fd=0"
+option.
+.TP 4
+.BR map: " [hash:]from_signuser to_signuser"
+Modify the signuser. This can be used to map hashes and
+users to unambiguous key ids.
+.TP 4
+.BR allowuser: " username|uid"
+Grant the user the right to sign. the sign binary must
+be installed suid-root for this to work. Multiple
+users can be specified by using multiple allowuser
+lines in the configuration.
+
+.SH FILES
+.I /etc/sign.conf
+
+.SH SEE ALSO
+.BR sign (8),
+.BR signd (8)

@@ -1,0 +1,260 @@
+#!/usr/bin/perl
+#
+# Copyright (c) 2006, 2007 Michael Schroeder, Novell Inc.
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License version 2 as
+# published by the Free Software Foundation.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program (see the file COPYING); if not, write to the
+# Free Software Foundation, Inc.,
+# 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
+#
+################################################################
+
+use Socket;
+use POSIX;
+use bytes;
+
+sub swrite {
+  my ($sock, $data) = @_;
+  local *S = $sock;
+  while (length($data)) {
+    my $l = syswrite(S, $data, length($data));
+    die("write: $!\n") unless $l;
+    $data = substr($data, $l);
+  }
+}
+
+my %allow;
+my %map;
+my $signhost = '127.0.0.1';
+my $port = 5167;
+my $proxyport = 5167;
+my $signuser = '';
+my $gpg = '/usr/bin/gpg';
+my $phrases = '';
+
+local *F;
+open(F, '</etc/sign.conf') || die("/etc/sign.conf: $!\n");
+while(<F>) {
+  chomp;
+  next if /^#/;
+  my @s = split(' ', $_);
+  next unless @s;
+  if ($s[0] eq 'server:') {
+    $signhost = $s[1];
+    next;
+  }
+  if ($s[0] eq 'port:') {
+    $port = $proxyport = $s[1];
+    next;
+  }
+  if ($s[0] eq 'proxyport:') {
+    $proxyport = $s[1];
+    next;
+  }
+  if ($s[0] eq 'allow:') {
+    shift @s;
+    $allow{$_} = 1 for @s;
+    next;
+  }
+  if ($s[0] eq 'map:') {
+    $map{$s[1]} = defined($s[2]) ? $s[2] : '';
+    next;
+  }
+  if ($s[0] eq 'user:') {
+    $signuser = $s[1];
+    next;
+  }
+  if ($s[0] eq 'gpg:') {
+    $gpg = $s[1];
+    next;
+  }
+  if ($s[0] eq 'phrases:') {
+    $phrases = $s[1];
+    next;
+  }
+}
+
+my $myname = $phrases ? 'signd' : 'signproxy';
+
+die("will not proxy to myself\n") if $signhost eq '127.0.0.1' && $port eq $proxyport && !$phrases;
+
+my $signaddr = inet_aton($signhost);
+die("$signhost: unknown host\n") unless $signaddr;
+
+if ($ARGV[0] eq '-f') {
+  my $pid = fork();
+  die("fork") if  !defined($pid) || $pid < 0;
+  exit(0) if $pid > 0;
+}
+POSIX::setsid();
+$SIG{'PIPE'} = 'IGNORE'; 
+$| = 1;
+my @lt = localtime(time);
+printf "%04d-%02d-%02d %02d:%02d:%02d: $myname started\n", $lt[5] + 1900, $lt[4] + 1, @lt[3,2,1,0];
+
+socket(MS , PF_INET, SOCK_STREAM, IPPROTO_TCP) || die "socket: $!\n";
+setsockopt(MS, SOL_SOCKET, SO_REUSEADDR, pack("l",1));
+setsockopt(MS, SOL_SOCKET, SO_KEEPALIVE, pack("l",1));
+bind(MS, sockaddr_in($proxyport, INADDR_ANY)) || die "bind: $!\n";
+listen(MS , 512) || die "listen: $!\n";
+
+my %chld = ();
+my $clntaddr;
+
+while (1) {
+  $clntaddr = accept(CLNT, MS);
+  next unless $clntaddr;
+  my $pid = fork();
+  last if $pid == 0;
+  die if $pid == -1;
+  close CLNT;
+  $chld{$pid} = 1;
+  while (($pid = waitpid(-1, keys(%chld) > 10 ? 0 : POSIX::WNOHANG())) > 0) {
+    delete $chld{$pid};
+  }
+}
+
+my $peer = "unknown";
+
+$SIG{'__DIE__'} = sub {
+  my $err = $_[0];
+  $err =~ s/\n$//s;
+  my @lt = localtime(time);
+  printf "%04d-%02d-%02d %02d:%02d:%02d: $peer: $err\n", $lt[5] + 1900, $lt[4] + 1, @lt[3,2,1,0];
+  $err .= "\n";
+  $err = pack("nnn", 1, 0, length($err)).$err;
+  syswrite(CLNT, $err);
+  close CLNT;
+  exit(1);
+};
+
+my ($sport, $saddr) = sockaddr_in($clntaddr);
+$peer = inet_ntoa($saddr);
+die("not coming from a reserved port\n") if $sport < 0 || $sport > 1024;
+die("illegal host $peer\n") unless $allow{$peer};
+my $pack = '';
+sysread(CLNT, $pack, 1024);
+die("zero size packet\n") if length($pack) == 0;
+die("packet too small\n") if length($pack) < 4;
+my ($user, $arg) = unpack("nn", $pack);
+die("packet size mismatch\n") if length($pack) !=  4 + $user + $arg;
+$arg = substr($pack, 4 + $user, $arg);
+$user = substr($pack, 4, $user);
+@lt = localtime(time);
+if ($user eq '' && $arg eq '') {
+  printf "%04d-%02d-%02d %02d:%02d:%02d: $peer: ping\n", $lt[5] + 1900, $lt[4] + 1, @lt[3,2,1,0];
+} elsif ($user eq '') {
+  printf "%04d-%02d-%02d %02d:%02d:%02d: $peer: $arg\n", $lt[5] + 1900, $lt[4] + 1, @lt[3,2,1,0];
+} else {
+  printf "%04d-%02d-%02d %02d:%02d:%02d: $peer: $user $arg\n", $lt[5] + 1900, $lt[4] + 1, @lt[3,2,1,0];
+}
+
+my $hashalgo = 'SHA1';
+$hashalgo = $1 if $arg =~ /^(.*?):/;
+if ($user ne '' || $arg ne '') {
+  if (exists $map{"$hashalgo:$user"}) {
+    $user = $map{"$hashalgo:$user"};
+    $pack = pack("nn", length($user), length($arg)).$user.$arg;
+  } elsif (exists $map{$user}) {
+    $user = $map{$user};
+    $pack = pack("nn", length($user), length($arg)).$user.$arg;
+  }
+  if ($user eq '' && $signuser ne '') {
+    $user = $signuser;
+    $pack = pack("nn", length($user), length($arg)).$user.$arg;
+  }
+} elsif ($phrases) {
+  my $ret = pack("nnn", 0, 0, 0);
+  syswrite(CLNT, $ret);
+  close CLNT;
+  exit(0);
+}
+
+if ($phrases && -e "$phrases/$user") {
+  $arg =~ s/^.*?://;
+  pipe RH, WH;
+  my $pid = open(KID, "-|");
+  if (!defined $pid) {
+    error($peer, "could not fork");
+    exit(0);
+  }
+  if (!$pid) {
+    delete $SIG{'__DIE__'};
+    close RH;
+    if (!open(STDERR, ">&STDOUT")) {
+      print STDOUT "can't dup stdout: $!\n";
+      exit(1);
+    }
+    if ($arg eq 'PUBKEY') {
+      exec $gpg, '--export', '-a', $user;
+      die("gpg: $!\n");
+    }
+    open(STDOUT, ">&WH") || die("can't dup writepipe: $!\n");
+    open(STDIN, "<$phrases/$user") || die("can't open passphrase file for $user: $!\n");
+    close WH;
+    exec $gpg, "--batch", "--files-are-digests", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--passphrase-fd=0", "-u", $user, "-sbo", "-", $arg;
+    die("gpg: $!\n");
+  }
+  close WH;
+  my $err = '';
+  my $out = '';
+  1 while sysread(KID, $err, 4096, length($err)) > 0;
+  1 while sysread(RH, $out, 4096, length($out)) > 0;
+  my $status = 0;
+  $status = $? || 255 unless close KID;
+  $status >>= 8 if $status >= 256;
+  my $ret = pack("nnn", $status, length($out), length($err)).$out.$err;
+  swrite(*CLNT, $ret);
+  close CLNT;
+  exit(0);
+}
+
+die("unknown key: $user\n") if $signhost eq '127.0.0.1' && $port eq $proxyport;
+
+socket(CS , PF_INET, SOCK_STREAM, IPPROTO_TCP) || die("socket: $!\n");
+my %blacklist;
+# bindresvport
+if (open(BL, "</etc/bindresvport.blacklist")) {
+  while(<BL>) {
+    chomp;
+    next unless /^\s*(\d+)/;
+    $blacklist{0 + $1} = 1;
+  }
+  close BL;
+}
+my $po;
+while(1) {
+  for ($po = 600; $po < 1024; $po++) {
+    next if $blacklist{$po};
+    last if bind(CS, sockaddr_in($po, INADDR_ANY));
+  }
+  last if $po < 1024;
+  sleep(3);
+}
+
+connect(CS, sockaddr_in($port, $signaddr)) || die("connect: $!\n");
+if ($user eq '' && $arg eq '') {
+  syswrite(CLNT, "\0\0\0\0\0\0");
+  exit(0);
+}
+(syswrite(CS, $pack) || 0) == length($pack) || die("syswrite: $!\n");
+while(1) {
+  $buf = '';
+  my $r = sysread(CS, $buf, 8192);
+  if (!defined($r)) {
+    die("sysread: $!\n") if $! != POSIX::EINTR;
+    next;
+  }
+  last unless $r;
+  syswrite(*CLNT, $buf);
+}
+exit(0);

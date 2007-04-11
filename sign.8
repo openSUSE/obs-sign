@@ -1,0 +1,59 @@
+.\" man page for sign
+.TH sign 8 "Apr 2007"
+.SH NAME
+sign \- sign files or rpms
+
+.SH SYNOPSIS
+.B sign
+.RB [ -c | -d
+.RB | -r ]
+.RB [ -u
+.IR user ]
+.RB [ -h
+.IR hash ]
+.RI [ file ]
+.br
+.B sign
+.BR -k | -p
+.RB [ -u
+.IR user ]
+.RB [ -h
+.IR hash ]
+.br
+.B sign
+.B -t
+
+.SH DESCRIPTION
+sign adds a cryptographic signature to a file. It can add a clearsign signature
+(-c option), create a detached signature (-d option), or add a signature block
+to a rpm package (-r option). If no mode is specified, sign does a rpm sign
+if the file name ends in ".rpm", otherwise it does a clearsign. If no
+file name is specified, sign reads from stdin and writes to stdout.
+
+One can specify a specific user or hash method with the -u and -h option.
+Currently sign understands the sha1 and sha256 hashes.
+
+sign does not create the signature by itself, it needs a running signing
+daemon (called signd) to do the work. The host and port information is read
+from the /etc/sign.conf file.
+
+The -k option makes sign print the keyid instead of signing a file, the
+-p option makes it print the public key.
+
+.SH SECURITY
+sign needs to bind to a reserved port, it thus works only for user root
+or needs to be installed suid-root. If the latter is the case, sign
+grants the users specified in the "allowuser" lines of the configuration
+the right to sign files.
+
+.SH BUGS
+sign currently only creates the "header+payload" signature when signing
+rpms. It should also add the "header only" signature.
+
+.SH EXIT STATUS
+sign returns 0 if everything worked, otherwise it returns 1 and
+prints an error message to stderr.
+
+.SH SEE ALSO
+.BR signd (8),
+.BR sign.conf (5)

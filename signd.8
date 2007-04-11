@@ -1,0 +1,25 @@
+.\" man page for signd
+.TH signd 8 "Apr 2007"
+.SH NAME
+signd \- execute or proxy sign requests
+
+.SH SYNOPSIS
+.B signd
+.RB [ -f ]
+
+.SH DESCRIPTION
+signd is a little daemon that listens for sign requests from sign,
+and either calls gpg to do the signing or forwards the request
+to another signd. The -f option makes signd fork on startup.
+
+signd uses the same configuration used for sign, /etc/sign.conf.
+It needs a gpg implementation that understands the
+"--files-are-digests" option to work correctly.
+
+.SH SECURITY
+signd allows only connections from reserved ports and ip
+addresses listed in the "allow" field of the configuration.
+
+.SH SEE ALSO
+.BR sign (8),
+.BR sign.conf (5)
