@@ -22,6 +22,120 @@ use Socket;
 use POSIX;
 use bytes;
 
+sub decodetaglenoff {
+  my ($pkg) = @_;
+  my $tag = unpack('C', $pkg);
+  die("not a gpg packet\n") unless $tag & 128;
+  my $len;
+  my $off = 1;
+  if ($tag & 64) {
+    # new packet format
+    $tag &= 63;
+    $len = unpack('C', substr($pkg, 1));
+    if ($len < 192) {
+      $off = 2;
+    } elsif ($len != 255) {
+      $len = (($len - 192) << 8) + unpack('C', substr($pkg, 2)) + 192;
+      $off = 3;
+    } else {
+      $len = unpack('N', substr($pkg, 2));
+      $off = 5;
+    }
+  } else {
+    # old packet format
+    if (($tag & 3) == 0) {
+      $len = unpack('C', substr($pkg, 1));
+      $off = 2;
+    } elsif (($tag & 3) == 1) {
+      $len = unpack('n', substr($pkg, 1));
+      $off = 3;
+    } elsif (($tag & 3) == 1) {
+      $len = unpack('N', substr($pkg, 1));
+      $off = 6;
+    } else {
+      die("can't deal with not specified packet length\n");
+    }
+    $tag = ($tag & 60) >> 2;
+  }
+  return ($tag, $len, $off);
+}
+
+sub priv2pub {
+  my ($privkey) = @_;
+  my $pubkey = '';
+
+  while ($privkey ne '') {
+    my ($tag, $len, $off) = decodetaglenoff($privkey);
+    #print "tag=$tag, len=$len off=$off\n";
+    my $pack = substr($privkey, $off, $len);
+    $privkey = substr($privkey, $len + $off);
+    my $ptag;
+    if ($tag == 5) {
+      $ptag = 6;
+    } elsif ($tag == 7) {
+      $ptag = 14;
+    } else {
+      next;
+    }
+    my $pkver = unpack('C', $pack);
+    #print "pubkey ver $pkver\n";
+    my ($mpioff, $pkalgo);
+    if ($pkver == 3) {
+      my ($t, $v);
+      (undef, $t, $v, $pkalgo) = unpack('CNnC', $pack);
+      $mpioff = 8;
+    } elsif ($pkver == 4) {
+      my $t;
+      (undef, $t, $pkalgo) = unpack('CNC', $pack);
+      $mpioff = 6;
+    } else {
+      die("unknown publib key version $pkver\n");
+    }
+    my $mpinum;
+    if ($pkalgo == 1) {
+      # RSA
+      $mpinum = 2;
+    } elsif ($pkalgo == 17) {
+      $mpinum = 4;
+    } elsif ($pkalgo == 16) {
+      $mpinum = 3;
+    } elsif ($pkalgo == 20) {
+      $mpinum = 3;
+    } else {
+      die("unknown public key algorithm $pkalgo\n");
+    }
+    while ($mpinum > 0) {
+      #print "MPI\n";
+      my $ml = unpack('n', substr($pack, $mpioff));
+      $ml = (($ml + 7) >> 3) + 2;
+      $mpioff += $ml;
+      $mpinum--;
+    }
+    $pack = substr($pack, 0, $mpioff);
+    my $ol = length($pack);
+    if ($ol < 192) {
+      $pubkey .= pack("CC", $ptag + 128, $ol).$pack;
+    } elsif ($ol < 8384) {
+      $ol = $ol - 192;
+      $ol += (192 << 8);
+      $pubkey .= pack("Cn", $ptag + 192, $ol).$pack;
+    } else {
+      $pubkey .= pack("CCN", $ptag + 192, 255, $ol).$pack;
+    }
+  }
+  return $pubkey;
+}
+
+sub patchclasstime {
+  my ($sig, $t) = @_;
+  die("timeclas is not 10 hex nibbles\n") unless $t =~ /^[0-9a-fA-F]{10}$/s;
+  my ($tag, $len, $off) = decodetaglenoff($sig);
+  die("not a signature\n") unless $tag == 2;
+  die("not a v3 signature\n") unless ord(substr($sig, $off, 1)) == 3;
+  substr($sig, $off + 2, 5, pack('H*', $t));
+  return $sig;
+}
+
 sub swrite {
   my ($sock, $data) = @_;
   local *S = $sock;
@@ -40,6 +154,8 @@ my $proxyport = 5167;
 my $signuser = '';
 my $gpg = '/usr/bin/gpg';
 my $phrases = '';
+my $tmpdir = '/var/run/signd';
+my $patchclasstime;
 
 local *F;
 open(F, '</etc/sign.conf') || die("/etc/sign.conf: $!\n");
@@ -79,6 +195,14 @@ while(<F>) {
   }
   if ($s[0] eq 'phrases:') {
     $phrases = $s[1];
+    next;
+  }
+  if ($s[0] eq 'tmpdir:') {
+    $tmpdir = $s[1];
+    next;
+  }
+  if ($s[0] eq 'patchclasstime:') {
+    $patchclasstime = $s[1];
     next;
   }
 }
@@ -132,7 +256,7 @@ $SIG{'__DIE__'} = sub {
   printf "%04d-%02d-%02d %02d:%02d:%02d: $peer: $err\n", $lt[5] + 1900, $lt[4] + 1, @lt[3,2,1,0];
   $err .= "\n";
   $err = pack("nnn", 1, 0, length($err)).$err;
-  syswrite(CLNT, $err);
+  swrite(*CLNT, $err);
   close CLNT;
   exit(1);
 };
@@ -141,50 +265,142 @@ my ($sport, $saddr) = sockaddr_in($clntaddr);
 $peer = inet_ntoa($saddr);
 die("not coming from a reserved port\n") if $sport < 0 || $sport > 1024;
 die("illegal host $peer\n") unless $allow{$peer};
+
 my $pack = '';
 sysread(CLNT, $pack, 1024);
 die("zero size packet\n") if length($pack) == 0;
 die("packet too small\n") if length($pack) < 4;
 my ($user, $arg) = unpack("nn", $pack);
+while (length($pack) < 4 + $user + $arg) {
+  sysread(CLNT, $pack, 1024, length($pack)) || die("packet read error\n");
+}
 die("packet size mismatch\n") if length($pack) !=  4 + $user + $arg;
-$arg = substr($pack, 4 + $user, $arg);
-$user = substr($pack, 4, $user);
-@lt = localtime(time);
-if ($user eq '' && $arg eq '') {
-  printf "%04d-%02d-%02d %02d:%02d:%02d: $peer: ping\n", $lt[5] + 1900, $lt[4] + 1, @lt[3,2,1,0];
-} elsif ($user eq '') {
-  printf "%04d-%02d-%02d %02d:%02d:%02d: $peer: $arg\n", $lt[5] + 1900, $lt[4] + 1, @lt[3,2,1,0];
+
+my @argv;
+my $oldproto = 0;
+
+if ($arg == 0 && $user != 0) {
+  # new format
+  die("packet too small\n") unless $user >= 2;
+  my $narg = unpack("n", substr($pack, 4));
+  die("packet too small\n") unless $user >= 2 + $narg * 2;
+  my @argl = unpack('n' x $narg, substr($pack, 6));
+  @argv = unpack('a'.join('a', @argl), substr($pack, 6 + $narg * 2));
 } else {
-  printf "%04d-%02d-%02d %02d:%02d:%02d: $peer: $user $arg\n", $lt[5] + 1900, $lt[4] + 1, @lt[3,2,1,0];
+  $oldproto = 1;
+  if ($user == 0 && $arg == 0) {
+    @argv = ('ping', '');
+  } elsif ($user == 0) {
+    @argv = ('sign', '', substr($pack, 4 + $user, $arg));
+  } else {
+    @argv = ('sign', substr($pack, 4, $user), substr($pack, 4 + $user, $arg));
+  }
+  if ($argv[-1] =~ /^(.*?):(.*$)/) {
+    $argv[1] = "$1:$argv[1]";
+    $argv[-1] = $2;
+  }
+  if ($argv[-1] eq 'PUBKEY') {
+    pop @argv;
+    $argv[0] = 'pubkey';
+  }
+}
+
+@lt = localtime(time);
+if ($argv[0] eq 'privsign' && @argv > 2) {
+  my $pk = $argv[2];
+  $argv[2] =~ s/^(..)(.*)(..)$/$1...$3/s;
+  printf "%04d-%02d-%02d %02d:%02d:%02d: $peer: %s\n", $lt[5] + 1900, $lt[4] + 1, @lt[3,2,1,0], "@argv";
+  $argv[2] = $pk;
+} else {
+  printf "%04d-%02d-%02d %02d:%02d:%02d: $peer: %s\n", $lt[5] + 1900, $lt[4] + 1, @lt[3,2,1,0], "@argv";
 }
 
 my $hashalgo = 'SHA1';
-$hashalgo = $1 if $arg =~ /^(.*?):/;
-if ($user ne '' || $arg ne '') {
-  if (exists $map{"$hashalgo:$user"}) {
-    $user = $map{"$hashalgo:$user"};
-    $pack = pack("nn", length($user), length($arg)).$user.$arg;
-  } elsif (exists $map{$user}) {
-    $user = $map{$user};
-    $pack = pack("nn", length($user), length($arg)).$user.$arg;
+$user = $argv[1];
+if ($user =~ /^(.*?):(.*)$/) {
+  $hashalgo = $1;
+  $user = $2;
+}
+
+if (exists $map{"$hashalgo:$user"}) {
+  $user = $map{"$hashalgo:$user"};
+} elsif ($user ne '' && exists($map{$user})) {
+  $user = $map{$user};
+}
+$user = $signuser if $user eq '' && $signuser ne '';
+$argv[1] = "$hashalgo:$user" if $hashalgo ne 'SHA1';
+
+my $cmd = $argv[0];
+
+if (!$phrases || $user eq '' || ($cmd ne 'ping' && ! -e "$phrases/$user")) {
+  #forward to next server
+  die("unknown key: $user\n") if $signhost eq '127.0.0.1' && $port eq $proxyport;
+
+  socket(CS , PF_INET, SOCK_STREAM, IPPROTO_TCP) || die("socket: $!\n");
+  my %blacklist;
+  # bindresvport
+  if (open(BL, "</etc/bindresvport.blacklist")) {
+    while(<BL>) {
+      chomp;
+      next unless /^\s*(\d+)/;
+      $blacklist{0 + $1} = 1;
+    }
+    close BL;
   }
-  if ($user eq '' && $signuser ne '') {
-    $user = $signuser;
-    $pack = pack("nn", length($user), length($arg)).$user.$arg;
+  my $po;
+  while(1) {
+    for ($po = 600; $po < 1024; $po++) {
+      next if $blacklist{$po};
+      last if bind(CS, sockaddr_in($po, INADDR_ANY));
+    }
+    last if $po < 1024;
+    sleep(3);
   }
-} elsif ($phrases) {
+  if ($argv[0] eq 'sign' && $oldproto) {
+    $arg = $argv[2];
+    $arg = "$hashalgo:$arg" if $hashalgo ne 'SHA1';
+    $pack = pack("nn", length($user), length($arg)).$user.$arg;
+  } else {
+    $pack = pack('n' x (1 + @argv), scalar(@argv), map {length($_)} @argv).join('', @argv);
+    $pack = pack('nn', length($pack), 0).$pack;
+  }
+  connect(CS, sockaddr_in($port, $signaddr)) || die("connect: $!\n");
+  swrite(*CS, $pack);
+  while(1) {
+    $buf = '';
+    my $r = sysread(CS, $buf, 8192);
+    if (!defined($r)) {
+      die("sysread: $!\n") if $! != POSIX::EINTR;
+      next;
+    }
+    last unless $r;
+    swrite(*CLNT, $buf);
+  }
+  exit(0);
+}
+
+if ($cmd eq 'ping') {
   my $ret = pack("nnn", 0, 0, 0);
-  syswrite(CLNT, $ret);
+  swrite(*CLNT, $ret);
   close CLNT;
   exit(0);
 }
 
-if ($phrases && -e "$phrases/$user") {
-  $arg =~ s/^.*?://;
+
+sub rungpg {
+  my ($stdin, $unlinks, @args) = @_;
+
+  local *RH;
+  local *WH;
+  local *KID;
+
   pipe RH, WH;
   my $pid = open(KID, "-|");
   if (!defined $pid) {
-    error($peer, "could not fork");
+    for (@{$unlinks || []}) {
+      unlink($_);
+    }
+    die("could not fork: $!\n");
     exit(0);
   }
   if (!$pid) {
@@ -194,67 +410,155 @@ if ($phrases && -e "$phrases/$user") {
       print STDOUT "can't dup stdout: $!\n";
       exit(1);
     }
-    if ($arg eq 'PUBKEY') {
-      exec $gpg, '--export', '-a', $user;
-      die("gpg: $!\n");
-    }
     open(STDOUT, ">&WH") || die("can't dup writepipe: $!\n");
-    open(STDIN, "<$phrases/$user") || die("can't open passphrase file for $user: $!\n");
+    open(STDIN, "<$stdin") || die("$stdin: $!\n");
     close WH;
-    exec $gpg, "--batch", "--files-are-digests", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--passphrase-fd=0", "-u", $user, "-sbo", "-", $arg;
+    exec $gpg, @args;
     die("gpg: $!\n");
   }
   close WH;
-  my $err = '';
   my $out = '';
+  my $err = '';
   1 while sysread(KID, $err, 4096, length($err)) > 0;
   1 while sysread(RH, $out, 4096, length($out)) > 0;
-  my $status = 0;
+  close(RH);
   $status = $? || 255 unless close KID;
   $status >>= 8 if $status >= 256;
+  return ($status, $out, $err);
+}
+
+sub rungpg_fatal {
+  my ($stdin, $unlinks, @args) = @_;
+  my ($status, $out, $err) = rungpg($stdin, $unlinks, @args);
+  if ($status) {
+    $err = "Error $status" if $err eq '';
+    $err =~ s/\n$//s;
+    for (@{$unlinks || []}) {
+      unlink($_);
+    }
+    die("$err\n");
+  }
+  return $out;
+}
+
+if ($cmd eq 'pubkey') {
+  die("pubkey: one argument expected\n") if @argv != 2;
+  my $pubkey = rungpg_fatal('/dev/null', undef, '--export', '-a', $user);
+  if (!$oldproto) {
+    $pubkey = pack('nn', 1, length($pubkey)).$pubkey;
+  }
+  my $ret = pack("nnn", 0, length($pubkey), 0).$pubkey;
+  swrite(*CLNT, $ret);
+  close CLNT;
+  exit(0);
+}
+
+if ($cmd eq 'keygen') {
+  if (! -d $tmpdir) {
+    mkdir($tmpdir) || die("$tmpdir: $!\n");
+  }
+  die("keygen: at least five arguments expected\n") if @argv < 6;
+  my $type = $argv[2];
+  my $expire = $argv[3];
+  die("bad expire format\n") unless $expire =~ /^\d{1,10}$/s;
+  my $real = $argv[4];
+  die("bad real name\n") if $real =~ /[\000-\037]/s;
+  my $email = $argv[5];
+  die("bad email\n") if $email =~ /[\000-\037\s]/s;
+  die("bad type: $type\n") unless $type =~ /^(dsa|rsa)\@(1024|2048)$/s;
+  my $length = $2;
+  $type = $1;
+  my $batch = "Key-Type: $type\nKey-Length: $length\nKey-Usage: sign\nName-Real: $real\nName-Email: $email\nExpire-Date: ${expire}d\n%pubring $tmpdir/pubkey.$$\n%secring $tmpdir/privkey.$$\n";
+  local *F;
+  open(F, ">$tmpdir/params.$$") || die("$tmpdir/params.$$: $!\n");
+  (syswrite(F, $batch) || 0) == length($batch) || die("keygen parameter write error\n");
+  close(F) || die("keygen parameter close error\n");
+
+  rungpg_fatal('/dev/null', ["$tmpdir/params.$$"],'--batch', '--no-secmem-warning', '--trustdb-name', "$tmpdir/trustdb.$$", '--gen-key', "$tmpdir/params.$$");
+  unlink("$tmpdir/params.$$");
+  unlink("$tmpdir/trustdb.$$");
+  die("gpg did not create private key\n") unless -s "$tmpdir/privkey.$$";
+  die("gpg did not create public key\n") unless -s "$tmpdir/pubkey.$$";
+  my $pubkey = rungpg_fatal('/dev/null', ["$tmpdir/pubkey.$$", "$tmpdir/privkey.$$"], '--batch', '--no-secmem-warning', '--no-default-keyring', "--keyring=$tmpdir/pubkey.$$", '--export', '-a');
+  unlink("$tmpdir/pubkey.$$");
+  my $privkey = rungpg_fatal('/dev/null', ["$tmpdir/privkey.$$"], '--batch', '--encrypt', '--no-verbose', '--no-secmem-warning', '-o-', '-r', "$user", "$tmpdir/privkey.$$");
+  unlink("$tmpdir/privkey.$$");
+  $privkey = unpack('H*', $privkey);
+  my $ret = pack("nnn", 2, length($pubkey), length($privkey)).$pubkey.$privkey;
+  $ret = pack("nnn", 0, length($ret), 0).$ret;
+  swrite(*CLNT, $ret);
+  close CLNT;
+  exit(0);
+}
+
+my @keyargs;
+
+if ($cmd eq 'privsign') {
+  if (! -d $tmpdir) {
+    mkdir($tmpdir) || die("$tmpdir: $!\n");
+  }
+  die("sign: at least three arguments expected\n") if @argv < 4;
+  die("bad private key\n") if $argv[2] !~ /^(?:[0-9a-fA-F][0-9a-fA-F])+$/s;
+  my $privkey = pack('H*', $argv[2]);
+  splice(@argv, 2, 1);
+  local *F;
+  open(F, ">$tmpdir/privkey.$$") || die("$tmpdir/privkey.$$: $!\n");
+  (syswrite(F, $privkey) || 0) == length($privkey) || die("encoded privkey write error\n");
+  close(F) || die("encoded privkey close error\n");
+  $privkey = rungpg_fatal("$phrases/$user", ["$tmpdir/privkey.$$"], '--batch', '--decrypt', '--no-verbose', '-q', '--no-secmem-warning', '--passphrase-fd=0', "$tmpdir/privkey.$$");
+  unlink("$tmpdir/privkey.$$");
+  my $pubkey = priv2pub($privkey);
+  open(F, ">$tmpdir/privkey.$$") || die("$tmpdir/privkey.$$: $!\n");
+  (syswrite(F, $privkey) || 0) == length($privkey) || die("encoded privkey write error\n");
+  close(F) || die("encoded privkey close error\n");
+  open(F, ">$tmpdir/pubkey.$$") || die("$tmpdir/pubkey.$$: $!\n");
+  (syswrite(F, $pubkey) || 0) == length($pubkey) || die("pubkey write error\n");
+  close(F) || die("pubkey close error\n");
+  @keyargs = ('--no-default-keyring', "--keyring=$tmpdir/pubkey.$$", "--secret-keyring=$tmpdir/privkey.$$");
+}
+
+if ($cmd eq 'sign' || $cmd eq 'privsign') {
+  die("sign: two arguments expected (old protoco)\n") if $oldproto && @argv != 3;
+  die("sign: at least two arguments expected\n") if $cmd eq 'sign' && @argv < 3;
+  my $status = 0;
+  my $err = '';
+  my $out = '';
+  my @outlen;
+  while (@argv > 2) {
+    my ($lout, $lerr);
+    my $classtime;
+    if ($patchclasstime && ($argv[2] =~ /\@([0-9a-fA-F]{10})$/s)) {
+      $classtime = $1;
+      $argv[2] = substr($argv[2], 0, -10)."0000000000";
+    }
+    if (@keyargs) {
+      ($status, $lout, $lerr) = rungpg('/dev/null', ["$tmpdir/privkey.$$", "$tmpdir/pubkey.$$"], "--batch", "--files-are-digests", "--allow-non-selfsigned-uid", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--passphrase-fd=0", @keyargs, "-sbo", "-", $argv[2]);
+    } else {
+      ($status, $lout, $lerr) = rungpg("$phrases/$user", undef, "--batch", "--files-are-digests", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--passphrase-fd=0", "-u", $user, "-sbo", "-", $argv[2]);
+    }
+    $lout = patchclasstime($lout, $classtime) if $classtime;
+    splice(@argv, 2, 1);
+    $out .= $lout;
+    $err .= $lerr;
+    push @outlen, length($lout);
+    last if $status;
+  }
+  if (@keyargs) {
+    unlink("$tmpdir/privkey.$$");
+    unlink("$tmpdir/pubkey.$$");
+  }
+  if (!$oldproto) {
+    while (@argv > 2) {
+      push @outlen, 0;
+      pop @argv;
+    }
+    $out = pack('n' x (1 + scalar(@outlen)), scalar(@outlen), @outlen).$out;
+  }
   my $ret = pack("nnn", $status, length($out), length($err)).$out.$err;
   swrite(*CLNT, $ret);
   close CLNT;
   exit(0);
 }
 
-die("unknown key: $user\n") if $signhost eq '127.0.0.1' && $port eq $proxyport;
+die("unknown command: $cmd\n");
 
-socket(CS , PF_INET, SOCK_STREAM, IPPROTO_TCP) || die("socket: $!\n");
-my %blacklist;
-# bindresvport
-if (open(BL, "</etc/bindresvport.blacklist")) {
-  while(<BL>) {
-    chomp;
-    next unless /^\s*(\d+)/;
-    $blacklist{0 + $1} = 1;
-  }
-  close BL;
-}
-my $po;
-while(1) {
-  for ($po = 600; $po < 1024; $po++) {
-    next if $blacklist{$po};
-    last if bind(CS, sockaddr_in($po, INADDR_ANY));
-  }
-  last if $po < 1024;
-  sleep(3);
-}
-
-connect(CS, sockaddr_in($port, $signaddr)) || die("connect: $!\n");
-if ($user eq '' && $arg eq '') {
-  syswrite(CLNT, "\0\0\0\0\0\0");
-  exit(0);
-}
-(syswrite(CS, $pack) || 0) == length($pack) || die("syswrite: $!\n");
-while(1) {
-  $buf = '';
-  my $r = sysread(CS, $buf, 8192);
-  if (!defined($r)) {
-    die("sysread: $!\n") if $! != POSIX::EINTR;
-    next;
-  }
-  last unless $r;
-  syswrite(*CLNT, $buf);
-}
-exit(0);

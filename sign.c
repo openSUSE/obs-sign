@@ -21,16 +21,17 @@
 
 char *host;
 char *user;
+char *algouser;
 int port = MYPORT;
 
 #define HEADER_SIGNATURES 62
-#define RPMSIGTAG_DSA   267
-#define RPMSIGTAG_SHA1  269
+#define RPMSIGTAG_DSA   267		/* header only sig */
+#define RPMSIGTAG_RSA   268		/* header only sig */
+#define RPMSIGTAG_SHA1  269		/* header only hash */
 #define RPMSIGTAG_SIZE 1000
 #define RPMSIGTAG_PGP  1002
 #define RPMSIGTAG_MD5  1004
 #define RPMSIGTAG_GPG  1005
-#define RPMSIGTAG_RSA  268
 
 #undef BIG_ENDIAN_HOST
 
@@ -995,8 +996,11 @@ int verbose;
 char *hashname[] = {"SHA1", "SHA256"};
 int  hashlen[] = {20, 32};
 int  hashtag[] = { RPMSIGTAG_GPG, RPMSIGTAG_PGP };
+int  hashtagh[] = { RPMSIGTAG_DSA, RPMSIGTAG_RSA };
 int hashalgo = HASH_SHA1;
 char *timearg;
+char *privkey;
+int noheaderonly;
 
 typedef union {
   SHA1_CONTEXT sha1;
@@ -1042,8 +1046,256 @@ unsigned char *hash_read(HASH_CONTEXT *c)
 #define MODE_DETACHEDSIGN 3
 #define MODE_KEYID        4
 #define MODE_PUBKEY       5
+#define MODE_KEYGEN       6
 
 char *modes[] = {"?", "rpm sign", "clear sign", "detached sign"};
+
+void
+readprivkey()
+{
+  FILE *fp;
+  int l, ll;
+  if ((fp = fopen(privkey, "r")) == 0)
+    {
+      perror(privkey);
+      exit(1);
+    }
+  privkey = malloc(8192);
+  *privkey = 0;
+  l = 0;
+  while (l < 8192 && (ll = fread(privkey + l, 1, 8192 - l, fp)) > 0)
+    l += ll;
+  fclose(fp);
+  if (l == 0)
+    {
+      fprintf(stderr, "empty private\n");
+      exit(1);
+    }
+  if (l == 8192)
+    {
+      fprintf(stderr, "private key too large\n");
+      exit(1);
+    }
+  if (privkey[l - 1] == '\n')
+    l--;
+  privkey[l] = 0;
+}
+
+int
+doreq(int sock, int argc, char **argv, byte *buf, int bufl, int nret)
+{
+  byte *bp;
+  int i, l, v, outl, errl;
+
+  bp = buf + 2;
+  *bp++ = 0;
+  *bp++ = 0;
+  *bp++ = argc >> 8;
+  *bp++ = argc & 255;
+  for (i = 0; i < argc; i++)
+    {
+      v = strlen(argv[i]);
+      *bp++ = v >> 8;
+      *bp++ = v & 255;
+    }
+  for (i = 0; i < argc; i++)
+    {
+      v = strlen(argv[i]);
+      if (bp + v > buf + bufl)
+	{
+	  fprintf(stderr, "request buffer overflow\n");
+	  return -1;
+	}
+      memcpy(bp, argv[i], v);
+      bp += v;
+    }
+  v = bp - (buf + 4);
+  buf[0] = v >> 8;
+  buf[1] = v & 255;
+
+  i = bp - buf;
+  if (write(sock, buf, i) != i)
+    {
+      perror("write");
+      return -1;
+    }
+  l = 0;
+  for (;;)
+    {
+      int ll;
+      if (l == bufl)
+	{
+          fprintf(stderr, "packet too big\n");
+	  return -1;
+	}
+      ll = read(sock, buf + l, bufl - l);
+      if (ll == -1)
+	{
+	  perror("read");
+	  return -1;
+	}
+      if (ll == 0)
+	break;
+      l += ll;
+    }
+  close(sock);
+  if (l < 6)
+    {
+      fprintf(stderr, "packet too small\n");
+      return -1;
+    }
+  outl = buf[2] << 8 | buf[3];
+  errl = buf[4] << 8 | buf[5];
+  if (l != outl + errl + 6)
+    {
+      fprintf(stderr, "packet size mismatch %d %d %d\n", l, outl, errl);
+      return -1;
+    }
+  if (errl)
+    fwrite(buf + 6 + outl, 1, errl, stderr);
+
+  if (buf[0] << 8 | buf[1])
+    return -(buf[0] << 8 | buf[1]);
+  memmove(buf, buf + 6, outl);
+  if (nret)
+    {
+      if (outl < 2 + 2 * nret)
+	{
+	  fprintf(stderr, "answer too small\n");
+	  return -1;
+	}
+      if (buf[0] != 0 || buf[1] != nret)
+	{
+	  fprintf(stderr, "bad answer\n");
+	  return -1;
+	}
+      l = 2;
+      for (i = 0; i < nret; i++)
+	l += 2 + (buf[2 + i * 2] << 8 | buf[2 + i * 2 + 1]);
+      if (l != outl)
+	{
+	  fprintf(stderr, "answer size mismatch\n");
+	  return -1;
+	}
+    }
+  return outl;
+}
+
+int
+rpminsertsig(byte *rpmsig, int *rpmsigsizep, int *rpmsigcntp, int *rpmsigdlenp, int sigtag, byte *newsig, int newsiglen)
+{
+  int rpmsigsize, rpmsigcnt, rpmsigdlen;
+  int i, myi, tag;
+  byte *rsp;
+  u32 before;
+  int pad;
+  byte *region = 0;
+
+  rpmsigsize = *rpmsigsizep;
+  rpmsigcnt = *rpmsigcntp;
+  rpmsigdlen = *rpmsigdlenp;
+
+  if (newsiglen > 1024)
+    {
+      fprintf(stderr, "signature too big: %d\n", newsiglen);
+      return -1;
+    }
+  rsp = rpmsig;
+  for (i = 0; i < rpmsigcnt; i++)
+    {
+      tag = rsp[0] << 24 | rsp[1] << 16 | rsp[2] << 8 | rsp[3];
+      // fprintf(stderr, "tag %d\n", tag);
+      if (i == 0 && tag >= 61 && tag < 64)
+	region = rsp;
+      if (tag >= sigtag)
+	break;
+      rsp += 16;
+    }
+  // fprintf(stderr, "inserting at position %d\n", i);
+  if (i < rpmsigcnt && tag == sigtag)
+    abort();
+
+  memmove(rsp + 16, rsp, rpmsigsize - i * 16);
+  memset(rsp, 0, 16);
+  rsp[2] = sigtag >> 8;
+  rsp[3] = sigtag & 0xff;
+  rsp[7] = 7;
+  rsp[14] = newsiglen >> 8;
+  rsp[15] = newsiglen & 0xff;
+
+  pad = i == rpmsigcnt ? 0 : 3 - ((newsiglen + 3) & 3);
+  if (i < rpmsigcnt)
+    {
+      pad = 3 - ((newsiglen + 3) & 3);
+      before = rsp[16 + 8] << 24 | rsp[16 + 9] << 16 | rsp[16 + 10] << 8 | rsp[16 + 11];
+    }
+  else
+    {
+      pad = 0;
+      if (region)
+	before = region[8] << 24 | region[9] << 16 | region[10] << 8 | region[11];
+      else
+	before = rpmsigdlen;
+    }
+  // fprintf(stderr, "before=%d sigdlen=%d\n", before, rpmsigdlen);
+  rpmsigcnt++;
+  if (before < rpmsigdlen)
+    memmove(rpmsig + rpmsigcnt * 16 + before + newsiglen + pad, rpmsig + rpmsigcnt * 16 + before, rpmsigdlen - before);
+  memmove(rpmsig + rpmsigcnt * 16 + before, newsig, newsiglen);
+  if (pad)
+    memset(rpmsig + rpmsigcnt * 16 + before + newsiglen, 0, pad);
+  rsp[8] = before >> 24;
+  rsp[9] = before >> 16;
+  rsp[10] = before >> 8;
+  rsp[11] = before;
+  rpmsigdlen += newsiglen + pad;
+
+  // now fix up all entries behind us
+  myi = i;
+  rsp = rpmsig;
+  for (i = 0; i < rpmsigcnt; i++, rsp += 16)
+    {
+      if (i == myi)
+	continue;
+      tag = rsp[8] << 24 | rsp[9] << 16 | rsp[10] << 8 | rsp[11];
+      if (tag < before)
+	continue;
+      tag += newsiglen + pad;
+      rsp[8] = tag >> 24;
+      rsp[9] = tag >> 16;
+      rsp[10] = tag >> 8;
+      rsp[11] = tag;
+    }
+  if (region)
+    {
+      if ((region[12] << 24 | region[13] << 16 | region[14] << 8 | region[15]) != 16)
+	{
+	  fprintf(stderr, "bad region in signature\n");
+	  return -1;
+	}
+      rsp = rpmsig + rpmsigcnt * 16 + (region[8] << 24 | region[9] << 16 | region[10] << 8 | region[11]);
+      tag = rsp[8] << 24 | rsp[9] << 16 | rsp[10] << 8 | rsp[11];
+      if (-tag != (rpmsigcnt - 1) * 16)
+	{
+	  fprintf(stderr, "bad region data in signature\n");
+	  return -1;
+	}
+      tag -= 16;
+      rsp[8] = tag >> 24;
+      rsp[9] = tag >> 16;
+      rsp[10] = tag >> 8;
+      rsp[11] = tag;
+    }
+  pad = 7 - ((rpmsigdlen + 7) & 7);
+  if (pad)
+    memset(rpmsig + rpmsigcnt * 16 + rpmsigdlen, 0, pad);
+  rpmsigsize = rpmsigcnt * 16 + rpmsigdlen + pad;
+
+  *rpmsigsizep = rpmsigsize;
+  *rpmsigcntp = rpmsigcnt;
+  *rpmsigdlenp = rpmsigdlen;
+  return 0;
+}
 
 int
 sign(char *filename, int isfilter, int mode)
@@ -1055,11 +1307,12 @@ sign(char *filename, int isfilter, int mode)
   int cbufl;
   int l, fd;
   int i;
-  byte hash[5], *p;
+  byte hash[5], *p, *ph = 0;
   HASH_CONTEXT ctx;
   MD5_CTX md5ctx;
+  HASH_CONTEXT hctx;
   int force = 1;
-  int outl, errl;
+  int outl, outlh, errl;
   int sock;
   int ulen;
   byte rpmlead[96];
@@ -1067,7 +1320,7 @@ sign(char *filename, int isfilter, int mode)
   byte *rpmsig = 0;
   int rpmsigcnt = 0, rpmsigdlen = 0;
   int rpmsigsize = 0, tag;
-  u32 lensig;
+  u32 lensig, lenhdr;
   byte rpmmd5sum[16];
   byte rpmmd5sum2[16];
   byte *hdrin_md5 = 0;
@@ -1159,7 +1412,7 @@ sign(char *filename, int isfilter, int mode)
       rpmsigcnt = rpmsighead[8] << 24 | rpmsighead[9] << 16 | rpmsighead[10] << 8 | rpmsighead[11];
       rpmsigdlen = rpmsighead[12] << 24 | rpmsighead[13] << 16 | rpmsighead[14] << 8 | rpmsighead[15];
       rpmsigsize = rpmsigcnt * 16 + ((rpmsigdlen + 7) & ~7);
-      rpmsig = malloc(rpmsigsize + 2 * (256 + 16));
+      rpmsig = malloc(rpmsigsize + 2 * (1024 + 16 + 4));
       if (!rpmsig)
 	{
 	  fprintf(stderr, "%s: no memory for signature area\n", filename);
@@ -1175,7 +1428,7 @@ sign(char *filename, int isfilter, int mode)
       for (i = 0; i < rpmsigcnt; i++)
 	{
 	  tag = rsp[0] << 24 | rsp[1] << 16 | rsp[2] << 8 | rsp[3];
-	  if (tag == hashtag[hashalgo])
+	  if (tag == hashtag[hashalgo] || tag == hashtagh[hashalgo])
 	    {
 	      fprintf(isfilter ? stderr : stdout, "%s: already signed\n", filename);
 	      close(fd);
@@ -1328,18 +1581,28 @@ sign(char *filename, int isfilter, int mode)
     {
       sock = opensocket();
       if (mode == MODE_RPMSIGN)
-	md5_init(&md5ctx);
+	{
+	  md5_init(&md5ctx);
+	  hash_init(&hctx);
+	}
       lensig = 0;
+      lenhdr = 0;
       while ((l = read(fd, (char *)buf, sizeof(buf))) > 0)
 	{
+	  if (!lensig && mode == MODE_RPMSIGN)
+	    {
+	      if (l < 16)
+		{
+		  fprintf(stderr, "cannot calculate header size: short read\n");
+		  exit(1);
+		}
+	      lenhdr = 16;
+	      lenhdr += 16 * (buf[8] << 24 |  buf[9] << 16 | buf[10] << 8 | buf[11]);
+	      lenhdr += buf[12] << 24 |  buf[13] << 16 | buf[14] << 8 | buf[15];
+	    }
 	  if (getbuildtime && !lensig)
 	    {
 	      int n;
-	      if (l < 16)
-		{
-		  fprintf(stderr, "cannot calculate buildtime: short read\n");
-		  exit(1);
-		}
 	      n = buf[8] << 24 |  buf[9] << 16 | buf[10] << 8 | buf[11];
 	      if ((l - 16) / 16 < n)
 		n = (l - 16) / 16;
@@ -1363,11 +1626,33 @@ sign(char *filename, int isfilter, int mode)
 	    }
 	  hash_write(&ctx, buf,  l);
 	  if (mode == MODE_RPMSIGN)
-	    md5_write(&md5ctx, buf, l);
+	    {
+	      md5_write(&md5ctx, buf, l);
+	      if (lenhdr)
+		{
+		  if (l >= lenhdr)
+		    {
+		      hash_write(&hctx, buf,  lenhdr);
+		      lenhdr = 0;
+		    }
+		  else
+		    {
+		      hash_write(&hctx, buf,  l);
+		      lenhdr -= l;
+		    }
+		}
+	    }
 	  lensig += l;
 	}
       if (mode == MODE_RPMSIGN)
-	md5_final(rpmmd5sum, &md5ctx);
+	{
+	  md5_final(rpmmd5sum, &md5ctx);
+	  if (lenhdr)
+	    {
+	      fprintf(stderr, "%s: bad header size (%u)\n", filename, lenhdr);
+	      exit(1);
+	    }
+	}
       if (hdrin_size && lensig != hdrin_size)
 	{
 	  fprintf(stderr, "%s: SIZE checksum error %d %d\n", filename, hdrin_size, lensig);
@@ -1403,95 +1688,179 @@ sign(char *filename, int isfilter, int mode)
   hash_write(&ctx, hash, 5);
   hash_final(&ctx);
   p = hash_read(&ctx);
+  ph = 0;
+  outlh = 0;
+  if (mode == MODE_RPMSIGN)
+    {
+      hash_write(&hctx, hash, 5);
+      hash_final(&hctx);
+      if (!noheaderonly)
+        ph = hash_read(&hctx);
+    }
 
   ulen = strlen(user);
-  if (ulen + hashlen[hashalgo] * 2 + 1 + 5 * 2 + 4 + 1 + (hashalgo == HASH_SHA1 ? 0 : strlen(hashname[hashalgo]) + 1) > sizeof(buf))
+  if (!privkey && !ph)
     {
-      fprintf(stderr, "packet too big\n");
-      if (mode == MODE_CLEARSIGN && !isfilter)
-	unlink(outfilename);
-      exit(1);
-    }
-  buf[0] = ulen >> 8;
-  buf[1] = ulen;
-  buf[2] = 0;
-  buf[3] = 0;
-  memmove(buf + 4, user, ulen);
-  bp = buf + 4 + ulen;
-  if (hashalgo != HASH_SHA1)
-    {
-      strcpy((char *)bp, hashname[hashalgo]);
-      bp += strlen((char *)bp);
-      *bp++ = ':';
-    }
-  if (mode == MODE_PUBKEY)
-    {
-      strcpy((char *)bp, "PUBKEY");
-      bp += 6;
+      if (ulen + hashlen[hashalgo] * 2 + 1 + 5 * 2 + 4 + 1 + (hashalgo == HASH_SHA1 ? 0 : strlen(hashname[hashalgo]) + 1) > sizeof(buf))
+	{
+	  fprintf(stderr, "packet too big\n");
+	  if (mode == MODE_CLEARSIGN && !isfilter)
+	    unlink(outfilename);
+	  exit(1);
+	}
+      buf[0] = ulen >> 8;
+      buf[1] = ulen;
+      buf[2] = 0;
+      buf[3] = 0;
+      memmove(buf + 4, user, ulen);
+      bp = buf + 4 + ulen;
+      if (hashalgo != HASH_SHA1)
+	{
+	  strcpy((char *)bp, hashname[hashalgo]);
+	  bp += strlen((char *)bp);
+	  *bp++ = ':';
+	}
+      if (mode == MODE_PUBKEY)
+	{
+	  strcpy((char *)bp, "PUBKEY");
+	  bp += 6;
+	}
+      else
+	{
+	  for (i = 0; i < hashlen[hashalgo]; i++, bp += 2)
+	    sprintf((char *)bp, "%02x", p[i]);
+	  *bp++ = '@';
+	  for (i = 0; i < 5; i++, bp += 2)
+	    sprintf((char *)bp, "%02x", hash[i]);
+	}
+      buf[3] = bp - (buf + 4 + ulen);
+      i = bp - buf;
+      if (write(sock, buf, i) != i)
+	{
+	  perror("write");
+	  if (mode == MODE_CLEARSIGN && !isfilter)
+	    unlink(outfilename);
+	  exit(1);
+	}
+      l = 0;
+      for (;;)
+	{
+	  int ll;
+	  if (l == sizeof(buf))
+	    {
+	      fprintf(stderr, "packet too big\n");
+	      exit(1);
+	    }
+	  ll = read(sock, buf + l, sizeof(buf) - l);
+	  if (ll == -1)
+	    {
+	      perror("read");
+	      if (mode == MODE_CLEARSIGN && !isfilter)
+		unlink(outfilename);
+	      exit(1);
+	    }
+	  if (ll == 0)
+	    break;
+	  l += ll;
+	}
+      close(sock);
+      if (l < 6)
+	{
+	  fprintf(stderr, "packet too small\n");
+	  exit(1);
+	}
+      outl = buf[2] << 8 | buf[3];
+      errl = buf[4] << 8 | buf[5];
+      if (l != outl + errl + 6)
+	{
+	  fprintf(stderr, "packet size mismatch %d %d %d\n", l, outl, errl);
+	  if (mode == MODE_CLEARSIGN && !isfilter)
+	    unlink(outfilename);
+	  exit(1);
+	}
+      if (errl)
+	fwrite(buf + 6 + outl, 1, errl, stderr);
+
+      if (buf[0] << 8 | buf[1])
+	{
+	  if (mode == MODE_CLEARSIGN && !isfilter)
+	    unlink(outfilename);
+	  exit(buf[0] << 8 | buf[1]);
+	}
     }
   else
     {
+      char *args[5], *bp;
+      char hashhex[1024];
+      char hashhexh[1024];
+      int argc;
+
+      if (mode == MODE_PUBKEY)
+	{
+	  fprintf(stderr, "pubkey mode does not work with a private key\n");
+	  exit(1);
+	}
+      if (privkey)
+        readprivkey();
+      bp = hashhex;
       for (i = 0; i < hashlen[hashalgo]; i++, bp += 2)
 	sprintf((char *)bp, "%02x", p[i]);
       *bp++ = '@';
       for (i = 0; i < 5; i++, bp += 2)
 	sprintf((char *)bp, "%02x", hash[i]);
-    }
-  buf[3] = bp - (buf + 4 + ulen);
-  i = bp - buf;
-  if (write(sock, buf, i) != i)
-    {
-      perror("write");
-      if (mode == MODE_CLEARSIGN && !isfilter)
-	unlink(outfilename);
-      exit(1);
-    }
-  l = 0;
-  for (;;)
-    {
-      int ll;
-      if (l == sizeof(buf))
+      *bp = 0;
+      if (ph)
 	{
-          fprintf(stderr, "packet too big\n");
-	  exit(1);
+	  bp = hashhexh;
+	  for (i = 0; i < hashlen[hashalgo]; i++, bp += 2)
+	    sprintf((char *)bp, "%02x", ph[i]);
+	  *bp++ = '@';
+	  for (i = 0; i < 5; i++, bp += 2)
+	    sprintf((char *)bp, "%02x", hash[i]);
+	  *bp = 0;
 	}
-      ll = read(sock, buf + l, sizeof(buf) - l);
-      if (ll == -1)
+      args[0] = privkey ? "privsign" : "sign";
+      args[1] = algouser;
+      argc = 2;
+      if (privkey)
+        args[argc++] = privkey;
+      args[argc++] = hashhex;
+      if (ph)
+        args[argc++] = hashhexh;
+      l = doreq(sock, argc, args, buf, sizeof(buf), ph ? 2 : 1);
+      close(sock);
+      if (l < 0)
 	{
-	  perror("read");
 	  if (mode == MODE_CLEARSIGN && !isfilter)
 	    unlink(outfilename);
+	  exit(-l);
+	}
+      if (buf[0] != 0 || buf[1] != (ph ? 2 : 1))
+	{
+	  if (mode == MODE_CLEARSIGN && !isfilter)
+	    unlink(outfilename);
+	  fprintf(stderr, "bad return count\n");
 	  exit(1);
 	}
-      if (ll == 0)
-	break;
-      l += ll;
+      outl = buf[2] << 8 | buf[3];
+      outlh = ph ? (buf[4] << 8 | buf[5]) : 0;
+      if (outl == 0 || (ph && outlh == 0))
+	{
+	  if (mode == MODE_CLEARSIGN && !isfilter)
+	    unlink(outfilename);
+	  fprintf(stderr, "server returned empty signature\n");
+	  exit(1);
+	}
+      if (l != outl + outlh + (ph ? 6 : 4))
+	{
+	  if (mode == MODE_CLEARSIGN && !isfilter)
+	    unlink(outfilename);
+	  fprintf(stderr, "bad return length\n");
+	  exit(1);
+	}
+      if (!ph)
+        memmove(buf + 6, buf + 4, outl);
     }
-  close(sock);
-  if (l < 6)
-    {
-      fprintf(stderr, "packet too small\n");
-      exit(1);
-    }
-  outl = buf[2] << 8 | buf[3];
-  errl = buf[4] << 8 | buf[5];
-  if (l != outl + errl + 6)
-    {
-      fprintf(stderr, "packet size mismatch %d %d %d\n", l, outl, errl);
-      if (mode == MODE_CLEARSIGN && !isfilter)
-	unlink(outfilename);
-      exit(1);
-    }
-  if (errl)
-    fwrite(buf + 6 + outl, 1, errl, stderr);
-
-  if (buf[0] << 8 | buf[1])
-    {
-      if (mode == MODE_CLEARSIGN && !isfilter)
-	unlink(outfilename);
-      exit(buf[0] << 8 | buf[1]);
-    }
-
   if (mode == MODE_KEYID)
     {
       int o;
@@ -1563,108 +1932,21 @@ sign(char *filename, int isfilter, int mode)
     }
   else if (mode == MODE_RPMSIGN)
     {
-      int pad;
-      int myi;
-      byte *region = 0;
-      u32 before;
-
-      if (outl > 255)
+      if (rpminsertsig(rpmsig, &rpmsigsize, &rpmsigcnt, &rpmsigdlen, hashtag[hashalgo], buf + 6, outl))
 	{
-	  fprintf(stderr, "signature too big: %d\n", outl);
 	  if (!isfilter)
 	    unlink(outfilename);
 	  exit(1);
 	}
-      rsp = rpmsig;
-      for (i = 0; i < rpmsigcnt; i++)
+      if (outlh)
 	{
-	  tag = rsp[0] << 24 | rsp[1] << 16 | rsp[2] << 8 | rsp[3];
-	  // fprintf(stderr, "tag %d\n", tag);
-	  if (i == 0 && tag >= 61 && tag < 64)
-	    region = rsp;
-	  if (tag >= hashtag[hashalgo])
-	    break;
-	  rsp += 16;
-	}
-      // fprintf(stderr, "inserting at position %d\n", i);
-      if (i < rpmsigcnt && tag == hashtag[hashalgo])
-	abort();
-      memmove(rsp + 16, rsp, rpmsigsize - i * 16);
-      memset(rsp, 0, 16);
-      rsp[2] = hashtag[hashalgo] >> 8;
-      rsp[3] = hashtag[hashalgo] & 0xff;
-      rsp[7] = 7;
-      rsp[15] = outl;
-      pad = i == rpmsigcnt ? 0 : 3 - ((outl + 3) & 3);
-      if (i < rpmsigcnt)
-	{
-          pad = 3 - ((outl + 3) & 3);
-	  before = rsp[16 + 8] << 24 | rsp[16 + 9] << 16 | rsp[16 + 10] << 8 | rsp[16 + 11];
-	}
-      else
-	{
-	  pad = 0;
-	  if (region)
-	    before = region[8] << 24 | region[9] << 16 | region[10] << 8 | region[11];
-	  else
-	    before = rpmsigdlen;
-	}
-      // fprintf(stderr, "before=%d sigdlen=%d\n", before, rpmsigdlen);
-      rpmsigcnt++;
-      if (before < rpmsigdlen)
-        memmove(rpmsig + rpmsigcnt * 16 + before + outl + pad, rpmsig + rpmsigcnt * 16 + before, rpmsigdlen - before);
-      memmove(rpmsig + rpmsigcnt * 16 + before, buf + 6, outl);
-      if (pad)
-	memset(rpmsig + rpmsigcnt * 16 + before + outl, 0, pad);
-      rsp[8] = before >> 24;
-      rsp[9] = before >> 16;
-      rsp[10] = before >> 8;
-      rsp[11] = before;
-      rpmsigdlen += outl + pad;
-      myi = i;
-      rsp = rpmsig;
-      for (i = 0; i < rpmsigcnt; i++, rsp += 16)
-	{
-	  if (i == myi)
-	    continue;
-	  tag = rsp[8] << 24 | rsp[9] << 16 | rsp[10] << 8 | rsp[11];
-	  if (tag < before)
-	    continue;
-	  tag += outl + pad;
-	  rsp[8] = tag >> 24;
-	  rsp[9] = tag >> 16;
-	  rsp[10] = tag >> 8;
-	  rsp[11] = tag;
-	}
-      if (region)
-	{
-	  if ((region[12] << 24 | region[13] << 16 | region[14] << 8 | region[15]) != 16)
+	  if (rpminsertsig(rpmsig, &rpmsigsize, &rpmsigcnt, &rpmsigdlen, hashtagh[hashalgo], buf + 6 + outl, outlh))
 	    {
-	      fprintf(stderr, "bad region in signature\n");
 	      if (!isfilter)
 		unlink(outfilename);
 	      exit(1);
 	    }
-	  rsp = rpmsig + rpmsigcnt * 16 + (region[8] << 24 | region[9] << 16 | region[10] << 8 | region[11]);
-	  tag = rsp[8] << 24 | rsp[9] << 16 | rsp[10] << 8 | rsp[11];
-	  if (-tag != (rpmsigcnt - 1) * 16)
-	    {
-	      fprintf(stderr, "bad region data in signature\n");
-	      if (!isfilter)
-		unlink(outfilename);
-	      exit(1);
-	    }
-	  tag -= 16;
-	  rsp[8] = tag >> 24;
-	  rsp[9] = tag >> 16;
-	  rsp[10] = tag >> 8;
-	  rsp[11] = tag;
 	}
-      pad = 7 - ((rpmsigdlen + 7) & 7);
-      if (pad)
-	memset(rpmsig + rpmsigcnt * 16 + rpmsigdlen, 0, pad);
-      rpmsigsize = rpmsigcnt * 16 + rpmsigdlen + pad;
-
       rpmsighead[8]  = rpmsigcnt >> 24;
       rpmsighead[9]  = rpmsigcnt >> 16;
       rpmsighead[10] = rpmsigcnt >> 8 ;
@@ -1725,6 +2007,80 @@ sign(char *filename, int isfilter, int mode)
   if (outfilename)
     free(outfilename);
   return 0;
+}
+
+void
+keygen(char *type, char *expire, char *name, char *email)
+{
+  char *args[6];
+  byte buf[8192];
+  int l, publ, privl;
+  int sock = opensocket();
+
+  args[0] = "keygen";
+  args[1] = algouser;
+  args[2] = type;
+  args[3] = expire;
+  args[4] = name;
+  args[5] = email;
+  l = doreq(sock, 6, args, buf, sizeof(buf), 2);
+  close(sock);
+  if (l < 0)
+    exit(-l);
+  publ = buf[2] << 8 | buf[3];
+  privl = buf[4] << 8 | buf[5];
+  if (privkey && strcmp(privkey, "-"))
+    {
+      int fout;
+      char *outfilename = malloc(strlen(privkey) + 16);
+
+      sprintf(outfilename, "%s.sIgN%d", privkey, getpid());
+      if ((fout = open(outfilename, O_WRONLY|O_CREAT|O_TRUNC, 0600)) == -1)
+	{
+	  perror(outfilename);
+	  exit(1);
+	}
+      if (write(fout, buf + 6 + publ, privl) != privl)
+	{
+	  perror("privkey write error");
+	  exit(1);
+	}
+      if (write(fout, "\n", 1) != 1)
+	{
+	  perror("privkey write error");
+	  exit(1);
+	}
+      if (close(fout))
+	{
+	  perror("privkey write error");
+	  exit(1);
+	}
+      if (rename(outfilename, privkey))
+	{
+	  perror(privkey);
+	  exit(1);
+	}
+    }
+  else
+    {
+      if (fwrite(buf + 6 + publ, privl, 1, stdout) != 1)
+	{
+	  fprintf(stderr, "privkey write error\n");
+	  exit(1);
+	}
+      printf("\n");
+    }
+  if (fwrite(buf + 6, publ, 1, stdout) != 1)
+    {
+      fprintf(stderr, "pubkey write error\n");
+      exit(1);
+    }
+  if (fflush(stdout))
+    {
+      fprintf(stderr, "pubkey write error\n");
+      exit(1);
+    }
+  exit(0);
 }
 
 int
@@ -1895,6 +2251,12 @@ main(int argc, char **argv)
 	  argc--;
 	  argv++;
 	}
+      else if (argc > 1 && !strcmp(argv[1], "--noheaderonly"))
+        {
+	  noheaderonly = 1;
+	  argc--;
+	  argv++;
+        }
       else if (argc > 1 && !strcmp(argv[1], "-k"))
         {
 	  mode = MODE_KEYID;
@@ -1904,6 +2266,12 @@ main(int argc, char **argv)
       else if (argc > 1 && !strcmp(argv[1], "-p"))
         {
 	  mode = MODE_PUBKEY;
+	  argc--;
+	  argv++;
+        }
+      else if (argc > 1 && !strcmp(argv[1], "-g"))
+        {
+	  mode = MODE_KEYGEN;
 	  argc--;
 	  argv++;
         }
@@ -1918,6 +2286,12 @@ main(int argc, char **argv)
 	      exit(1);
 	    }
 	}
+      else if (argc > 2 && !strcmp(argv[1], "-P"))
+        {
+	  privkey = argv[2];
+	  argc -= 2;
+	  argv += 2;
+        }
       else if (argc > 1 && !strcmp(argv[1], "--"))
         {
 	  argc--;
@@ -1932,9 +2306,31 @@ main(int argc, char **argv)
       else
         break;
     }
+  if (hashalgo == HASH_SHA1)
+    algouser = user;
+  else
+    {
+      algouser = malloc(strlen(user) + strlen(hashname[hashalgo]) + 2);
+      sprintf(algouser, "%s:%s", hashname[hashalgo], user);
+    }
   if ((mode == MODE_KEYID || mode == MODE_PUBKEY) && argc > 1)
     {
       fprintf(stderr, "usage: sign [-c|-d|-r] [-u user] <file>\n");
+      exit(1);
+    }
+  if (mode == MODE_KEYGEN)
+    {
+      if (argc != 5)
+	{
+	  fprintf(stderr, "usage: sign -g <type> <expire> <name> <email>\n");
+	  exit(1);
+	}
+      keygen(argv[1], argv[2], argv[3], argv[4]);
+      exit(0);
+    }
+  if (privkey && access(privkey, R_OK))
+    {
+      perror(privkey);
       exit(1);
     }
   if (argc == 1)
