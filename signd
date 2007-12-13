@@ -22,6 +22,17 @@ use Socket;
 use POSIX;
 use bytes;
 
+my %allow;
+my %map;
+my $signhost = '127.0.0.1';
+my $port = 5167;
+my $proxyport = 5167;
+my $signuser = '';
+my $gpg = '/usr/bin/gpg';
+my $phrases = '';
+my $tmpdir = '/var/run/signd';
+my $patchclasstime;
+
 sub decodetaglenoff {
   my ($pkg) = @_;
   my $tag = unpack('C', $pkg);
@@ -145,17 +156,6 @@ sub swrite {
     $data = substr($data, $l);
   }
 }
-
-my %allow;
-my %map;
-my $signhost = '127.0.0.1';
-my $port = 5167;
-my $proxyport = 5167;
-my $signuser = '';
-my $gpg = '/usr/bin/gpg';
-my $phrases = '';
-my $tmpdir = '/var/run/signd';
-my $patchclasstime;
 
 local *F;
 open(F, '</etc/sign.conf') || die("/etc/sign.conf: $!\n");
@@ -328,6 +328,7 @@ if (exists $map{"$hashalgo:$user"}) {
   $user = $map{$user};
 }
 $user = $signuser if $user eq '' && $signuser ne '';
+$argv[1] = $user;
 $argv[1] = "$hashalgo:$user" if $hashalgo ne 'SHA1';
 
 my $cmd = $argv[0];
@@ -479,10 +480,32 @@ if ($cmd eq 'keygen') {
   unlink("$tmpdir/trustdb.$$");
   die("gpg did not create private key\n") unless -s "$tmpdir/privkey.$$";
   die("gpg did not create public key\n") unless -s "$tmpdir/pubkey.$$";
+
+  # get the keyid so we can add a signature
+  my $keyid = rungpg_fatal('/dev/null', ["$tmpdir/pubkey.$$", "$tmpdir/privkey.$$"], '--list-keys', '--no-secmem-warning', '--no-default-keyring', "--keyring=$tmpdir/pubkey.$$", '--fixed-list-mode', '--with-colons');
+  my @keyid = split("\n", $keyid);
+  @keyid = grep {s/^pub:[^:]*:[^:]*:[^:]*:([^:]*):.*$/$1/} @keyid;
+  if (@keyid != 1) {
+    unlink("$tmpdir/pubkey.$$");
+    unlink("$tmpdir/privkey.$$");
+    die("keyid not found\n");
+  }
+  $keyid = $keyid[0];
+
+  # add user sig to pubkey
+  rungpg_fatal("$phrases/$user", ["$tmpdir/pubkey.$$", "$tmpdir/privkey.$$"], '--batch', '--no-secmem-warning', "--keyring=$tmpdir/pubkey.$$", "--passphrase-fd=0", "-u", $user, '--yes', '--trustdb-name', "$tmpdir/trustdb.$$", '--default-cert-level', '3', '--edit-key', $keyid, 'sign', 'save');
+  unlink("$tmpdir/pubkey.$$~");
+  unlink("$tmpdir/trustdb.$$");
+
+  # export pubkey
   my $pubkey = rungpg_fatal('/dev/null', ["$tmpdir/pubkey.$$", "$tmpdir/privkey.$$"], '--batch', '--no-secmem-warning', '--no-default-keyring', "--keyring=$tmpdir/pubkey.$$", '--export', '-a');
   unlink("$tmpdir/pubkey.$$");
+
+  # encrypt privkey
   my $privkey = rungpg_fatal('/dev/null', ["$tmpdir/privkey.$$"], '--batch', '--encrypt', '--no-verbose', '--no-secmem-warning', '-o-', '-r', "$user", "$tmpdir/privkey.$$");
   unlink("$tmpdir/privkey.$$");
+
+  # send back
   $privkey = unpack('H*', $privkey);
   my $ret = pack("nnn", 2, length($pubkey), length($privkey)).$pubkey.$privkey;
   $ret = pack("nnn", 0, length($ret), 0).$ret;

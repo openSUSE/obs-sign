@@ -1332,6 +1332,7 @@ sign(char *filename, int isfilter, int mode)
   int getbuildtime = 0;
   int buildtimeoff = 0;
   byte btbuf[4];
+  int gotsha1 = 0;
 
   if (mode == MODE_UNSET)
     {
@@ -1439,6 +1440,8 @@ sign(char *filename, int isfilter, int mode)
 		exit(1);
 	      return 1;
 	    }
+	  if (tag == RPMSIGTAG_SHA1)
+	    gotsha1 = 1;
 	  if (tag == RPMSIGTAG_MD5)
 	    {
 	      if (rsp[4] || rsp[5] || rsp[6] || rsp[7] != 7 || rsp[12] || rsp[13] || rsp[14] || rsp[15] != 16)
@@ -1694,7 +1697,8 @@ sign(char *filename, int isfilter, int mode)
     {
       hash_write(&hctx, hash, 5);
       hash_final(&hctx);
-      if (!noheaderonly)
+      /* header only seems to work only if there's a header only hash */
+      if (!noheaderonly && gotsha1)
         ph = hash_read(&hctx);
     }
 
