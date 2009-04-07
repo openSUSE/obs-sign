@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006, 2007 Michael Schroeder, Novell Inc.
+ * Copyright (c) 2006, 2007, 2008 Michael Schroeder, Novell Inc.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -1181,11 +1181,79 @@ doreq(int sock, int argc, char **argv, byte *buf, int bufl, int nret)
   return outl;
 }
 
+static inline int
+getu8(byte *p)
+{
+  return p[0] << 24 | p[1] << 16 | p[2] << 8 || p[3];
+}
+
+static inline int
+getu8c(byte *p)
+{
+  if (p[0])
+    {
+      fprintf(stderr, "header data overflow\n");
+      exit(1);
+    }
+  return p[1] << 16 | p[2] << 8 || p[3];
+}
+
+byte *
+findmax(byte *rpmsig, int rpmsigcnt, int targetoff)
+{
+  int i;
+  byte *rsp;
+  int maxoff;
+  byte *maxrsp;
+
+  maxoff = -1;
+  maxrsp = 0;
+  for (i = 0, rsp = rpmsig; i < rpmsigcnt; i++, rsp += 16)
+    {
+      int off = getu8c(rsp + 8);
+      if (off >= targetoff || off < maxoff)
+	continue;
+      maxoff = off;
+      maxrsp = rsp;
+    }
+  return maxrsp;
+}
+
+int
+datalen(byte *rpmsig, int rpmsigcnt, byte *rsp)
+{
+  int type, cnt;
+
+  type = getu8c(rsp + 4);
+  cnt = getu8c(rsp + 12);
+  if (type == 6 || type == 8 || type == 9)
+    {
+      int i = 0;
+      int off = getu8c(rsp + 8);
+      if (type == 6)
+	cnt = 1;
+      while (cnt-- > 0)
+	{
+	  while (rpmsig[rpmsigcnt * 16 + off + i])
+	    i++;
+	  i++;	/* count termination 0 */
+	}
+      return i;
+    }
+  if (type == 3)
+    return 2 * cnt;
+  else if (type == 4)
+    return 4 * cnt;
+  else if (type == 5)
+    return 8 * cnt;
+  return cnt;
+}
+
 int
 rpminsertsig(byte *rpmsig, int *rpmsigsizep, int *rpmsigcntp, int *rpmsigdlenp, int sigtag, byte *newsig, int newsiglen)
 {
   int rpmsigsize, rpmsigcnt, rpmsigdlen;
-  int i, myi, tag;
+  int i, myi, tag, off, type;
   byte *rsp;
   u32 before;
   int pad;
@@ -1200,21 +1268,33 @@ rpminsertsig(byte *rpmsig, int *rpmsigsizep, int *rpmsigcntp, int *rpmsigdlenp, 
       fprintf(stderr, "signature too big: %d\n", newsiglen);
       return -1;
     }
-  rsp = rpmsig;
-  for (i = 0; i < rpmsigcnt; i++)
+
+  // first some sanity checking
+  for (i = 0, rsp = rpmsig; i < rpmsigcnt; i++, rsp += 16)
     {
-      tag = rsp[0] << 24 | rsp[1] << 16 | rsp[2] << 8 | rsp[3];
+      off = getu8c(rsp + 8);
+      if (off < 0 || off > rpmsigdlen)
+	{
+	  fprintf(stderr, "data offset out of range\n");
+	  exit(1);
+	}
+    }
+
+  // now find the correct place to insert the signature
+  for (i = 0, rsp = rpmsig; i < rpmsigcnt; i++, rsp += 16)
+    {
+      tag = getu8(rsp);
       // fprintf(stderr, "tag %d\n", tag);
       if (i == 0 && tag >= 61 && tag < 64)
 	region = rsp;
       if (tag >= sigtag)
 	break;
-      rsp += 16;
     }
   // fprintf(stderr, "inserting at position %d\n", i);
   if (i < rpmsigcnt && tag == sigtag)
     abort();
 
+  // insert it
   memmove(rsp + 16, rsp, rpmsigsize - i * 16);
   memset(rsp, 0, 16);
   rsp[2] = sigtag >> 8;
@@ -1223,32 +1303,28 @@ rpminsertsig(byte *rpmsig, int *rpmsigsizep, int *rpmsigcntp, int *rpmsigdlenp, 
   rsp[14] = newsiglen >> 8;
   rsp[15] = newsiglen & 0xff;
 
-  pad = i == rpmsigcnt ? 0 : 3 - ((newsiglen + 3) & 3);
   if (i < rpmsigcnt)
-    {
-      pad = 3 - ((newsiglen + 3) & 3);
-      before = rsp[16 + 8] << 24 | rsp[16 + 9] << 16 | rsp[16 + 10] << 8 | rsp[16 + 11];
-    }
+    before = getu8c(rsp + 16 + 8);
+  else if (region)
+    before = getu8c(region + 8);
   else
+    before = rpmsigdlen;
+  if (before > rpmsigdlen)
     {
-      pad = 0;
-      if (region)
-	before = region[8] << 24 | region[9] << 16 | region[10] << 8 | region[11];
-      else
-	before = rpmsigdlen;
+      fprintf(stderr, "sig data range error\n");
+      return -1;
     }
+
   // fprintf(stderr, "before=%d sigdlen=%d\n", before, rpmsigdlen);
   rpmsigcnt++;
   if (before < rpmsigdlen)
-    memmove(rpmsig + rpmsigcnt * 16 + before + newsiglen + pad, rpmsig + rpmsigcnt * 16 + before, rpmsigdlen - before);
+    memmove(rpmsig + rpmsigcnt * 16 + before + newsiglen, rpmsig + rpmsigcnt * 16 + before, rpmsigdlen - before);
   memmove(rpmsig + rpmsigcnt * 16 + before, newsig, newsiglen);
-  if (pad)
-    memset(rpmsig + rpmsigcnt * 16 + before + newsiglen, 0, pad);
   rsp[8] = before >> 24;
   rsp[9] = before >> 16;
   rsp[10] = before >> 8;
   rsp[11] = before;
-  rpmsigdlen += newsiglen + pad;
+  rpmsigdlen += newsiglen;
 
   // now fix up all entries behind us
   myi = i;
@@ -1257,27 +1333,81 @@ rpminsertsig(byte *rpmsig, int *rpmsigsizep, int *rpmsigcntp, int *rpmsigdlenp, 
     {
       if (i == myi)
 	continue;
-      tag = rsp[8] << 24 | rsp[9] << 16 | rsp[10] << 8 | rsp[11];
-      if (tag < before)
+      off = getu8c(rsp + 8);
+      if (off < before)
 	continue;
-      tag += newsiglen + pad;
-      rsp[8] = tag >> 24;
-      rsp[9] = tag >> 16;
-      rsp[10] = tag >> 8;
-      rsp[11] = tag;
+      off += newsiglen;
+      rsp[8] = off >> 24;
+      rsp[9] = off >> 16;
+      rsp[10] = off >> 8;
+      rsp[11] = off;
     }
+
+  // correct the padding of all entries
+  for (i = 0, rsp = rpmsig; i < rpmsigcnt; i++, rsp += 16)
+    {
+      int align, off2, type, lastoff;
+      byte *lastrsp;
+
+      type = getu8c(rsp + 4);
+      if (type == 3)
+	align = 2;
+      else if (type == 4)
+	align = 4;
+      else if (type == 5)
+	align = 8;
+      else
+	continue;
+      off = getu8c(rsp + 8);
+      if (off % align == 0)
+	continue;
+      /* have to re-align, find end of last data */
+      lastrsp = findmax(rpmsig, rpmsigcnt, off);
+      lastoff = getu8c(lastrsp + 8);
+      lastoff += datalen(rpmsig, rpmsigcnt, lastrsp);
+      if (lastoff >= off)
+	{
+	  fprintf(stderr, "lastoff error\n");
+	  return -1;
+	}
+      if (lastoff % align)
+	lastoff += align - (lastoff % align);
+      /* now move over from off to lastoff */
+      memmove(rpmsig + rpmsigcnt * 16 + lastoff, rpmsig + rpmsigcnt * 16 + off, rpmsigdlen - off);
+      rpmsigdlen += lastoff - off;
+      if (lastoff > off)
+	memset(rpmsig + rpmsigcnt * 16 + off, 0, lastoff - off);
+      /* fix up all offsets */
+      for (i = 0, rsp = rpmsig; i < rpmsigcnt; i++, rsp += 16)
+	{
+	  off2 = getu8c(rsp + 8);
+	  if (off2 < off)
+	    continue;
+	  off2 += lastoff - off;
+	  rsp[8] = off2 >> 24;
+	  rsp[9] = off2 >> 16;
+	  rsp[10] = off2 >> 8;
+	  rsp[11] = off2;
+	}
+      /* start over */
+      i = -1;
+      rsp = rpmsig - 16;
+    }
+
+  // correct region count
   if (region)
     {
-      if ((region[12] << 24 | region[13] << 16 | region[14] << 8 | region[15]) != 16)
+      if (getu8(region + 12) != 16)
 	{
 	  fprintf(stderr, "bad region in signature\n");
 	  return -1;
 	}
-      rsp = rpmsig + rpmsigcnt * 16 + (region[8] << 24 | region[9] << 16 | region[10] << 8 | region[11]);
-      tag = rsp[8] << 24 | rsp[9] << 16 | rsp[10] << 8 | rsp[11];
+      off = getu8c(region + 8);
+      rsp = rpmsig + rpmsigcnt * 16 + off;
+      tag = getu8(rsp + 8);
       if (-tag != (rpmsigcnt - 1) * 16)
 	{
-	  fprintf(stderr, "bad region data in signature\n");
+	  fprintf(stderr, "bad region data in signature (%d)\n", -tag);
 	  return -1;
 	}
       tag -= 16;
@@ -1286,6 +1416,8 @@ rpminsertsig(byte *rpmsig, int *rpmsigsizep, int *rpmsigcntp, int *rpmsigdlenp, 
       rsp[10] = tag >> 8;
       rsp[11] = tag;
     }
+
+  // align to multiple of 8
   pad = 7 - ((rpmsigdlen + 7) & 7);
   if (pad)
     memset(rpmsig + rpmsigcnt * 16 + rpmsigdlen, 0, pad);
