@@ -1671,7 +1671,7 @@ sign(char *filename, int isfilter, int mode)
 	      have = l;
 	      continue;
 	    }
-          if (cbuf[0] == '-' || (l > 4 && !strncmp((char *)cbuf, "From ", 5)))
+          if ((l > 0 && cbuf[0] == '-') || (l > 4 && !strncmp((char *)cbuf, "From ", 5)))
 	    fprintf(fout, "- ");
 	  if (i == l)
 	    {
