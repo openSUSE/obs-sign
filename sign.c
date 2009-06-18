@@ -1184,7 +1184,7 @@ doreq(int sock, int argc, char **argv, byte *buf, int bufl, int nret)
 static inline int
 getu8(byte *p)
 {
-  return p[0] << 24 | p[1] << 16 | p[2] << 8 || p[3];
+  return p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3];
 }
 
 static inline int
@@ -1195,7 +1195,7 @@ getu8c(byte *p)
       fprintf(stderr, "header data overflow\n");
       exit(1);
     }
-  return p[1] << 16 | p[2] << 8 || p[3];
+  return p[1] << 16 | p[2] << 8 | p[3];
 }
 
 byte *
@@ -1290,7 +1290,7 @@ rpminsertsig(byte *rpmsig, int *rpmsigsizep, int *rpmsigcntp, int *rpmsigdlenp, 
       if (tag >= sigtag)
 	break;
     }
-  // fprintf(stderr, "inserting at position %d\n", i);
+  // fprintf(stderr, "inserting at position %d of %d\n", i, rpmsigcnt);
   if (i < rpmsigcnt && tag == sigtag)
     abort();
 
@@ -1365,9 +1365,9 @@ rpminsertsig(byte *rpmsig, int *rpmsigsizep, int *rpmsigcntp, int *rpmsigdlenp, 
       lastrsp = findmax(rpmsig, rpmsigcnt, off);
       lastoff = getu8c(lastrsp + 8);
       lastoff += datalen(rpmsig, rpmsigcnt, lastrsp);
-      if (lastoff >= off)
+      if (lastoff > off)
 	{
-	  fprintf(stderr, "lastoff error\n");
+	  fprintf(stderr, "lastoff error %d %d\n", lastoff, off);
 	  return -1;
 	}
       if (lastoff % align)
