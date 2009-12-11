@@ -1,0 +1,4 @@
+
+# for sign daemon
+addFilter("permissions-file-setuid-bit")
+
