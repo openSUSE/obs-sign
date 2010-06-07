@@ -1,0 +1,17 @@
+-------------------------------------------------------------------
+Mon Jun  7 09:41:43 UTC 2010 - adrian@suse.de
+
+- ensure to use the correct version of gpg2
+
+-------------------------------------------------------------------
+Thu Feb 18 11:43:09 UTC 2010 - adrian@suse.de
+
+- package files with correct default permissions
+  (/usr/bin/sign is 4750 now => request to security team in #580857)
+
+-------------------------------------------------------------------
+Fri Dec 11 07:55:03 UTC 2009 - adrian@suse.de
+
+- initial own package, calling it version 1.7.0
+  (needed for obs-server 1.7)
+

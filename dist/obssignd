@@ -9,7 +9,7 @@
 ### BEGIN INIT INFO
 # Provides:       signd
 # Required-Start: $network $named $syslog $time
-# Should-Start:   $null $remote_fs
+# Should-Start:   $null $remote_fs obsstoragesetup
 # Required-Stop:  $null
 # Should-Stop:    $null
 # Default-Start:  3 5
@@ -18,7 +18,11 @@
 ### END INIT INFO
 
 # check for sysconfig file
-#[ -f /etc/sysconfig/signd ] && . /etc/sysconfig/signd ;
+[ -f /etc/sysconfig/signd ] && . /etc/sysconfig/signd
+
+[ -z "$OBS_SIGND_GNUPG_HOME" -a -d "/obs/gnupg" ] && OBS_SIGND_GNUPG_HOME="/obs/gnupg"
+[ -z "$OBS_SIGND_GNUPG_HOME" -a -d "/srv/obs/gnupg" ] && OBS_SIGND_GNUPG_HOME="/srv/obs/gnupg"
+export GNUPGHOME="$OBS_SIGND_GNUPG_HOME"
 
 PATH=/bin:/usr/bin:/usr/sbin
 SN_BIN="/usr/sbin/signd"
