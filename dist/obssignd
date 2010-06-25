@@ -65,7 +65,7 @@ case "$1" in
 	## Start daemon with startproc(8). If this fails
 	## the echo return value is set appropriate.
 	#nice -19 ${SN_BIN} ${SN_OPTS}
-	/sbin/startproc -p ${PID} ${SN_BIN} ${SN_OPTS}
+	/sbin/startproc -l /dev/null -p ${PID} ${SN_BIN} ${SN_OPTS}
 
 	# remember status and be verbose
 	rc_status -v
