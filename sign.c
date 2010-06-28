@@ -634,7 +634,7 @@ static void byteReverse(unsigned char *buf, unsigned longs)
 {
     u32 t;
     do {
-        t = (u32) ((unsigned) buf[3] << 8 | buf[2]) << 16 |
+        t = ((unsigned) buf[3] << 8 | buf[2]) << 16 |
             ((unsigned) buf[1] << 8 | buf[0]);
         *(u32 *) buf = t;
         buf += 4;
@@ -661,7 +661,7 @@ static void md5_write(struct MD5Context *ctx, byte const *buf, u32 len)
     u32 t;
 
     t = ctx->bits[0];
-    if ((ctx->bits[0] = t + ((u32) len << 3)) < t)
+    if ((ctx->bits[0] = t + (len << 3)) < t)
         ctx->bits[1]++;         /* Carry from low to high */
     ctx->bits[1] += len >> 29;
 
@@ -953,7 +953,7 @@ static int opensocket(void)
 	      printf("%s: unknown host\n", host);
 	      exit(1);
 	    }
-	  memmove((char *)&svt.sin_addr, (char *)hp->h_addr, hp->h_length);
+	  memmove(&svt.sin_addr, hp->h_addr, hp->h_length);
 	  svt.sin_family = hp->h_addrtype;
 	}
       svt.sin_port = htons(port);
@@ -968,7 +968,7 @@ static int opensocket(void)
     seteuid(0);
   for (;;)
     {
-      if (!bindresvport(sock, (struct sockaddr_in *)0))
+      if (!bindresvport(sock, NULL))
 	break;
       if (errno != EADDRINUSE)
 	{
@@ -1506,13 +1506,13 @@ sign(char *filename, int isfilter, int mode)
 	sprintf(outfilename, "%s.sIgN%d", filename, getpid());
     }
   if (!timearg || mode == MODE_KEYID || mode == MODE_PUBKEY)
-    signtime = (u32)time((time_t)0);
+    signtime = time(NULL);
   else if (*timearg >= '0' && *timearg <= '9')
-    signtime = (u32)atoi(timearg);
+    signtime = strtoul(timearg, NULL, 0);
   else if (mode == MODE_RPMSIGN && !strcmp(timearg, "buildtime"))
     {
       getbuildtime = 1;
-      signtime = (u32)0;		/* rpmsign && buildtime */
+      signtime = 0;		/* rpmsign && buildtime */
     }
   else
     {
@@ -1527,7 +1527,7 @@ sign(char *filename, int isfilter, int mode)
 	  fprintf(stderr, "cannot use mtime on pipes\n");
 	  exit(1);
 	}
-      signtime = (u32) stb.st_mtime;
+      signtime = stb.st_mtime;
     }
 
   if (mode == MODE_RPMSIGN)
@@ -1611,13 +1611,13 @@ sign(char *filename, int isfilter, int mode)
       int nl = 0;
       int first = 1;
 
-      if ((cbuf = malloc(8192)) == 0)
+      if ((cbuf = malloc(8192)) == NULL)
 	{
 	  fprintf(stderr, "no mem for clearsign buffer\n");
 	  exit(1);
 	}
       cbufl = 8192;
-      l = read(fd, (char *)cbuf, cbufl);
+      l = read(fd, cbuf, cbufl);
       if (l < 0)
 	{
 	  perror("read");
@@ -1654,7 +1654,7 @@ sign(char *filename, int isfilter, int mode)
 	}
       foutfd = fileno(fout);
       fprintf(fout, "-----BEGIN PGP SIGNED MESSAGE-----\nHash: %s\n\n", hashname[hashalgo]);
-      while (first || (l = read(fd, (char *)cbuf + have, cbufl - have)) > 0 || (l == 0 && have))
+      while (first || (l = read(fd, cbuf + have, cbufl - have)) > 0 || (l == 0 && have))
 	{
 	  first = 0;
 	  if (nl)
@@ -1727,7 +1727,7 @@ sign(char *filename, int isfilter, int mode)
 	}
       lensig = 0;
       lenhdr = 0;
-      while ((l = read(fd, (char *)buf, sizeof(buf))) > 0)
+      while ((l = read(fd, buf, sizeof(buf))) > 0)
 	{
 	  if (!lensig && mode == MODE_RPMSIGN)
 	    {
@@ -1809,7 +1809,7 @@ sign(char *filename, int isfilter, int mode)
 	  exit(1);
 	}
       if (getbuildtime)
-	signtime = (u32)(btbuf[0] << 24 | btbuf[1] << 16 | btbuf[2] << 8 | btbuf[3]);
+	signtime = btbuf[0] << 24 | btbuf[1] << 16 | btbuf[2] << 8 | btbuf[3];
     }
 
   if (verbose && mode != MODE_KEYID && mode != MODE_PUBKEY)
@@ -1858,7 +1858,7 @@ sign(char *filename, int isfilter, int mode)
       if (hashalgo != HASH_SHA1)
 	{
 	  strcpy((char *)bp, hashname[hashalgo]);
-	  bp += strlen((char *)bp);
+	  bp += strlen((const char *)bp);
 	  *bp++ = ':';
 	}
       if (mode == MODE_PUBKEY)
@@ -1945,19 +1945,19 @@ sign(char *filename, int isfilter, int mode)
         readprivkey();
       bp = hashhex;
       for (i = 0; i < hashlen[hashalgo]; i++, bp += 2)
-	sprintf((char *)bp, "%02x", p[i]);
+	sprintf(bp, "%02x", p[i]);
       *bp++ = '@';
       for (i = 0; i < 5; i++, bp += 2)
-	sprintf((char *)bp, "%02x", hash[i]);
+	sprintf(bp, "%02x", hash[i]);
       *bp = 0;
       if (ph)
 	{
 	  bp = hashhexh;
 	  for (i = 0; i < hashlen[hashalgo]; i++, bp += 2)
-	    sprintf((char *)bp, "%02x", ph[i]);
+	    sprintf(bp, "%02x", ph[i]);
 	  *bp++ = '@';
 	  for (i = 0; i < 5; i++, bp += 2)
-	    sprintf((char *)bp, "%02x", hash[i]);
+	    sprintf(bp, "%02x", hash[i]);
 	  *bp = 0;
 	}
       args[0] = privkey ? "privsign" : "sign";
@@ -2062,8 +2062,8 @@ sign(char *filename, int isfilter, int mode)
   if (mode == MODE_CLEARSIGN || mode == MODE_DETACHEDSIGN)
     {
       fprintf(fout, "-----BEGIN PGP SIGNATURE-----\nVersion: GnuPG v1.0.7 (GNU/Linux)\n\n");
-      printr64(fout, (byte *)buf + 6, outl);
-      crc = crc24((byte *)(buf) + 6, outl);
+      printr64(fout, buf + 6, outl);
+      crc = crc24(buf + 6, outl);
       hash[0] = crc >> 16;
       hash[1] = crc >> 8;
       hash[2] = crc;
@@ -2111,7 +2111,7 @@ sign(char *filename, int isfilter, int mode)
       xwrite(foutfd, rpmsig, rpmsigsize);
       md5_init(&md5ctx);
       lensig = 0;
-      while ((l = read(fd, (char *)buf, sizeof(buf))) > 0)
+      while ((l = read(fd, buf, sizeof(buf))) > 0)
 	{
 	  md5_write(&md5ctx, buf, l);
 	  xwrite(foutfd, buf, l);
