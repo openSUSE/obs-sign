@@ -33,7 +33,12 @@ int port = MYPORT;
 #define RPMSIGTAG_MD5  1004
 #define RPMSIGTAG_GPG  1005
 
-#undef BIG_ENDIAN_HOST
+#include <endian.h>
+#if __BYTE_ORDER == __LITTLE_ENDIAN
+#	undef BIG_ENDIAN_HOST
+#else
+#	define BIG_ENDIAN_HOST 1
+#endif
 
 
 /* sha1.c - SHA1 hash function
