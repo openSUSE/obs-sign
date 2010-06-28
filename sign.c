@@ -144,7 +144,7 @@ sha1_init( SHA1_CONTEXT *hd )
  * Transform the message X which consists of 16 32-bit-words
  */
 static void
-sha1_transform( SHA1_CONTEXT *hd, byte *data )
+sha1_transform( SHA1_CONTEXT *hd, const byte *data )
 {
     u32 a,b,c,d,e,tm;
     u32 x[16];
@@ -285,7 +285,7 @@ sha1_transform( SHA1_CONTEXT *hd, byte *data )
  * of INBUF with length INLEN.
  */
 static void
-sha1_write( SHA1_CONTEXT *hd, byte *inbuf, size_t inlen)
+sha1_write( SHA1_CONTEXT *hd, const byte *inbuf, size_t inlen)
 {
     if( hd->count == 64 ) { /* flush the buffer */
 	sha1_transform( hd, hd->buf );
@@ -420,7 +420,7 @@ sha256_init( SHA256_CONTEXT *hd )
  * Transform the message w which consists of 16 32-bit words
  */
 static void
-sha256_transform( SHA256_CONTEXT *hd, byte *data )
+sha256_transform( SHA256_CONTEXT *hd, const byte *data )
 {
   u32 a,b,c,d,e,f,g,h;
   u32 w[64];
@@ -511,7 +511,7 @@ sha256_transform( SHA256_CONTEXT *hd, byte *data )
  * of INBUF with length INLEN.
  */
 static void
-sha256_write( SHA256_CONTEXT *hd, byte *inbuf, size_t inlen)
+sha256_write( SHA256_CONTEXT *hd, const byte *inbuf, size_t inlen)
 {
     if( hd->count == 64 ) { /* flush the buffer */
         sha256_transform( hd, hd->buf );
@@ -856,7 +856,7 @@ static void rpmMD5Transform(u32 buf[4], u32 const in[16])
 
 
 static u32
-crc24(byte *octets, int len)
+crc24(const byte *octets, int len)
 {
   u32 crc = CRCINIT;
   int i;
@@ -873,10 +873,10 @@ crc24(byte *octets, int len)
 }
 
 static void
-printr64(FILE *f, byte *str, int len)
+printr64(FILE *f, const byte *str, int len)
 {
   int a, b, c, i;
-  static byte bintoasc[64] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  static const byte bintoasc[64] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
   i = 0;
   while (len > 0)
@@ -914,7 +914,7 @@ static ssize_t xread(int fd, void *buf, size_t count)
   return r2;
 }
 
-static ssize_t xwrite(int fd, void *buf, size_t count)
+static ssize_t xwrite(int fd, const void *buf, size_t count)
 {
   ssize_t r, r2;
   r2 = 0;
@@ -998,12 +998,12 @@ static int verbose;
 #define HASH_SHA1	0
 #define HASH_SHA256	1
 
-static char *hashname[] = {"SHA1", "SHA256"};
-static int  hashlen[] = {20, 32};
-static int  hashtag[] = { RPMSIGTAG_GPG, RPMSIGTAG_PGP };
-static int  hashtagh[] = { RPMSIGTAG_DSA, RPMSIGTAG_RSA };
+static const char *const hashname[] = {"SHA1", "SHA256"};
+static const int  hashlen[] = {20, 32};
+static const int  hashtag[] = { RPMSIGTAG_GPG, RPMSIGTAG_PGP };
+static const int  hashtagh[] = { RPMSIGTAG_DSA, RPMSIGTAG_RSA };
 static int hashalgo = HASH_SHA1;
-static char *timearg;
+static const char *timearg;
 static char *privkey;
 static int noheaderonly;
 
@@ -1020,7 +1020,7 @@ static void hash_init(HASH_CONTEXT *c)
     sha256_init(&c->sha256);
 }
 
-static void hash_write(HASH_CONTEXT *c, unsigned char *b, size_t l)
+static void hash_write(HASH_CONTEXT *c, const unsigned char *b, size_t l)
 {
   if (hashalgo == HASH_SHA1)
     sha1_write(&c->sha1, b, l);
@@ -1053,7 +1053,8 @@ static unsigned char *hash_read(HASH_CONTEXT *c)
 #define MODE_PUBKEY       5
 #define MODE_KEYGEN       6
 
-static char *modes[] = {"?", "rpm sign", "clear sign", "detached sign"};
+static const char *const modes[] =
+	{"?", "rpm sign", "clear sign", "detached sign"};
 
 static void
 readprivkey(void)
@@ -1087,7 +1088,7 @@ readprivkey(void)
 }
 
 static int
-doreq(int sock, int argc, char **argv, byte *buf, int bufl, int nret)
+doreq(int sock, int argc, const char **argv, byte *buf, int bufl, int nret)
 {
   byte *bp;
   int i, l, v, outl, errl;
@@ -1187,13 +1188,13 @@ doreq(int sock, int argc, char **argv, byte *buf, int bufl, int nret)
 }
 
 static inline int
-getu8(byte *p)
+getu8(const byte *p)
 {
   return p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3];
 }
 
 static inline int
-getu8c(byte *p)
+getu8c(const byte *p)
 {
   if (p[0])
     {
@@ -1658,7 +1659,7 @@ sign(char *filename, int isfilter, int mode)
 	{
 	  first = 0;
 	  if (nl)
-	    hash_write(&ctx, (unsigned char *)"\r\n",  2);
+	    hash_write(&ctx, (const unsigned char *)"\r\n",  2);
           nl = 0;
 	  l += have;
 	  for (i = 0; i < l; i++)
@@ -1931,7 +1932,8 @@ sign(char *filename, int isfilter, int mode)
     }
   else
     {
-      char *args[5], *bp;
+      const char *args[5];
+      char *bp;
       char hashhex[1024];
       char hashhexh[1024];
       int argc;
@@ -2151,9 +2153,10 @@ sign(char *filename, int isfilter, int mode)
 }
 
 static void
-keygen(char *type, char *expire, char *name, char *email)
+keygen(const char *type, const char *expire, const char *name,
+       const char *email)
 {
-  char *args[6];
+  const char *args[6];
   byte buf[8192];
   int l, publ, privl;
   int sock = opensocket();
