@@ -19,10 +19,10 @@
 
 #define MYPORT 5167
 
-char *host;
-char *user;
-char *algouser;
-int port = MYPORT;
+static char *host;
+static char *user;
+static char *algouser;
+static int port = MYPORT;
 
 #define HEADER_SIGNATURES 62
 #define RPMSIGTAG_DSA   267		/* header only sig */
@@ -127,7 +127,7 @@ burn_stack (int bytes)
 }
 
 
-void
+static void
 sha1_init( SHA1_CONTEXT *hd )
 {
     hd->h0 = 0x67452301;
@@ -400,7 +400,7 @@ typedef struct {
     int  count;
 } SHA256_CONTEXT;
 
-void
+static void
 sha256_init( SHA256_CONTEXT *hd )
 {
     hd->h0 = 0x6a09e667;
@@ -855,7 +855,7 @@ static void rpmMD5Transform(u32 buf[4], u32 const in[16])
 #define CRCPOLY 0x864cfb
 
 
-u32
+static u32
 crc24(byte *octets, int len)
 {
   u32 crc = CRCINIT;
@@ -872,7 +872,7 @@ crc24(byte *octets, int len)
   return crc & 0xffffff;
 }
 
-void
+static void
 printr64(FILE *f, byte *str, int len)
 {
   int a, b, c, i;
@@ -898,7 +898,7 @@ printr64(FILE *f, byte *str, int len)
     putc('\n', f);
 }
 
-ssize_t xread(int fd, void *buf, size_t count)
+static ssize_t xread(int fd, void *buf, size_t count)
 {
   ssize_t r, r2;
   r2 = 0;
@@ -914,7 +914,7 @@ ssize_t xread(int fd, void *buf, size_t count)
   return r2;
 }
 
-ssize_t xwrite(int fd, void *buf, size_t count)
+static ssize_t xwrite(int fd, void *buf, size_t count)
 {
   ssize_t r, r2;
   r2 = 0;
@@ -933,9 +933,9 @@ ssize_t xwrite(int fd, void *buf, size_t count)
   return r2;
 }
 
-uid_t uid;
+static uid_t uid;
 
-int opensocket()
+static int opensocket(void)
 {
   static int hostknown;
   static struct sockaddr_in svt;
@@ -993,26 +993,26 @@ int opensocket()
   return sock;
 }
 
-int verbose;
+static int verbose;
 
 #define HASH_SHA1	0
 #define HASH_SHA256	1
 
-char *hashname[] = {"SHA1", "SHA256"};
-int  hashlen[] = {20, 32};
-int  hashtag[] = { RPMSIGTAG_GPG, RPMSIGTAG_PGP };
-int  hashtagh[] = { RPMSIGTAG_DSA, RPMSIGTAG_RSA };
-int hashalgo = HASH_SHA1;
-char *timearg;
-char *privkey;
-int noheaderonly;
+static char *hashname[] = {"SHA1", "SHA256"};
+static int  hashlen[] = {20, 32};
+static int  hashtag[] = { RPMSIGTAG_GPG, RPMSIGTAG_PGP };
+static int  hashtagh[] = { RPMSIGTAG_DSA, RPMSIGTAG_RSA };
+static int hashalgo = HASH_SHA1;
+static char *timearg;
+static char *privkey;
+static int noheaderonly;
 
 typedef union {
   SHA1_CONTEXT sha1;
   SHA256_CONTEXT sha256;
 } HASH_CONTEXT;
 
-void hash_init(HASH_CONTEXT *c)
+static void hash_init(HASH_CONTEXT *c)
 {
   if (hashalgo == HASH_SHA1)
     sha1_init(&c->sha1);
@@ -1020,7 +1020,7 @@ void hash_init(HASH_CONTEXT *c)
     sha256_init(&c->sha256);
 }
 
-void hash_write(HASH_CONTEXT *c, unsigned char *b, size_t l)
+static void hash_write(HASH_CONTEXT *c, unsigned char *b, size_t l)
 {
   if (hashalgo == HASH_SHA1)
     sha1_write(&c->sha1, b, l);
@@ -1028,7 +1028,7 @@ void hash_write(HASH_CONTEXT *c, unsigned char *b, size_t l)
     sha256_write(&c->sha256, b, l);
 }
 
-void hash_final(HASH_CONTEXT *c)
+static void hash_final(HASH_CONTEXT *c)
 {
   if (hashalgo == HASH_SHA1)
     sha1_final(&c->sha1);
@@ -1036,7 +1036,7 @@ void hash_final(HASH_CONTEXT *c)
     sha256_final(&c->sha256);
 }
 
-unsigned char *hash_read(HASH_CONTEXT *c)
+static unsigned char *hash_read(HASH_CONTEXT *c)
 {
   if (hashalgo == HASH_SHA1)
     return sha1_read(&c->sha1);
@@ -1053,10 +1053,10 @@ unsigned char *hash_read(HASH_CONTEXT *c)
 #define MODE_PUBKEY       5
 #define MODE_KEYGEN       6
 
-char *modes[] = {"?", "rpm sign", "clear sign", "detached sign"};
+static char *modes[] = {"?", "rpm sign", "clear sign", "detached sign"};
 
-void
-readprivkey()
+static void
+readprivkey(void)
 {
   FILE *fp;
   int l, ll;
@@ -1086,7 +1086,7 @@ readprivkey()
   privkey[l] = 0;
 }
 
-int
+static int
 doreq(int sock, int argc, char **argv, byte *buf, int bufl, int nret)
 {
   byte *bp;
@@ -1203,7 +1203,7 @@ getu8c(byte *p)
   return p[1] << 16 | p[2] << 8 | p[3];
 }
 
-byte *
+static byte *
 findmax(byte *rpmsig, int rpmsigcnt, int targetoff)
 {
   int i;
@@ -1224,7 +1224,7 @@ findmax(byte *rpmsig, int rpmsigcnt, int targetoff)
   return maxrsp;
 }
 
-int
+static int
 datalen(byte *rpmsig, int rpmsigcnt, byte *rsp)
 {
   int type, cnt;
@@ -1254,7 +1254,7 @@ datalen(byte *rpmsig, int rpmsigcnt, byte *rsp)
   return cnt;
 }
 
-int
+static int
 rpminsertsig(byte *rpmsig, int *rpmsigsizep, int *rpmsigcntp, int *rpmsigdlenp, int sigtag, byte *newsig, int newsiglen)
 {
   int rpmsigsize, rpmsigcnt, rpmsigdlen;
@@ -1434,7 +1434,7 @@ rpminsertsig(byte *rpmsig, int *rpmsigsizep, int *rpmsigcntp, int *rpmsigdlenp, 
   return 0;
 }
 
-int
+static int
 sign(char *filename, int isfilter, int mode)
 {
   u32 signtime;
@@ -2150,7 +2150,7 @@ sign(char *filename, int isfilter, int mode)
   return 0;
 }
 
-void
+static void
 keygen(char *type, char *expire, char *name, char *email)
 {
   char *args[6];
