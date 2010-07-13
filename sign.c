@@ -2513,7 +2513,8 @@ keyextend(char *expire, char *pubkey)
   HASH_CONTEXT dig;
   unsigned char *digp;
 
-  char *args[5], *bp;
+  const char *args[5];
+  char *bp;
   char hashhex[1024];
   int argc;
   int sock = -1;
