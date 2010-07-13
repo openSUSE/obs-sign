@@ -119,7 +119,7 @@ static void
 burn_stack (int bytes)
 {
     char buf[128];
-    
+
     memset (buf, 0, sizeof buf);
     bytes -= sizeof buf;
     if (bytes > 0)
@@ -2655,7 +2655,7 @@ keyextend(char *expire, char *pubkey)
   b[4] = useridl;
   hash_write(&dig, b, 5);
   hash_write(&dig, userid, useridl);
-  
+
   hl = 4 + 2 + ((pp[4] << 8) | pp[5]);
   issuer = finddate(pp + 4, pl - 4, 16);
   if (!issuer)
