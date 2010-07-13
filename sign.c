@@ -878,7 +878,7 @@ printr64(FILE *f, const byte *str, int len)
   int a, b, c, i;
   static const byte bintoasc[64] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-  i = 0;
+  i = -1;
   while (len > 0)
     {
       if (++i == 16)
@@ -1052,6 +1052,7 @@ static unsigned char *hash_read(HASH_CONTEXT *c)
 #define MODE_KEYID        4
 #define MODE_PUBKEY       5
 #define MODE_KEYGEN       6
+#define MODE_KEYEXTEND    7
 
 static const char *const modes[] =
 	{"?", "rpm sign", "clear sign", "detached sign"};
@@ -1259,7 +1260,7 @@ static int
 rpminsertsig(byte *rpmsig, int *rpmsigsizep, int *rpmsigcntp, int *rpmsigdlenp, int sigtag, byte *newsig, int newsiglen)
 {
   int rpmsigsize, rpmsigcnt, rpmsigdlen;
-  int i, myi, tag, off, type;
+  int i, myi, tag, off;
   byte *rsp;
   u32 before;
   int pad;
@@ -2227,6 +2228,543 @@ keygen(const char *type, const char *expire, const char *name,
   exit(0);
 }
 
+static char *
+r64dec1(char *p, unsigned int *vp, int *eofp)
+{
+  int i, x;
+  unsigned int v = 0;
+
+  for (i = 0; i < 4; )
+    {
+      x = *p++;
+      if (!x)
+        return 0;
+      if (x >= 'A' && x <= 'Z')
+        x -= 'A';
+      else if (x >= 'a' && x <= 'z')
+        x -= 'a' - 26;
+      else if (x >= '0' && x <= '9')
+        x -= '0' - 52;
+      else if (x == '+')
+        x = 62;
+      else if (x == '/')
+        x = 63;
+      else if (x == '=')
+        {
+          x = 0;
+          if (i == 0)
+            {
+              *eofp = 3;
+              *vp = 0;
+              return p - 1;
+            }
+          *eofp += 1;
+        }
+      else
+        continue;
+      v = v << 6 | x;
+      i++;
+    }
+  *vp = v;
+  return p;
+}
+
+static unsigned char *
+unarmor(char *pubkey, int *pktlp)
+{
+  char *p;
+  int l, eof;
+  unsigned char *buf, *bp;
+  unsigned int v;
+
+  *pktlp = 0;
+  while (strncmp(pubkey, "-----BEGIN PGP PUBLIC KEY BLOCK-----", 36) != 0)
+    {
+      pubkey = strchr(pubkey, '\n');
+      if (!pubkey)
+        return 0;
+      pubkey++;
+    }
+  pubkey = strchr(pubkey, '\n');
+  if (!pubkey++)
+    return 0;
+  /* skip header lines */
+  for (;;)
+    {
+      while (*pubkey == ' ' || *pubkey == '\t')
+        pubkey++;
+      if (*pubkey == '\n')
+        break;
+      pubkey = strchr(pubkey, '\n');
+      if (!pubkey++)
+        return 0;
+    }
+  pubkey++;
+  p = strchr(pubkey, '=');
+  if (!p)
+    return 0;
+  l = p - pubkey;
+  bp = buf = malloc(l * 3 / 4 + 4 + 16);
+  eof = 0;
+  while (!eof)
+    {
+      pubkey = r64dec1(pubkey, &v, &eof);
+      if (!pubkey)
+        {
+          free(buf);
+          return 0;
+        }
+      *bp++ = v >> 16;
+      *bp++ = v >> 8;
+      *bp++ = v;
+    }
+  while (*pubkey == ' ' || *pubkey == '\t' || *pubkey == '\n' || *pubkey == '\r')
+    pubkey++;
+  bp -= eof;
+  if (*pubkey != '=' || (pubkey = r64dec1(pubkey + 1, &v, &eof)) == 0)
+    {
+      free(buf);
+      return 0;
+    }
+  if (v != crc24(buf, bp - buf))
+    {
+      free(buf);
+      return 0;
+    }
+  while (*pubkey == ' ' || *pubkey == '\t' || *pubkey == '\n' || *pubkey == '\r')
+    pubkey++;
+  if (strncmp(pubkey, "-----END PGP PUBLIC KEY BLOCK-----", 34) != 0)
+    {
+      free(buf);
+      return 0;
+    }
+  *pktlp = bp - buf;
+  return buf;
+}
+
+static unsigned char *
+nextpkg(int *tagp, int *pkgl, unsigned char **pp, int *ppl)
+{
+  int x, l;
+  unsigned char *p = *pp;
+  int pl = *ppl;
+  int tag;
+
+  *tagp = 0;
+  if (!pl)
+    return 0;
+  x = *p++;
+  pl--;
+  if (!(x & 128) || pl <= 0)
+    return 0;
+  if ((x & 64) == 0)
+    {
+      /* old format */
+      tag = (x & 0x3c) >> 2;
+      x &= 3;
+      if (x == 3)
+	return 0;
+      l = 1 << x;
+      if (pl < l)
+	return 0;
+      x = 0;
+      while (l--)
+	{
+	  x = x << 8 | *p++;
+	  pl--;
+	}
+      l = x;
+    }
+  else
+    {
+      tag = (x & 0x3f);
+      x = *p++;
+      pl--;
+      if (x < 192)
+	l = x;
+      else if (x >= 192 && x < 224)
+	{
+	  if (pl <= 0)
+	    return 0;
+	  l = ((x - 192) << 8) + *p++ + 192;
+	  pl--;
+	}
+      else if (x == 255)
+	{
+	  if (pl <= 4)
+	    return 0;
+	  l = p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3];
+	  p += 4;
+	  pl -= 4;
+	}
+      else
+	return 0;
+    }
+  if (pl < l)
+    return 0;
+  *pp = p + l;
+  *ppl = pl - l;
+  *pkgl = l;
+  *tagp = tag;
+  return p;
+}
+
+static unsigned char *
+finddate(unsigned char *q, int l, int type)
+{
+  int x;
+  int ql = q[0] << 8 | q[1];
+  q += 2;
+  if (ql + 2 > l)
+    return 0;
+  while (ql)
+    {
+      int sl;
+      x = *q++;
+      ql--;
+      if (x < 192)
+	sl = x;
+      else if (x == 255)
+	{
+	  if (ql < 4)
+	    return 0;
+	  sl = q[0] << 24 | q[1] << 16 | q[2] << 8 | q[3];
+	  q += 4;
+	  ql -= 4;
+	}
+      else
+	{
+	  if (ql < 1)
+	    return 0;
+	  sl = ((x - 192) << 8) + *q++ + 192;
+	  ql--;
+	}
+      if (ql < sl)
+	return 0;
+      x = q[0] & 127;
+      if (x == type)
+	return q + 1;
+      q += sl;
+      ql -= sl;
+    }
+  return 0;
+}
+
+static unsigned char *
+addpkg(unsigned char *to, unsigned char *p, int l, int tag, int newformat)
+{
+  /* we know that l < 8192 */
+  if (!newformat)
+    {
+      if (l < 256)
+	{
+	  *to++ = 128 | tag << 2;
+	  *to++ = l;
+	}
+      else
+	{
+	  *to++ = 128 | tag << 2 | 1;
+	  *to++ = l >> 8;
+	  *to++ = l;
+	}
+    }
+  else
+    {
+      *to++ = 128 | 64 | tag;
+      if (l < 192)
+	*to++ = l;
+      else
+	{
+	  *to++ = ((l - 192) >> 8) + 192;
+	  *to++ = (l - 192);
+	}
+    }
+  memmove(to, p, l);
+  return to + l;
+}
+
+
+
+void
+keyextend(char *expire, char *pubkey)
+{
+  FILE *fp;
+  char buf[8192];
+  unsigned char rbuf[8192];
+  unsigned char *pubk, *p, *pp;
+  int i, l, ll, pubkl, tag, pl;
+  unsigned char b[6];
+  unsigned char *newpubk, *selfsigpkg;
+  unsigned char *issuer;
+
+  unsigned char *pk;
+  int pkl;
+  unsigned char *userid;
+  int useridl;
+
+  int hl;
+  unsigned char *ex;
+  time_t now;
+  int expdays;
+
+  SHA1_CONTEXT fingerprint;
+  unsigned char *fingerprintp;
+
+  HASH_CONTEXT dig;
+  unsigned char *digp;
+
+  char *args[5], *bp;
+  char hashhex[1024];
+  int argc;
+  int sock = -1;
+  unsigned char *rsig, *rsigp;
+  int rsigl, rl;
+
+  u32 crc;
+
+  if (uid && !privkey)
+    {
+      fprintf(stderr, "need -P option for non-root operation\n");
+      exit(1);
+    }
+  expdays = atoi(expire);
+  if (expdays <= 0 || expdays >= 10000)
+    {
+      fprintf(stderr, "bad expire argument\n");
+      exit(1);
+    }
+  if ((fp = fopen(pubkey, "r")) == 0)
+    {
+      perror(pubkey);
+      exit(1);
+    }
+  l = 0;
+  while (l < 8192 && (ll = fread(buf + l, 1, 8192 - l, fp)) > 0)
+    l += ll;
+  fclose(fp);
+  if (l == 8192)
+    {
+      fprintf(stderr, "pubkey too big\n");
+      exit(1);
+    }
+  pubk = unarmor(buf, &pubkl);
+  if (!pubk)
+    {
+      fprintf(stderr, "could not parse pubkey armor\n");
+      exit(1);
+    }
+  p = pubk;
+  l = pubkl;
+
+  pp = nextpkg(&tag, &pl, &p, &l);
+  if (tag != 6)
+    {
+      fprintf(stderr, "pubkey does not start with a pubkey paket\n");
+      exit(1);
+    }
+  if (*pp != 4)
+    {
+      fprintf(stderr, "pubkey is not type 4\n");
+      exit(1);
+    }
+  pk = pp;
+  pkl = pl;
+  sha1_init(&fingerprint);
+  b[0] = 0x99;
+  b[1] = pkl >> 8;
+  b[2] = pkl;
+  sha1_write(&fingerprint, b, 3);
+  sha1_write(&fingerprint, pk, pkl);
+  sha1_final(&fingerprint);
+  fingerprintp = sha1_read(&fingerprint);
+
+  pp = nextpkg(&tag, &pl, &p, &l);
+  if (tag != 13)
+    {
+      fprintf(stderr, "missing userid\n");
+      exit(1);
+    }
+  userid = pp;
+  useridl = pl;
+
+  selfsigpkg = p;
+  pp = nextpkg(&tag, &pl, &p, &l);
+  if (tag != 2)
+    {
+      fprintf(stderr, "missing self-sig\n");
+      exit(1);
+    }
+  if (pp[0] != 4)
+    {
+      fprintf(stderr, "self-sig is not type 4\n");
+      exit(1);
+    }
+  if (pp[1] != 0x13)
+    {
+      fprintf(stderr, "self-sig is not class 0x13\n");
+      exit(1);
+    }
+  if (hashalgo == HASH_SHA1 && pp[3] != 2)
+    {
+      fprintf(stderr, "self-sig is not made with sha1\n");
+      exit(1);
+    }
+  if (hashalgo == HASH_SHA256 && pp[3] != 8)
+    {
+      fprintf(stderr, "self-sig is not made with sha256\n");
+      exit(1);
+    }
+  if (pl < 6)
+    {
+      fprintf(stderr, "self-sig is too short\n");
+      exit(1);
+    }
+  ex = finddate(pp + 4, pl - 4, 2);
+  if (!ex)
+    {
+      fprintf(stderr, "self-sig has no creation time\n");
+      exit(1);
+    }
+  now = (u32)time((time_t)0);
+  ex[0] = now >> 24;
+  ex[1] = now >> 16;
+  ex[2] = now >> 8;
+  ex[3] = now;
+  ex = finddate(pp + 4, pl - 4, 9);
+  if (!ex)
+    {
+      fprintf(stderr, "self-sig does not expire\n");
+      exit(1);
+    }
+  now = expdays * 24 * 3600;
+  ex[0] = now >> 24;
+  ex[1] = now >> 16;
+  ex[2] = now >> 8;
+  ex[3] = now;
+  /* now create new digest */
+  hash_init(&dig);
+  b[0] = 0x99;
+  b[1] = pkl >> 8;
+  b[2] = pkl;
+  hash_write(&dig, b, 3);
+  hash_write(&dig, pk, pkl);
+  b[0] = 0xb4;
+  b[1] = useridl >> 24;
+  b[2] = useridl >> 16;
+  b[3] = useridl >> 8;
+  b[4] = useridl;
+  hash_write(&dig, b, 5);
+  hash_write(&dig, userid, useridl);
+  
+  hl = 4 + 2 + ((pp[4] << 8) | pp[5]);
+  issuer = finddate(pp + 4, pl - 4, 16);
+  if (!issuer)
+    issuer = finddate(pp + hl, pl - hl, 16);
+  if (hl > pl)
+    {
+      fprintf(stderr, "self-sig has bad hashed-length\n");
+      exit(1);
+    }
+  hash_write(&dig, pp, hl);
+  b[0] = 4;
+  b[1] = 0xff;
+  b[2] = hl >> 24;
+  b[3] = hl >> 16;
+  b[4] = hl >> 8;
+  b[5] = hl;
+  hash_write(&dig, b, 6);
+  hash_final(&dig);
+  digp = hash_read(&dig);
+
+  hl += 2 + (pp[hl] << 8 | pp[hl + 1]);
+  if (hl > pl)
+    {
+      fprintf(stderr, "self-sig has bad length\n");
+      exit(1);
+    }
+
+  now = (u32)time((time_t)0);
+  b[0] = 0;
+  b[1] = now >> 24;
+  b[2] = now >> 16;
+  b[3] = now >> 8;
+  b[4] = now;
+
+  if (privkey)
+    readprivkey();
+  bp = hashhex;
+  for (i = 0; i < hashlen[hashalgo]; i++, bp += 2)
+    sprintf((char *)bp, "%02x", digp[i]);
+  *bp++ = '@';
+  for (i = 0; i < 5; i++, bp += 2)
+    sprintf((char *)bp, "%02x", b[i]);
+  *bp = 0;
+  args[0] = privkey ? "privsign" : "sign";
+  args[1] = algouser;
+  argc = 2;
+  if (privkey)
+    args[argc++] = privkey;
+  args[argc++] = hashhex;
+  sock = opensocket();
+  rl = doreq(sock, argc, args, rbuf, sizeof(rbuf), 1);
+  close(sock);
+  sock = -1;
+  if (rl < 0)
+    exit(-rl);
+  if (rbuf[0] != 0 || rbuf[1] != 1)
+    {
+      fprintf(stderr, "bad return count\n");
+      exit(1);
+    }
+  ll = rbuf[2] << 8 | rbuf[3];
+  if (ll > rl - 2)
+    {
+      fprintf(stderr, "returned sig too small\n");
+      exit(1);
+    }
+  rsigp = rbuf + 4;
+  rsig = nextpkg(&tag, &rsigl, &rsigp, &ll);
+  if (tag != 2)
+    {
+      fprintf(stderr, "returned data is no sig\n");
+      exit(1);
+    }
+  if (*rsig != 3)
+    {
+      fprintf(stderr, "returned data is no V3 sig\n");
+      exit(1);
+    }
+  if (issuer && memcmp(issuer, rsig + 7, 4))
+    {
+      fprintf(stderr, "issuer does not match, did you forget -P?\n");
+      exit(1);
+    }
+  if (memcmp(fingerprintp + 12, rsig + 7, 8))
+    {
+      fprintf(stderr, "fingerprint does not match self sig\n");
+      exit(1);
+    }
+  newpubk = malloc(pubkl + (rsigl - 17) - (pl - hl) + 6);
+  memcpy(newpubk, pubk, selfsigpkg - pubk);
+  memcpy(newpubk + (selfsigpkg - pubk) + 4, pp, pl);
+  memcpy(newpubk + (selfsigpkg - pubk) + 4 + hl, rsig + 17, rsigl - 17);
+  pp = addpkg(newpubk + (selfsigpkg - pubk), newpubk + (selfsigpkg - pubk) + 4, pl + (rsigl - 17) - (pl - hl), 2, selfsigpkg[0] & 64);
+  if (l)
+    {
+      memcpy(pp, p, l);
+      pp += l;
+    }
+  printf("-----BEGIN PGP PUBLIC KEY BLOCK-----\nVersion: GnuPG v1.4.5 (GNU/Linux)\n\n");
+  printr64(stdout, newpubk, pp - newpubk);
+  crc = crc24((byte *)newpubk, pp - newpubk);
+  b[0] = crc >> 16;
+  b[1] = crc >> 8;
+  b[2] = crc;
+  putc('=', stdout);
+  printr64(stdout, b, 3);
+  printf("-----END PGP PUBLIC KEY BLOCK-----\n");
+}
+
 int
 main(int argc, char **argv)
 {
@@ -2419,6 +2957,12 @@ main(int argc, char **argv)
 	  argc--;
 	  argv++;
         }
+      else if (argc > 1 && !strcmp(argv[1], "-x"))
+        {
+	  mode = MODE_KEYEXTEND;
+	  argc--;
+	  argv++;
+        }
       else if (argc > 2 && !strcmp(argv[1], "-T"))
 	{
 	  timearg = argv[2];
@@ -2470,6 +3014,16 @@ main(int argc, char **argv)
 	  exit(1);
 	}
       keygen(argv[1], argv[2], argv[3], argv[4]);
+      exit(0);
+    }
+  if (mode == MODE_KEYEXTEND)
+    {
+      if (argc != 3)
+	{
+	  fprintf(stderr, "usage: sign -x <expire> <pubkey>\n");
+	  exit(1);
+	}
+      keyextend(argv[1], argv[2]);
       exit(0);
     }
   if (privkey && access(privkey, R_OK))
