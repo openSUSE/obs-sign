@@ -2499,6 +2499,7 @@ keyextend(char *expire, char *pubkey)
 
   unsigned char *pk;
   int pkl;
+  time_t pkcreat;
   unsigned char *userid;
   int useridl;
 
@@ -2568,6 +2569,7 @@ keyextend(char *expire, char *pubkey)
       fprintf(stderr, "pubkey is not type 4\n");
       exit(1);
     }
+  pkcreat = pp[1] << 24 | pp[2] << 16 | pp[3] << 8 | pp[4];
   pk = pp;
   pkl = pl;
   sha1_init(&fingerprint);
@@ -2637,7 +2639,7 @@ keyextend(char *expire, char *pubkey)
       fprintf(stderr, "self-sig does not expire\n");
       exit(1);
     }
-  now = expdays * 24 * 3600;
+  now = (now - pkcreat) + expdays * (24 * 3600);
   ex[0] = now >> 24;
   ex[1] = now >> 16;
   ex[2] = now >> 8;
