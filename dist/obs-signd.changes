@@ -1,4 +1,17 @@
 -------------------------------------------------------------------
+Tue Jul 27 08:13:18 UTC 2010 - adrian@suse.de
+
+- update to version 2.1.2
+  * obsrun group is allowed to run sign by default
+  * support of gpg key expiration date extension call
+
+-------------------------------------------------------------------
+Fri Jun 25 13:28:20 UTC 2010 - adrian@suse.de
+
+- update to version 2.0.81
+  * runlevel script fixes
+
+-------------------------------------------------------------------
 Mon Jun  7 09:41:43 UTC 2010 - adrian@suse.de
 
 - ensure to use the correct version of gpg2

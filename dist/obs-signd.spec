@@ -13,7 +13,7 @@
 Name:           obs-signd
 Summary:        The sign daemon
 
-Version:        1.9.92
+Version:        2.1.2
 
 Release:        0
 License:        GPL
@@ -75,6 +75,10 @@ FILLUP_DIR=$RPM_BUILD_ROOT/var/adm/fillup-templates
 install -d -m 755 $FILLUP_DIR
 install -m 0644 dist/sysconfig.signd $FILLUP_DIR/
 
+%pre
+/usr/sbin/groupadd -r obsrun 2> /dev/null || :
+/usr/sbin/useradd -r -o -s /bin/false -c "User for build service backend" -d /usr/lib/obs -g obsrun obsrun 2> /dev/null || :
+
 %preun
 %stop_on_removal obssignd
 
@@ -88,7 +92,7 @@ rm -rf $RPM_BUILD_ROOT
 %files
 %defattr(-,root,root)
 %config(noreplace) /etc/sign.conf
-%attr(4750,root,root) /usr/bin/sign
+%attr(4750,root,obsrun) /usr/bin/sign
 %attr(0755,root,root) /usr/sbin/signd
 %attr(0755,root,root) /usr/sbin/rcobssignd
 %attr(0755,root,root) /etc/init.d/obssignd
