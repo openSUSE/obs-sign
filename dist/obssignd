@@ -28,7 +28,7 @@ PATH=/bin:/usr/bin:/usr/sbin
 SN_BIN="/usr/sbin/signd"
 SN_OPTS=${SIGN_OPTS:="-f"}
 PID=${SIGN_PID:="/var/run/signd.pid"}
-LOG=${SIGN_LOG:="/var/log/signd.log"}
+LOG=${SIGN_LOG:="/dev/null"}
 
 # Shell functions sourced from /etc/rc.status:
 #      rc_check         check and set local and overall rc status
@@ -65,7 +65,7 @@ case "$1" in
 	## Start daemon with startproc(8). If this fails
 	## the echo return value is set appropriate.
 	#nice -19 ${SN_BIN} ${SN_OPTS}
-	/sbin/startproc -l /dev/null -p ${PID} ${SN_BIN} ${SN_OPTS}
+	/sbin/startproc -l ${LOG} -p ${PID} ${SN_BIN} ${SN_OPTS}
 
 	# remember status and be verbose
 	rc_status -v
