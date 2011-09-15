@@ -1364,12 +1364,14 @@ rpminsertsig(byte *rpmsig, int *rpmsigsizep, int *rpmsigcntp, int *rpmsigdlenp, 
       else if (type == 5)
 	align = 8;
       else
-	continue;
+	align = 1;
       off = getu8c(rsp + 8);
-      if (off % align == 0)
+      if (off == 0)
 	continue;
-      /* have to re-align, find end of last data */
+      /* find end of last data */
       lastrsp = findmax(rpmsig, rpmsigcnt, off);
+      if (!lastrsp)
+	continue;
       lastoff = getu8c(lastrsp + 8);
       lastoff += datalen(rpmsig, rpmsigcnt, lastrsp);
       if (lastoff > off)
@@ -1377,8 +1379,10 @@ rpminsertsig(byte *rpmsig, int *rpmsigsizep, int *rpmsigcntp, int *rpmsigdlenp, 
 	  fprintf(stderr, "lastoff error %d %d\n", lastoff, off);
 	  return -1;
 	}
-      if (lastoff % align)
+      if (align > 1 && (lastoff % align) != 0)
 	lastoff += align - (lastoff % align);
+      if (off == lastoff)
+	continue;
       /* now move over from off to lastoff */
       memmove(rpmsig + rpmsigcnt * 16 + lastoff, rpmsig + rpmsigcnt * 16 + off, rpmsigdlen - off);
       rpmsigdlen += lastoff - off;
