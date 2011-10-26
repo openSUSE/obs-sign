@@ -1,4 +1,7 @@
 
-# for sign daemon
+# for sign executable
 addFilter("permissions-file-setuid-bit")
+setBadness("permissions-file-setuid-bit", 0)
+addFilter("permissions-unauthorized-file")
+setBadness("permissions-unauthorized-file", 0)
 
