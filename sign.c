@@ -1006,6 +1006,8 @@ static int hashalgo = HASH_SHA1;
 static const char *timearg;
 static char *privkey;
 static int noheaderonly;
+static char *chksumfile;
+static int chksumfilefd = -1;
 
 typedef union {
   SHA1_CONTEXT sha1;
@@ -1464,6 +1466,7 @@ sign(char *filename, int isfilter, int mode)
   int rpmsigcnt = 0, rpmsigdlen = 0;
   int rpmsigsize = 0, tag;
   u32 lensig, lenhdr;
+  byte rpmleadsum[16];
   byte rpmmd5sum[16];
   byte rpmmd5sum2[16];
   byte *hdrin_md5 = 0;
@@ -1476,6 +1479,13 @@ sign(char *filename, int isfilter, int mode)
   int buildtimeoff = 0;
   byte btbuf[4];
   int gotsha1 = 0;
+  /* checksums over the complete signed rpm */
+  MD5_CTX chksum_ctx_md5;
+  SHA1_CONTEXT chksum_ctx_sha1;
+  SHA256_CONTEXT chksum_ctx_sha256;
+  byte chksum_md5[16];
+  byte chksum_sha1[20];
+  byte chksum_sha256[32];
 
   if (mode == MODE_UNSET)
     {
@@ -2116,15 +2126,53 @@ sign(char *filename, int isfilter, int mode)
       xwrite(foutfd, rpmlead, 96);
       xwrite(foutfd, rpmsighead, 16);
       xwrite(foutfd, rpmsig, rpmsigsize);
+
+      if (chksumfilefd >= 0)
+	{
+	  md5_init(&md5ctx);
+	  md5_write(&md5ctx, rpmlead, 96);
+	  md5_write(&md5ctx, rpmsighead, 16);
+	  md5_write(&md5ctx, rpmsig, rpmsigsize);
+	  md5_final(rpmleadsum, &md5ctx);
+
+	  md5_init(&chksum_ctx_md5);
+	  md5_write(&chksum_ctx_md5, rpmlead, 96);
+	  md5_write(&chksum_ctx_md5, rpmsighead, 16);
+	  md5_write(&chksum_ctx_md5, rpmsig, rpmsigsize);
+
+	  sha1_init(&chksum_ctx_sha1);
+	  sha1_write(&chksum_ctx_sha1, rpmlead, 96);
+	  sha1_write(&chksum_ctx_sha1, rpmsighead, 16);
+	  sha1_write(&chksum_ctx_sha1, rpmsig, rpmsigsize);
+
+	  sha256_init(&chksum_ctx_sha256);
+	  sha256_write(&chksum_ctx_sha256, rpmlead, 96);
+	  sha256_write(&chksum_ctx_sha256, rpmsighead, 16);
+	  sha256_write(&chksum_ctx_sha256, rpmsig, rpmsigsize);
+	}
       md5_init(&md5ctx);
       lensig = 0;
       while ((l = read(fd, buf, sizeof(buf))) > 0)
 	{
 	  md5_write(&md5ctx, buf, l);
 	  xwrite(foutfd, buf, l);
+	  if (chksumfilefd >= 0)
+	    {
+	      md5_write(&chksum_ctx_md5, buf, l);
+	      sha1_write(&chksum_ctx_sha1, buf, l);
+	      sha256_write(&chksum_ctx_sha256, buf, l);
+	    }
 	  lensig += l;
 	}
       md5_final(rpmmd5sum2, &md5ctx);
+      if (chksumfilefd >= 0)
+	{
+	  md5_final(chksum_md5, &chksum_ctx_md5);
+	  sha1_final(&chksum_ctx_sha1);
+	  memcpy(chksum_sha1, sha1_read(&chksum_ctx_sha1), 20);
+	  sha256_final(&chksum_ctx_sha256);
+	  memcpy(chksum_sha256, sha256_read(&chksum_ctx_sha256), 32);
+	}
       if (memcmp(rpmmd5sum2, rpmmd5sum, 16))
 	{
 	  fprintf(stderr, "rpm has changed, bailing out!\n");
@@ -2154,6 +2202,40 @@ sign(char *filename, int isfilter, int mode)
     }
   if (outfilename)
     free(outfilename);
+  if (mode == MODE_RPMSIGN && chksumfilefd >= 0)
+    {
+      char buf[16*2+1+16*2+1+20*2+1+32*2+1], *bp;
+      bp = buf;
+      for (i = 0; i < 16; i++)
+	{
+	  sprintf(bp, "%02x", rpmleadsum[i]);
+	  bp += 2;
+	}
+      *bp++ = ' ';
+      for (i = 0; i < 16; i++)
+	{
+	  sprintf(bp, "%02x", chksum_md5[i]);
+	  bp += 2;
+	}
+      *bp++ = ' ';
+      for (i = 0; i < 20; i++)
+	{
+	  sprintf(bp, "%02x", chksum_sha1[i]);
+	  bp += 2;
+	}
+      *bp++ = ' ';
+      for (i = 0; i < 32; i++)
+	{
+	  sprintf(bp, "%02x", chksum_sha256[i]);
+	  bp += 2;
+	}
+      *bp++ = '\n';
+      if (write(chksumfilefd, buf, bp - buf) != bp - buf)
+	{
+	  perror("chksum write");
+	  exit(1);
+	}
+    }
   return 0;
 }
 
@@ -2970,6 +3052,12 @@ main(int argc, char **argv)
 	  argc--;
 	  argv++;
         }
+      else if (argc > 2 && !strcmp(argv[1], "-S"))
+	{
+	  chksumfile = argv[2];
+	  argc -= 2;
+	  argv += 2;
+	}
       else if (argc > 2 && !strcmp(argv[1], "-T"))
 	{
 	  timearg = argv[2];
@@ -3038,6 +3126,18 @@ main(int argc, char **argv)
       perror(privkey);
       exit(1);
     }
+  if (chksumfile)
+    {
+      if (strcmp(chksumfile, "-"))
+	chksumfilefd = open(chksumfile, O_WRONLY|O_CREAT|O_APPEND, 0666);
+      else
+	chksumfilefd = 1;
+      if (chksumfilefd < 0)
+	{
+	  perror(chksumfile); 
+	  exit(1);
+	}
+    }
   if (argc == 1)
     sign("<stdin>", 1, mode);
   else while (argc > 1)
@@ -3045,6 +3145,14 @@ main(int argc, char **argv)
       sign(argv[1], 0, mode);
       argv++;
       argc--;
+    }
+  if (chksumfile && strcmp(chksumfile, "-") && chksumfilefd >= 0)
+    {
+      if (close(chksumfilefd))
+	{
+	  perror("chksum file close");
+	  exit(1);
+	}
     }
   exit(0);
 }
