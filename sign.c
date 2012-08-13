@@ -1055,6 +1055,7 @@ static unsigned char *hash_read(HASH_CONTEXT *c)
 #define MODE_PUBKEY       5
 #define MODE_KEYGEN       6
 #define MODE_KEYEXTEND    7
+#define MODE_RAWDETACHEDSIGN 8
 
 static const char *const modes[] =
 	{"?", "rpm sign", "clear sign", "detached sign"};
@@ -1518,6 +1519,8 @@ sign(char *filename, int isfilter, int mode)
 	}
       if (mode == MODE_DETACHEDSIGN)
 	sprintf(outfilename, "%s.asc", filename);
+      else if (mode == MODE_RAWDETACHEDSIGN)
+	sprintf(outfilename, "%s.sig", filename);
       else
 	sprintf(outfilename, "%s.sIgN%d", filename, getpid());
     }
@@ -2088,6 +2091,16 @@ sign(char *filename, int isfilter, int mode)
       printr64(fout, hash, 3);
       fprintf(fout, "-----END PGP SIGNATURE-----\n");
     }
+  else if (mode == MODE_RAWDETACHEDSIGN)
+    {
+      if (fwrite(buf + 6, outl, 1, fout) != 1)
+	{
+	  perror("fwrite");
+	  if (!isfilter)
+	    unlink(outfilename);
+	  exit(1);
+	}
+    }
   else if (mode == MODE_RPMSIGN)
     {
       if (rpminsertsig(rpmsig, &rpmsigsize, &rpmsigcnt, &rpmsigdlen, hashtag[hashalgo], buf + 6, outl))
@@ -2193,7 +2206,8 @@ sign(char *filename, int isfilter, int mode)
 	  unlink(outfilename);
 	  exit(1);
 	}
-      if (mode != MODE_DETACHEDSIGN && rename(outfilename, filename))
+      if (mode != MODE_DETACHEDSIGN && mode != MODE_RAWDETACHEDSIGN
+		 && rename(outfilename, filename))
 	{
 	  perror("rename");
 	  unlink(outfilename);
@@ -3007,6 +3021,12 @@ main(int argc, char **argv)
       else if (argc > 1 && !strcmp(argv[1], "-d"))
 	{
 	  mode = MODE_DETACHEDSIGN;
+	  argc--;
+	  argv++;
+	}
+      else if (argc > 1 && !strcmp(argv[1], "-D"))
+	{
+	  mode = MODE_RAWDETACHEDSIGN;
 	  argc--;
 	  argv++;
 	}
