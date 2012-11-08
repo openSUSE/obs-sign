@@ -998,10 +998,15 @@ static int verbose;
 #define HASH_SHA1	0
 #define HASH_SHA256	1
 
+#define ENC_DSA         0
+#define ENC_RSA         1
+
 static const char *const hashname[] = {"SHA1", "SHA256"};
 static const int  hashlen[] = {20, 32};
-static const int  hashtag[] = { RPMSIGTAG_GPG, RPMSIGTAG_PGP };
-static const int  hashtagh[] = { RPMSIGTAG_DSA, RPMSIGTAG_RSA };
+
+static const int  enctag[]  = { RPMSIGTAG_GPG, RPMSIGTAG_PGP };
+static const int  enctagh[] = { RPMSIGTAG_DSA, RPMSIGTAG_RSA };	/* header only tags */
+
 static int hashalgo = HASH_SHA1;
 static const char *timearg;
 static char *privkey;
@@ -1056,6 +1061,7 @@ static unsigned char *hash_read(HASH_CONTEXT *c)
 #define MODE_KEYGEN       6
 #define MODE_KEYEXTEND    7
 #define MODE_RAWDETACHEDSIGN 8
+#define MODE_RAWOPENSSLSIGN 9
 
 static const char *const modes[] =
 	{"?", "rpm sign", "clear sign", "detached sign"};
@@ -1260,7 +1266,74 @@ datalen(byte *rpmsig, int rpmsigcnt, byte *rsp)
 }
 
 static int
-rpminsertsig(byte *rpmsig, int *rpmsigsizep, int *rpmsigcntp, int *rpmsigdlenp, int sigtag, byte *newsig, int newsiglen)
+sigtoenc(byte *buf, int outl)
+{
+  int o;
+  if (outl < 2)
+    return -1;
+  if (buf[0] == 0x88)
+    o = 2;
+  else if (buf[0] == 0x89)
+    o = 3;
+  else if (buf[0] == 0x90)
+    o = 5;
+  else
+    return -1;
+  if (o >= outl)
+    return -1;
+  if (buf[o] == 3)
+    o += 15;
+  else if (buf[o] == 4)
+    o += 2;
+  else
+    return -1;
+  if (o >= outl)
+    return -1;
+  if (buf[o] == 1)
+    return ENC_RSA;
+  if (buf[o] == 17)
+    return ENC_DSA;
+  return -1;
+}
+
+static int
+findsigoff(byte *buf, int outl)
+{
+  int o;
+  if (outl < 2)
+    return -1;
+  if (buf[0] == 0x88)
+    o = 2;
+  else if (buf[0] == 0x89)
+    o = 3;
+  else if (buf[0] == 0x90)
+    o = 5;
+  else
+    return -1;
+  if (o >= outl)
+    return -1;
+  if (buf[o] == 3)
+    o += 19;
+  else if (buf[o] == 4)
+    {
+      o += 4;
+      if (o + 1 >= outl)
+        return -1;
+      o += 2 + (buf[o] << 8) + buf[o];
+      if (o + 1 >= outl)
+        return -1;
+      o += 2 + (buf[o] << 8) + buf[o];
+      o += 2;
+    }
+  else
+    return -1;
+  if (o >= outl)
+    return -1;
+  return o;
+}
+
+static int
+rpminsertsig(byte *rpmsig, int *rpmsigsizep, int *rpmsigcntp, int *rpmsigdlenp, const int *sigtags, byte *newsig, int newsiglen)
 {
   int rpmsigsize, rpmsigcnt, rpmsigdlen;
   int i, myi, tag, off;
@@ -1268,6 +1341,7 @@ rpminsertsig(byte *rpmsig, int *rpmsigsizep, int *rpmsigcntp, int *rpmsigdlenp, 
   u32 before;
   int pad;
   byte *region = 0;
+  int enc, sigtag;
 
   rpmsigsize = *rpmsigsizep;
   rpmsigcnt = *rpmsigcntp;
@@ -1278,6 +1352,13 @@ rpminsertsig(byte *rpmsig, int *rpmsigsizep, int *rpmsigcntp, int *rpmsigdlenp, 
       fprintf(stderr, "signature too big: %d\n", newsiglen);
       return -1;
     }
+  enc = sigtoenc(newsig, newsiglen);
+  if (enc < 0)
+    {
+      fprintf(stderr, "signature has unknown encoding type\n");
+      return -1;
+    }
+  sigtag = sigtags[enc];
 
   // first some sanity checking
   for (i = 0, rsp = rpmsig; i < rpmsigcnt; i++, rsp += 16)
@@ -1519,7 +1600,7 @@ sign(char *filename, int isfilter, int mode)
 	}
       if (mode == MODE_DETACHEDSIGN)
 	sprintf(outfilename, "%s.asc", filename);
-      else if (mode == MODE_RAWDETACHEDSIGN)
+      else if (mode == MODE_RAWDETACHEDSIGN || mode == MODE_RAWOPENSSLSIGN)
 	sprintf(outfilename, "%s.sig", filename);
       else
 	sprintf(outfilename, "%s.sIgN%d", filename, getpid());
@@ -1585,7 +1666,7 @@ sign(char *filename, int isfilter, int mode)
       for (i = 0; i < rpmsigcnt; i++)
 	{
 	  tag = rsp[0] << 24 | rsp[1] << 16 | rsp[2] << 8 | rsp[3];
-	  if (tag == hashtag[hashalgo] || tag == hashtagh[hashalgo])
+	  if (tag == enctag[ENC_DSA] || tag == enctag[ENC_RSA] || tag == enctagh[ENC_DSA] || tag == enctagh[ENC_RSA])
 	    {
 	      fprintf(isfilter ? stderr : stdout, "%s: already signed\n", filename);
 	      close(fd);
@@ -1838,13 +1919,15 @@ sign(char *filename, int isfilter, int mode)
       else
         fprintf(isfilter ? stderr : stdout, "%s %s\n", modes[mode],  filename);
     }
-
-  hash[0] = mode == MODE_CLEARSIGN ? 0x01 : 0x00; /* class */
-  hash[1] = signtime >> 24;
-  hash[2] = signtime >> 16;
-  hash[3] = signtime >> 8;
-  hash[4] = signtime;
-  hash_write(&ctx, hash, 5);
+  if (mode != MODE_RAWOPENSSLSIGN)
+    {
+      hash[0] = mode == MODE_CLEARSIGN ? 0x01 : 0x00; /* class */
+      hash[1] = signtime >> 24;
+      hash[2] = signtime >> 16;
+      hash[3] = signtime >> 8;
+      hash[4] = signtime;
+      hash_write(&ctx, hash, 5);
+    }
   hash_final(&ctx);
   p = hash_read(&ctx);
   ph = 0;
@@ -2101,9 +2184,55 @@ sign(char *filename, int isfilter, int mode)
 	  exit(1);
 	}
     }
+  else if (mode == MODE_RAWOPENSSLSIGN)
+    {
+      int off, enc = sigtoenc(buf + 6, outl);
+      int bytes, zbytes;
+      if (enc != ENC_RSA)
+	{
+          fprintf(stderr, "Need RSA key for openssl sign\n");
+	  if (!isfilter)
+	    unlink(outfilename);
+	  exit(1);
+	}
+      off = findsigoff(buf + 6, outl);
+      if (off <= 0)
+	{
+          fprintf(stderr, "Could not determine offset\n");
+	  if (!isfilter)
+	    unlink(outfilename);
+	  exit(1);
+	}
+      if (off + 2 > outl)
+	{
+          fprintf(stderr, "truncated sig\n");
+	  exit(1);
+	}
+      bytes = ((buf[6 + off] << 8) + buf[7 + off] + 7) >> 3;
+      if (off + 2 + bytes > outl)
+	{
+          fprintf(stderr, "truncated sig\n");
+	  exit(1);
+	}
+      /* round up */
+      zbytes = bytes;
+      while ((zbytes & (zbytes - 1)) != 0)
+	zbytes &= zbytes - 1;
+      if (bytes != zbytes)
+	zbytes = zbytes * 2;
+      while (zbytes-- > bytes)
+	putc(0, fout);
+      if (fwrite(buf + 6 + off + 2, bytes, 1, fout) != 1)
+	{
+	  perror("fwrite");
+	  if (!isfilter)
+	    unlink(outfilename);
+	  exit(1);
+	}
+    }
   else if (mode == MODE_RPMSIGN)
     {
-      if (rpminsertsig(rpmsig, &rpmsigsize, &rpmsigcnt, &rpmsigdlen, hashtag[hashalgo], buf + 6, outl))
+      if (rpminsertsig(rpmsig, &rpmsigsize, &rpmsigcnt, &rpmsigdlen, enctag, buf + 6, outl))
 	{
 	  if (!isfilter)
 	    unlink(outfilename);
@@ -2111,7 +2240,7 @@ sign(char *filename, int isfilter, int mode)
 	}
       if (outlh)
 	{
-	  if (rpminsertsig(rpmsig, &rpmsigsize, &rpmsigcnt, &rpmsigdlen, hashtagh[hashalgo], buf + 6 + outl, outlh))
+	  if (rpminsertsig(rpmsig, &rpmsigsize, &rpmsigcnt, &rpmsigdlen, enctagh, buf + 6 + outl, outlh))
 	    {
 	      if (!isfilter)
 		unlink(outfilename);
@@ -2206,7 +2335,7 @@ sign(char *filename, int isfilter, int mode)
 	  unlink(outfilename);
 	  exit(1);
 	}
-      if (mode != MODE_DETACHEDSIGN && mode != MODE_RAWDETACHEDSIGN
+      if (mode != MODE_DETACHEDSIGN && mode != MODE_RAWDETACHEDSIGN && mode != MODE_RAWOPENSSLSIGN
 		 && rename(outfilename, filename))
 	{
 	  perror("rename");
@@ -3027,6 +3156,12 @@ main(int argc, char **argv)
       else if (argc > 1 && !strcmp(argv[1], "-D"))
 	{
 	  mode = MODE_RAWDETACHEDSIGN;
+	  argc--;
+	  argv++;
+	}
+      else if (argc > 1 && !strcmp(argv[1], "-O"))
+	{
+	  mode = MODE_RAWOPENSSLSIGN;
 	  argc--;
 	  argv++;
 	}
