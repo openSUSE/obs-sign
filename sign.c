@@ -2187,7 +2187,7 @@ sign(char *filename, int isfilter, int mode)
   else if (mode == MODE_RAWOPENSSLSIGN)
     {
       int off, enc = sigtoenc(buf + 6, outl);
-      int bytes, zbytes;
+      int bytes;
       if (enc != ENC_RSA)
 	{
           fprintf(stderr, "Need RSA key for openssl sign\n");
@@ -2214,14 +2214,14 @@ sign(char *filename, int isfilter, int mode)
           fprintf(stderr, "truncated sig\n");
 	  exit(1);
 	}
-      /* round up */
-      zbytes = bytes;
-      while ((zbytes & (zbytes - 1)) != 0)
-	zbytes &= zbytes - 1;
-      if (bytes != zbytes)
-	zbytes = zbytes * 2;
-      while (zbytes-- > bytes)
-	putc(0, fout);
+      /* zero pad to multiple of 16 */
+      if ((bytes & 15) != 0 && fwrite("\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 16 - (bytes & 15), 1, fout) != 1)
+	{
+	  perror("fwrite");
+	  if (!isfilter)
+	    unlink(outfilename);
+	  exit(1);
+	}
       if (fwrite(buf + 6 + off + 2, bytes, 1, fout) != 1)
 	{
 	  perror("fwrite");
