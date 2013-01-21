@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006, 2007, 2008 Michael Schroeder, Novell Inc.
+ * Copyright (c) 2006-2013 Michael Schroeder, Novell Inc.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -1062,6 +1062,7 @@ static unsigned char *hash_read(HASH_CONTEXT *c)
 #define MODE_KEYEXTEND    7
 #define MODE_RAWDETACHEDSIGN 8
 #define MODE_RAWOPENSSLSIGN 9
+#define MODE_CREATECERT   10
 
 static const char *const modes[] =
 	{"?", "rpm sign", "clear sign", "detached sign"};
@@ -2862,6 +2863,7 @@ keyextend(char *expire, char *pubkey)
   ex[1] = now >> 16;
   ex[2] = now >> 8;
   ex[3] = now;
+
   ex = finddate(pp + 4, pl - 4, 9);
   if (!ex)
     {
@@ -2873,6 +2875,7 @@ keyextend(char *expire, char *pubkey)
   ex[1] = now >> 16;
   ex[2] = now >> 8;
   ex[3] = now;
+
   /* now create new digest */
   hash_init(&dig);
   b[0] = 0x99;
@@ -2995,6 +2998,165 @@ keyextend(char *expire, char *pubkey)
   putc('=', stdout);
   printr64(stdout, b, 3);
   printf("-----END PGP PUBLIC KEY BLOCK-----\n");
+}
+
+void
+createcert(char *pubkey)
+{
+  FILE *fp;
+  char buf[8192];
+  unsigned char rbuf[8192];
+  unsigned char *pubk;
+  int pubkl;
+  unsigned char *p, *pp;
+  int i, l, ll, tag, pl;
+  time_t pkcreat, now, exp;
+  unsigned char *ex;
+  unsigned char *userid;
+  int useridl;
+  const char *args[6];
+  int argc;
+  int sock = -1;
+  int rl;
+  char *name, *nameend;
+  char *email;
+  char expire[20];
+
+  if (!privkey)
+    {
+      fprintf(stderr, "need -P option for cert creation\n");
+      exit(1);
+    }
+  if (privkey)
+    readprivkey();
+  if ((fp = fopen(pubkey, "r")) == 0)
+    {
+      perror(pubkey);
+      exit(1);
+    }
+  l = 0;
+  while (l < 8192 && (ll = fread(buf + l, 1, 8192 - l, fp)) > 0)
+    l += ll;
+  fclose(fp);
+  if (l == 8192)
+    {
+      fprintf(stderr, "pubkey too big\n");
+      exit(1);
+    }
+  pubk = unarmor(buf, &pubkl);
+  if (!pubk)
+    {
+      fprintf(stderr, "could not parse pubkey armor\n");
+      exit(1);
+    }
+  p = pubk;
+  l = pubkl;
+
+  pp = nextpkg(&tag, &pl, &p, &l);
+  if (tag != 6)
+    {
+      fprintf(stderr, "pubkey does not start with a pubkey paket\n");
+      exit(1);
+    }
+  if (*pp != 4)
+    {
+      fprintf(stderr, "pubkey is not type 4\n");
+      exit(1);
+    }
+  pkcreat = pp[1] << 24 | pp[2] << 16 | pp[3] << 8 | pp[4];
+  pp = nextpkg(&tag, &pl, &p, &l);
+  if (tag != 13)
+    {
+      fprintf(stderr, "missing userid\n");
+      exit(1);
+    }
+  userid = pp;
+  useridl = pl;
+
+  pp = nextpkg(&tag, &pl, &p, &l);
+  if (tag != 2)
+    {
+      fprintf(stderr, "missing self-sig\n");
+      exit(1);
+    }
+  if (pp[0] != 4)
+    {
+      fprintf(stderr, "self-sig is not type 4\n");
+      exit(1);
+    }
+  if (pp[1] != 0x13)
+    {
+      fprintf(stderr, "self-sig is not class 0x13\n");
+      exit(1);
+    }
+  if (pl < 6)
+    {
+      fprintf(stderr, "self-sig is too short\n");
+      exit(1);
+    }
+  ex = finddate(pp + 4, pl - 4, 2);
+  if (!ex)
+    {
+      fprintf(stderr, "self-sig has no creation time\n");
+      exit(1);
+    }
+  now = (u32)time((time_t)0);
+  ex = finddate(pp + 4, pl - 4, 9);
+  if (!ex)
+    {
+      fprintf(stderr, "self-sig does not expire\n");
+      exit(1);
+    }
+  exp = pkcreat + (ex[0] << 24 | ex[1] << 16 | ex[2] << 8 | ex[3]);
+  if (exp < now)
+    {
+      fprintf(stderr, "pubkey is already expired\n");
+      exit(1);
+    }
+  sprintf(expire, "%d", (exp - now + 24 * 3600 - 1) / (24 * 3600));
+  name = malloc(useridl + 1);
+  if (!name)
+    {
+      fprintf(stderr, "out of mem\n");
+      exit(1);
+    }
+  strncpy(name, userid, useridl);
+  name[useridl] = 0;
+  if (!useridl || name[useridl - 1] != '>')
+    {
+      fprintf(stderr, "userid does not end with email\n");
+      exit(1);
+    }
+  name[useridl - 1] = 0;
+  email = strrchr(name, '<');
+  if (!email || email == name)
+    {
+      fprintf(stderr, "userid does not end with email\n");
+      exit(1);
+    }
+  nameend = email;
+  *email++ = 0;
+  while (nameend > name && (nameend[-1] == ' ' || nameend[-1] == '\t'))
+    *--nameend = 0;
+  args[0] = "certgen";
+  args[1] = algouser;
+  args[2] = privkey;
+  args[3] = expire;
+  args[4] = name;
+  args[5] = email;
+  argc = 6;
+
+  sock = opensocket();
+  rl = doreq(sock, argc, args, rbuf, sizeof(rbuf), 0);
+  close(sock);
+  if (rl < 0)
+    exit(-rl);
+  if (fwrite(rbuf, rl, 1, stdout) != 1)
+    {
+      fprintf(stderr, "cert write error\n");
+      exit(1);
+    }
+  free(name);
 }
 
 int
@@ -3207,6 +3369,12 @@ main(int argc, char **argv)
 	  argc--;
 	  argv++;
         }
+      else if (argc > 1 && !strcmp(argv[1], "-C"))
+        {
+	  mode = MODE_CREATECERT;
+	  argc--;
+	  argv++;
+	}
       else if (argc > 2 && !strcmp(argv[1], "-S"))
 	{
 	  chksumfile = argv[2];
@@ -3274,6 +3442,16 @@ main(int argc, char **argv)
 	  exit(1);
 	}
       keyextend(argv[1], argv[2]);
+      exit(0);
+    }
+  if (mode == MODE_CREATECERT)
+    {
+      if (argc != 2)
+	{
+	  fprintf(stderr, "usage: sign -C <pubkey>\n");
+	  exit(1);
+	}
+      createcert(argv[1]);
       exit(0);
     }
   if (privkey && access(privkey, R_OK))
