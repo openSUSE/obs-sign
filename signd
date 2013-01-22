@@ -672,8 +672,10 @@ CN = "$real"
 emailAddress = "$email"
 
 [ x509_extensions ]
+basicConstraints = critical,CA:false
 subjectKeyIdentifier=hash
 authorityKeyIdentifier=keyid,issuer
+keyUsage = critical,digitalSignature
 extendedKeyUsage = codeSigning
 EOL
   open(F, ">$tmpdir/sslreq$$.conf") || die("$tmpdir/sslreq$$.conf: $!\n");
