@@ -2348,26 +2348,29 @@ sign(char *filename, int isfilter, int mode)
     free(outfilename);
   if (mode == MODE_RPMSIGN && chksumfilefd >= 0)
     {
-      char buf[16*2+1+16*2+1+20*2+1+32*2+1], *bp;
+      char buf[16*2 + 5+16*2 + 6+20*2 + 8+32*2 + 1], *bp;
       bp = buf;
       for (i = 0; i < 16; i++)
 	{
 	  sprintf(bp, "%02x", rpmleadsum[i]);
 	  bp += 2;
 	}
-      *bp++ = ' ';
+      strcpy(bp, " md5:");
+      bp += 5;
       for (i = 0; i < 16; i++)
 	{
 	  sprintf(bp, "%02x", chksum_md5[i]);
 	  bp += 2;
 	}
-      *bp++ = ' ';
+      strcpy(bp, " sha1:");
+      bp += 6;
       for (i = 0; i < 20; i++)
 	{
 	  sprintf(bp, "%02x", chksum_sha1[i]);
 	  bp += 2;
 	}
-      *bp++ = ' ';
+      strcpy(bp, " sha256:");
+      bp += 8;
       for (i = 0; i < 32; i++)
 	{
 	  sprintf(bp, "%02x", chksum_sha256[i]);
