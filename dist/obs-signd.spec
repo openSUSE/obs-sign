@@ -1,31 +1,36 @@
 #
-# spec file for package obs-server
+# spec file for package obs-signd
 #
-# Copyright (c) 2008 SUSE LINUX Products GmbH, Nuernberg, Germany.
-# This file and all modifications and additions to the pristine
-# package are under the same license as the package itself.
+# Copyright (c) 2013 SUSE LINUX Products GmbH, Nuernberg, Germany.
 #
+# All modifications and additions to the file contributed by third parties
+# remain the property of their copyright owners, unless otherwise agreed
+# upon. The license for this file, and modifications and additions to the
+# file, is the same license as for the pristine package itself (unless the
+# license for the pristine package is not an Open Source License, in which
+# case the license is the MIT License). An "Open Source License" is a
+# license that conforms to the Open Source Definition (Version 1.9)
+# published by the Open Source Initiative.
+
 # Please submit bugfixes or comments via http://bugs.opensuse.org/
 #
 
 
-
 Name:           obs-signd
 Summary:        The sign daemon
-
-Version:        2.1.2
-
-Release:        0
-License:        GPL
+License:        GPL-2.0
 Group:          Productivity/Networking/Web/Utilities
+
+Version:        2.2.1
+Release:        0
+
 Url:            http://en.opensuse.org/Build_Service
 Source:         sign-%version.tar.bz2
-Source1:        sign-rpmlintrc
+Source1:        obs-signd-rpmlintrc
 Requires:       gpg2_signd_support
 %if 0%{?suse_version:1}
 PreReq:         %fillup_prereq %insserv_prereq permissions
 %endif
-Autoreqprov:    on
 BuildRoot:      %{_tmppath}/%{name}-%{version}-build
 
 %description
@@ -34,10 +39,6 @@ The openSUSE Build Service sign client and daemon.
 This daemon can be used to sign anything via gpg, but it speaks with a remote server
 to avoid the need to host the private key on the same server.
 
-Authors:
---------
-    The openSUSE Team <opensuse-buildservice@opensuse.org>
-
 %prep
 %setup -q -n sign-%version
 
@@ -45,7 +46,7 @@ Authors:
 #
 # make sign binary
 #
-gcc $RPM_OPT_FLAGS -o sign sign.c
+gcc $RPM_OPT_FLAGS -fPIC -pie -o sign sign.c
 
 %install
 # run level script
@@ -83,7 +84,11 @@ install -m 0644 dist/sysconfig.signd $FILLUP_DIR/
 %stop_on_removal obssignd
 
 %post
+%if 0%{?suse_version} > 1220
+%set_permissions /etc/permissions.d/sign
+%else
 %run_permissions
+%endif
 %fillup_and_insserv
 
 %clean
@@ -92,7 +97,7 @@ rm -rf $RPM_BUILD_ROOT
 %files
 %defattr(-,root,root)
 %config(noreplace) /etc/sign.conf
-%attr(4750,root,obsrun) /usr/bin/sign
+%verify(not mode) %attr(4750,root,obsrun) /usr/bin/sign
 %attr(0755,root,root) /usr/sbin/signd
 %attr(0755,root,root) /usr/sbin/rcobssignd
 %attr(0755,root,root) /etc/init.d/obssignd
@@ -100,3 +105,4 @@ rm -rf $RPM_BUILD_ROOT
 /etc/permissions.d/sign
 %doc %{_mandir}/man*/*
 
+%changelog

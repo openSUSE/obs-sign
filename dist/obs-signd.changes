@@ -1,4 +1,44 @@
 -------------------------------------------------------------------
+Thu Mar 21 12:00:31 CET 2013 - mls@suse.de
+
+- update to version 2.2.1
+  * new -S output format
+
+-------------------------------------------------------------------
+Wed Mar 20 14:01:47 UTC 2013 - adrian@suse.de
+
+- update to version 2.2.0
+  * complete support for secure boot signing
+
+-------------------------------------------------------------------
+Thu Jan 17 15:49:07 CET 2013 - mls@suse.de
+
+- update to 2.1.5.1 to support -O and rsa keys with -p
+
+-------------------------------------------------------------------
+Mon Aug 13 14:28:34 CEST 2012 - mls@suse.de
+
+- update to 2.1.5
+  implement -D option to create raw detchaed signatures
+
+-------------------------------------------------------------------
+Fri Jul  6 12:15:39 UTC 2012 - adrian@suse.de
+
+- fix build for 12.2
+
+-------------------------------------------------------------------
+Fri May 11 14:47:14 UTC 2012 - coolo@suse.com
+
+- update to 2.1.4
+  * frontport -S <chksumfile> option to speed up repository generation 
+
+-------------------------------------------------------------------
+Mon Sep 19 11:31:34 UTC 2011 - adrian@suse.de
+
+- update to version 2.1.3
+  * Fix re-signing failure (#713013)
+
+-------------------------------------------------------------------
 Tue Jul 27 08:13:18 UTC 2010 - adrian@suse.de
 
 - update to version 2.1.2
