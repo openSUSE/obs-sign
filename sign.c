@@ -940,6 +940,7 @@ static int opensocket(void)
   static int hostknown;
   static struct sockaddr_in svt;
   int sock;
+  int optval;
 
   if (!hostknown)
     {
@@ -990,6 +991,8 @@ static int opensocket(void)
       perror(host);
       exit(1);
     }
+  optval = 1;
+  setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &optval, sizeof(optval));
   return sock;
 }
 

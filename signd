@@ -490,6 +490,7 @@ if (!$phrases || ($cmd ne 'ping' && $user eq '') || ($cmd ne 'ping' && ! -e "$ph
     $pack = pack('n' x (1 + @argv), scalar(@argv), map {length($_)} @argv).join('', @argv);
     $pack = pack('nn', length($pack), 0).$pack;
   }
+  setsockopt(CS, SOL_SOCKET, SO_KEEPALIVE, pack("l",1));
   connect(CS, sockaddr_in($port, $signaddr)) || die("connect: $!\n");
   swrite(*CS, $pack);
   while(1) {
