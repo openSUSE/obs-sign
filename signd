@@ -676,7 +676,7 @@ emailAddress = "$email"
 basicConstraints = critical,CA:false
 subjectKeyIdentifier=hash
 authorityKeyIdentifier=keyid,issuer
-keyUsage = critical,digitalSignature
+keyUsage = critical,keyCertSign,digitalSignature
 extendedKeyUsage = codeSigning
 EOL
   open(F, ">$tmpdir/sslreq$$.conf") || die("$tmpdir/sslreq$$.conf: $!\n");
