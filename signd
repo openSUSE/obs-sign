@@ -592,7 +592,7 @@ if ($cmd eq 'keygen') {
   my $email = $argv[5];
   checkbadchar($real, 'real name');
   checkbadchar($email, 'email');
-  die("bad type: $type\n") unless $type =~ /^(dsa|rsa)\@(1024|2048)$/s;
+  die("bad type: $type\n") unless $type =~ /^(dsa|rsa)\@(1024|2048|4096)$/s;
   my $length = $2;
   $type = $1;
   my $batch = "Key-Type: $type\nKey-Length: $length\nKey-Usage: sign\nName-Real: $real\nName-Email: $email\nExpire-Date: ${expire}d\n%pubring $tmpdir/pubkey.$$\n%secring $tmpdir/privkey.$$\n";
