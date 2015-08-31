@@ -1578,7 +1578,7 @@ sign(char *filename, int isfilter, int mode)
       force = 0;
       if (isfilter)
         {
-	  fprintf(stderr, "please specify a mode for filter usage.\n");
+	  fprintf(stderr, "please specify a mode for filter usage (see sign --help).\n");
 	  exit(1);
         }
       l = strlen(filename);
@@ -3165,6 +3165,28 @@ createcert(char *pubkey)
   free(name);
 }
 
+void usage()
+{
+    fprintf(stderr, "usage:  sign [-v] [options]\n\n"
+            "  sign [-v] -c <file> [-u user] [-h hash]: add clearsign signature\n"
+            "  sign [-v] -d <file> [-u user] [-h hash]: create detached signature\n"
+            "  sign [-v] -r <file> [-u user] [-h hash]: add signature block to rpm\n"
+            "  sign [-v] -k [-u user] [-h hash]: print key id\n"
+            "  sign [-v] -p [-u user] [-h hash]: print pulbic key\n"
+            "  sign [-v] -g <type> <expire> <name> <email>: generate keys\n"
+            "  sign [-v] -x <expire> <pubkey>: extend pubkey\n"
+            "  sign [-v] -C <pubkey>: create certificate\n"
+            "  sign [-v] -t: test connection to signd server\n"
+            //"  -D: RAWDETACHEDSIGN\n"
+            //"  -O: RAWOPENSSLSIGN\n"
+            //"  --noheaderonly\n"
+            //"  -S <file>: verify checksum\n"
+            //"  -T  time?\n"
+            //"  -P  privkey\n" 
+            "\n"
+           );
+}
+
 int
 main(int argc, char **argv)
 {
@@ -3289,7 +3311,11 @@ main(int argc, char **argv)
     }
   while (argc > 1)
     {
-      if (argc > 2 && !strcmp(argv[1], "-u"))
+      if (!strcmp(argv[1], "--help"))
+      {
+          usage();
+          exit(0);
+      } else if (argc > 2 && !strcmp(argv[1], "-u"))
 	{
 	  user = argv[2];
 	  argc -= 2;
@@ -3412,7 +3438,7 @@ main(int argc, char **argv)
         }
       else if (argc > 1 && argv[1][0] == '-')
 	{
-	  fprintf(stderr, "usage: sign [-c|-d|-r] [-u user] <file>\n");
+	  usage();
 	  exit(1);
 	}
       else
