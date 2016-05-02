@@ -570,7 +570,7 @@ sub rungpg_fatal {
 
 if ($cmd eq 'pubkey') {
   die("pubkey: one argument expected\n") if @argv != 2;
-  my $pubkey = rungpg_fatal('/dev/null', undef, $gpg, '--export', '-a', $user);
+  my $pubkey = rungpg_fatal('/dev/null', undef, $gpg, '--export', '-a', "<$user>");
   if (!$oldproto) {
     $pubkey = pack('nn', 1, length($pubkey)).$pubkey;
   }
@@ -619,7 +619,7 @@ if ($cmd eq 'keygen') {
   $keyid = $keyid[0];
 
   # add user sig to pubkey
-  rungpg_fatal("$phrases/$user", ["$tmpdir/pubkey.$$", "$tmpdir/privkey.$$"], $gpg, '--batch', '--no-secmem-warning', "--keyring=$tmpdir/pubkey.$$", "--passphrase-fd=0", "-u", $user, '--yes', '--trustdb-name', "$tmpdir/trustdb.$$", '--default-cert-level', '3', '--edit-key', $keyid, 'sign', 'save');
+  rungpg_fatal("$phrases/$user", ["$tmpdir/pubkey.$$", "$tmpdir/privkey.$$"], $gpg, '--batch', '--no-secmem-warning', "--keyring=$tmpdir/pubkey.$$", "--passphrase-fd=0", "-u", "<$user>", '--yes', '--trustdb-name', "$tmpdir/trustdb.$$", '--default-cert-level', '3', '--edit-key', $keyid, 'sign', 'save');
   unlink("$tmpdir/pubkey.$$~");
   unlink("$tmpdir/trustdb.$$");
 
@@ -628,7 +628,7 @@ if ($cmd eq 'keygen') {
   unlink("$tmpdir/pubkey.$$");
 
   # encrypt privkey
-  my $privkey = rungpg_fatal('/dev/null', ["$tmpdir/privkey.$$"], $gpg, '--batch', '--encrypt', '--no-verbose', '--no-secmem-warning', '--trust-model', 'always', '-o-', '-r', "$user", "$tmpdir/privkey.$$");
+  my $privkey = rungpg_fatal('/dev/null', ["$tmpdir/privkey.$$"], $gpg, '--batch', '--encrypt', '--no-verbose', '--no-secmem-warning', '--trust-model', 'always', '-o-', '-r', "<$user>", "$tmpdir/privkey.$$");
   unlink("$tmpdir/privkey.$$");
 
   # send back
@@ -737,7 +737,7 @@ if ($cmd eq 'sign' || $cmd eq 'privsign') {
     if (@keyargs) {
       ($status, $lout, $lerr) = rungpg('/dev/null', ["$tmpdir/privkey.$$", "$tmpdir/pubkey.$$"], $gpg, "--batch", "--force-v3-sigs", "--files-are-digests", "--allow-non-selfsigned-uid", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--passphrase-fd=0", @keyargs, "-sbo", "-", $argv[2]);
     } else {
-      ($status, $lout, $lerr) = rungpg("$phrases/$user", undef, $gpg, "--batch", "--force-v3-sigs", "--files-are-digests", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--passphrase-fd=0", "-u", $user, "-sbo", "-", $argv[2]);
+      ($status, $lout, $lerr) = rungpg("$phrases/$user", undef, $gpg, "--batch", "--force-v3-sigs", "--files-are-digests", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--passphrase-fd=0", "-u", "<$user>", "-sbo", "-", $argv[2]);
     }
     $lout = patchclasstime($lout, $classtime) if $classtime && !$status;
     splice(@argv, 2, 1);
