@@ -21,7 +21,24 @@ sign \- sign files or rpms
 .IR hash ]
 .br
 .B sign
+.BR -g
+.IR <type> <expire> <name> <email>
+.br
+.B sign
+.BR -x
+.IR <expire> <pubkey>
+.br
+.B sign
+.BR -C
+.IR <pubkey>
+.br
+.B sign
 .B -t
+.RB [ -S
+.IR checksumfile ]
+.RB [ -T
+.IR time ]
+.br
 
 .SH DESCRIPTION
 sign adds a cryptographic signature to a file. It can add a clearsign signature
@@ -39,6 +56,12 @@ from the /etc/sign.conf file.
 
 The -k option makes sign print the keyid instead of signing a file, the
 -p option makes it print the public key.
+
+New keys can be created by using the -g option. In case a SSL certification
+is also needed (eg. for linux kernel modules) it can be created by using -C 
+option afterwards.
+
+Existing keys can be extended using -x option.
 
 .SH SECURITY
 sign needs to bind to a reserved port, it thus works only for user root
