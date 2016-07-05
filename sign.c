@@ -3133,7 +3133,16 @@ createcert(char *pubkey)
       fprintf(stderr, "userid does not end with email\n");
       exit(1);
     }
-  name[useridl - 1] = 0;
+  if (useridl > 63)
+    {
+      /* strip name according to SSL limits, but show the striping by trailing dots */
+      name[60] = '.';
+      name[61] = '.';
+      name[62] = '.';
+      name[63] = 0;
+    } else {
+      name[useridl - 1] = 0;
+    }
   email = strrchr(name, '<');
   if (!email || email == name)
     {
@@ -3142,6 +3151,14 @@ createcert(char *pubkey)
     }
   nameend = email;
   *email++ = 0;
+  if (strlen(email) > 63)
+    {
+      /* strip email according to SSL limits, but show the striping by trailing dots */
+      email[60] = '.';
+      email[61] = '.';
+      email[62] = '.';
+      email[63] = 0;
+    }
   while (nameend > name && (nameend[-1] == ' ' || nameend[-1] == '\t'))
     *--nameend = 0;
   args[0] = "certgen";
