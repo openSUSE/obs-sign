@@ -3006,6 +3006,15 @@ keyextend(char *expire, char *pubkey)
   printf("-----END PGP PUBLIC KEY BLOCK-----\n");
 }
 
+static void
+certsizelimit(char *s, int l)
+{
+  if (strlen(s) <= l)
+    return;
+  s[l] = 0;
+  s[l - 1] = s[l - 2] = s[l - 3] = '.';
+}
+
 void
 createcert(char *pubkey)
 {
@@ -3144,6 +3153,9 @@ createcert(char *pubkey)
   *email++ = 0;
   while (nameend > name && (nameend[-1] == ' ' || nameend[-1] == '\t'))
     *--nameend = 0;
+  /* limit to fixed sizes, see rfc 3280 */
+  certsizelimit(name, 64);
+  certsizelimit(email, 128);
   args[0] = "certgen";
   args[1] = algouser;
   args[2] = privkey;
