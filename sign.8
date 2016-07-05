@@ -22,23 +22,22 @@ sign \- sign files or rpms
 .br
 .B sign
 .BR -g
-.IR <type> <expire> <name> <email>
+.I type
+.I expire
+.I name 
+.I email
 .br
 .B sign
 .BR -x
-.IR <expire> <pubkey>
+.I expire
+.I pubkey
 .br
 .B sign
 .BR -C
-.IR <pubkey>
+.I pubkey
 .br
 .B sign
 .B -t
-.RB [ -S
-.IR checksumfile ]
-.RB [ -T
-.IR time ]
-.br
 
 .SH DESCRIPTION
 sign adds a cryptographic signature to a file. It can add a clearsign signature
@@ -48,30 +47,39 @@ if the file name ends in ".rpm", otherwise it does a clearsign. If no
 file name is specified, sign reads from stdin and writes to stdout.
 
 One can specify a specific user or hash method with the -u and -h option.
-Currently sign understands the sha1 and sha256 hashes.
+Currently sign understands sha1 and sha256 hashes.
 
-sign does not create the signature by itself, it needs a running signing
+sign does not create signatures by itself, it needs a running signing
 daemon (called signd) to do the work. The host and port information is read
 from the /etc/sign.conf file.
 
 The -k option makes sign print the keyid instead of signing a file, the
 -p option makes it print the public key.
 
-New keys can be created by using the -g option. In case a SSL certification
-is also needed (eg. for linux kernel modules) it can be created by using -C 
-option afterwards.
+New keys can be created by using the -g option. In that case, a file name
+to store the private key needs to be provided with the -P option. This
+private key can be used for signing by also using the -P option with the
+other modes. The pubkey of the generated key is printed to stdout.
 
-Existing keys can be extended using -x option.
+In case a SSL certification
+is also needed (e.g. for linux kernel modules), the key can be converted to
+a certificate by using the -C option.
+
+The expire time of existing keys can be extended with the -x option.
+
+.SH OTHER OPTIONS
+In some cases it it useful to specify the signature time. This can be done
+with the -T option.
+
+The -S option specifies a checksum file, it makes sign append a line containing
+the checksum of the signed rpms. This can be used to speed up repository
+metadata generation.
 
 .SH SECURITY
 sign needs to bind to a reserved port, it thus works only for user root
 or needs to be installed suid-root. If the latter is the case, sign
 grants the users specified in the "allowuser" lines of the configuration
 the right to sign files.
-
-.SH BUGS
-sign currently only creates the "header+payload" signature when signing
-rpms. It should also add the "header only" signature.
 
 .SH EXIT STATUS
 sign returns 0 if everything worked, otherwise it returns 1 and
