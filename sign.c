@@ -1376,7 +1376,7 @@ rpminsertsig(byte *rpmsig, int *rpmsigsizep, int *rpmsigcntp, int *rpmsigdlenp, 
     }
 
   // now find the correct place to insert the signature
-  for (i = 0, rsp = rpmsig; i < rpmsigcnt; i++, rsp += 16)
+  for (i = 0, tag = 0, rsp = rpmsig; i < rpmsigcnt; i++, rsp += 16)
     {
       tag = getu8(rsp);
       // fprintf(stderr, "tag %d\n", tag);
@@ -1948,6 +1948,7 @@ sign(char *filename, int isfilter, int mode)
   ulen = strlen(user);
   if (!privkey && !ph)
     {
+      /* old style sign */
       if (ulen + hashlen[hashalgo] * 2 + 1 + 5 * 2 + 4 + 1 + (hashalgo == HASH_SHA1 ? 0 : strlen(hashname[hashalgo]) + 1) > sizeof(buf))
 	{
 	  fprintf(stderr, "packet too big\n");
@@ -2037,6 +2038,7 @@ sign(char *filename, int isfilter, int mode)
     }
   else
     {
+      /* new style sign with doreq */
       const char *args[5];
       char *bp;
       char hashhex[1024];
@@ -2843,15 +2845,23 @@ keyextend(char *expire, char *pubkey)
       fprintf(stderr, "self-sig is not class 0x13\n");
       exit(1);
     }
-  if (hashalgo == HASH_SHA1 && pp[3] != 2)
+  if (pp[3] == 2)
+    hashalgo = HASH_SHA1;
+  else if (pp[3] == 8)
+    hashalgo = HASH_SHA256;
+  else
     {
-      fprintf(stderr, "self-sig is not made with sha1\n");
+      fprintf(stderr, "self-sig is neither sha1 nor sha256\n");
       exit(1);
     }
-  if (hashalgo == HASH_SHA256 && pp[3] != 8)
+  if (algouser && algouser != user)
+    free(algouser);
+  if (hashalgo == HASH_SHA1)
+    algouser = user;
+  else
     {
-      fprintf(stderr, "self-sig is not made with sha256\n");
-      exit(1);
+      algouser = malloc(strlen(user) + strlen(hashname[hashalgo]) + 2);
+      sprintf(algouser, "%s:%s", hashname[hashalgo], user);
     }
   if (pl < 6)
     {
@@ -3024,7 +3034,7 @@ createcert(char *pubkey)
   unsigned char *pubk;
   int pubkl;
   unsigned char *p, *pp;
-  int i, l, ll, tag, pl;
+  int l, ll, tag, pl;
   time_t pkcreat, now, exp;
   unsigned char *ex;
   unsigned char *userid;
@@ -3128,14 +3138,14 @@ createcert(char *pubkey)
       fprintf(stderr, "pubkey is already expired\n");
       exit(1);
     }
-  sprintf(expire, "%d", (exp - now + 24 * 3600 - 1) / (24 * 3600));
+  sprintf(expire, "%d", (int)(exp - now + 24 * 3600 - 1) / (24 * 3600));
   name = malloc(useridl + 1);
   if (!name)
     {
       fprintf(stderr, "out of mem\n");
       exit(1);
     }
-  strncpy(name, userid, useridl);
+  strncpy(name, (char *)userid, useridl);
   name[useridl] = 0;
   if (!useridl || name[useridl - 1] != '>')
     {
