@@ -2845,13 +2845,15 @@ keyextend(char *expire, char *pubkey)
       fprintf(stderr, "self-sig is not class 0x13\n");
       exit(1);
     }
+  if (pp[3] == 9 || pp[3] == 10 || pp[3] == 11)
+    pp[3] = 8;	/* change sha384/512/224 to sha256 for now */
   if (pp[3] == 2)
     hashalgo = HASH_SHA1;
   else if (pp[3] == 8)
     hashalgo = HASH_SHA256;
   else
     {
-      fprintf(stderr, "self-sig is neither sha1 nor sha256\n");
+      fprintf(stderr, "self-sig hash type is unsupported (algo %d)\n", pp[3]);
       exit(1);
     }
   if (algouser && algouser != user)
