@@ -5,8 +5,7 @@ sign \- sign files or rpms
 
 .SH SYNOPSIS
 .B sign
-.RB [ -c | -d
-.RB | -r ]
+.RB [ -c | -d | -r | -a ]
 .RB [ -u
 .IR user ]
 .RB [ -h
@@ -75,11 +74,98 @@ The -S option specifies a checksum file, it makes sign append a line containing
 the checksum of the signed rpms. This can be used to speed up repository
 metadata generation.
 
+.TP
+.B \-t
+Ping signd. If ping was successful, return exit code 0.
+.TP
+.B \-v
+Verbose mode
+.TP
+.B \-T
+.B <unixtime>
+ Explicit sign time. If RPM mode used (\-r) also accepts string "buildtime"
+
+
+.TP
+.BR
+.B Signature modes
+.TP
+ Requires private key (\-P) or user (\-u) with key in the signd root keyring.
+.TP
+.B \-c
+.B <file>
+ Create clearsign
+.TP
+.B \-r
+.B <file>
+ Sign RPM package
+.TP
+.B \-a
+.B <file>
+ Sign AppImage container
+.TP
+.B \-S
+.B <path to checksumfile>
+ Usable only with \-r option: writes checksums into the file
+
+.TP
+.B \-d
+.B <file>
+ Create detached sign
+.TP
+.B \-D
+.B <file>
+ Create RAW detached sign
+.TP
+.B \-C
+.B <path to pubkey>
+ Create SSL certificate
+.TP
+.B \-O
+.B <path to pubkey>
+ Create RAW SSL certificate
+
+
+.B Key generation
+.TP
+.BR \-g
+.B [\-P \<privkey\>\] <type> <expire> <name> <email>
+ Generate new key-pair. Where:
+ type: defined as {dsa,rsa}@{1024,2048}
+ expire: integer, days before expire
+ name: real name
+ email: email
+ Write pubkey and privke to stdout. If \-P option used,
+ privkey will be written there and only pubkey goes to stdout.
+
+.TP
+.BR \-x
+.B <expire> <pubkey>
+ Extend key. Requires private key (\-P).
+
+
+.B Query signd for key information / Common options
+.TP
+.BR \-k
+Print the keyid of signd key-pair (root key or defined by \-u)
+.TP
+.BR \-p
+Print pubkey of signd key-pair (root key or defined by \-u)
+.TP
+.BR \-u
+Username, signd should already know about that user
+.TP
+.BR \-h
+Hash: either sha1 or sha256
+
+
 .SH SECURITY
 sign needs to bind to a reserved port, it thus works only for user root
 or needs to be installed suid-root. If the latter is the case, sign
 grants the users specified in the "allowuser" lines of the configuration
 the right to sign files.
+
+sign and signd are supposed to run in isolated networks only.
 
 .SH EXIT STATUS
 sign returns 0 if everything worked, otherwise it returns 1 and
