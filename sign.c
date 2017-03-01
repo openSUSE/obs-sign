@@ -126,7 +126,6 @@ burn_stack (int bytes)
         burn_stack (bytes);
 }
 
-
 static void
 sha1_init( SHA1_CONTEXT *hd )
 {
@@ -1066,6 +1065,7 @@ static unsigned char *hash_read(HASH_CONTEXT *c)
 #define MODE_RAWDETACHEDSIGN 8
 #define MODE_RAWOPENSSLSIGN 9
 #define MODE_CREATECERT   10
+#define MODE_APPIMAGESIGN 11
 
 static const char *const modes[] =
 	{"?", "rpm sign", "clear sign", "detached sign"};
@@ -1336,6 +1336,170 @@ findsigoff(byte *buf, int outl)
   return o;
 }
 
+static inline int
+elf16(unsigned char *buf, int le)
+{
+  if (le)
+    return buf[0] | buf[1] << 8;
+  return buf[0] << 8 | buf[1];
+}
+
+static inline unsigned int
+elf32(unsigned char *buf, int le)
+{
+  if (le)
+    return buf[0] | buf[1] << 8 | buf[2] << 16 | buf[3] << 24;
+  return buf[0] << 24 | buf[1] << 16 | buf[2] << 8 | buf[3];
+}
+
+static inline unsigned int
+elf64(unsigned char *buf, int le, int is64)
+{
+  if (is64)
+    {
+      buf += le ? 4 : 0;
+      if (buf[0] || buf[1] || buf[2] || buf[3])
+        return ~0;
+      buf += le ? -4 : 4;
+    }
+  if (le)
+    return buf[0] | buf[1] << 8 | buf[2] << 16 | buf[3] << 24;
+  return buf[0] << 24 | buf[1] << 16 | buf[2] << 8 | buf[3];
+}
+
+void
+perror_exit(const char *s)
+{
+  perror(s);
+  exit(1);
+}
+
+static const char *clear_signature_header = "-----BEGIN PGP SIGNATURE-----\nVersion: GnuPG v1.0.7 (GNU/Linux)\n\n";
+static const char *clear_signature_footer = "-----END PGP SIGNATURE-----\n";
+void
+write_clear_signature(FILE *fd, byte *signature, int length)
+{
+  u32 crc;
+  byte hash[5], *p, *ph = 0;
+
+  fprintf(fd, clear_signature_header);
+  printr64(fd, signature, length);
+  crc = crc24(signature, length);
+  hash[0] = crc >> 16;
+  hash[1] = crc >> 8;
+  hash[2] = crc;
+  putc('=', fd);
+  printr64(fd, hash, 3);
+  fprintf(fd, clear_signature_footer);
+}
+
+void
+write_appimage_sig_offset(char *filename, byte *signature, int length)
+{
+  // find .sha256_sig section offset in ELF file
+  unsigned char elfbuf[128];
+
+  int le, is64;
+  off_t soff;
+  int snum, ssiz;
+  int i, l, stridx;
+  FILE *fd;
+  unsigned int sha256_sig_offset = 0;
+  unsigned int sha256_sig_size = 0;
+  unsigned char *sects, *strsect;
+  unsigned int slen;
+  unsigned int o;
+
+  if ((fd = fopen(filename, "r+")) == 0)
+      perror_exit(filename);
+  l = fread(elfbuf, 1, 128, fd);
+  if (l < 128)
+    perror_exit("offset 1");
+  if (elfbuf[0] != 0x7f || elfbuf[1] != 'E' || elfbuf[2] != 'L' || elfbuf[3] != 'F')
+    perror_exit("offset 2");
+  is64 = elfbuf[4] == 2;
+  le = elfbuf[5] != 2;
+  if (is64 && l < 0x40)
+    perror_exit("offset 3");
+  soff = elf64(is64 ? elfbuf + 40 : elfbuf + 32, le, is64);
+  if (soff == (off_t)~0)
+    perror_exit("offset 4");
+  ssiz = elf16(elfbuf + (is64 ? 0x40 - 6 : 0x34 - 6), le);
+  if (ssiz < (is64 ? 64 : 40) || ssiz >= 32768)
+    perror_exit("offset 5");
+  snum = elf16(elfbuf + (is64 ? 0x40 - 4 : 0x34 - 4), le);
+  stridx = elf16(elfbuf + (is64 ? 0x40 - 2 : 0x34 - 2), le);
+  if (stridx >= snum)
+    perror_exit("offset 6");
+  sects = malloc(snum * ssiz);
+  if (!sects)
+    perror_exit("offset 7");
+  if (fseek(fd, soff, SEEK_SET) != 0 || fread(sects, 1, snum * ssiz, fd) != snum * ssiz)
+    {
+      free(sects);
+      perror_exit("offset");
+    }
+  strsect = sects + stridx * ssiz;
+  if (elf32(strsect + 4, le) != 3)
+    {
+      free(sects);
+      perror_exit("offset");
+    }
+  soff = elf64(is64 ? strsect + 24 : strsect + 16, le, is64);
+  slen = elf64(is64 ? strsect + 32 : strsect + 20, le, is64);
+  if (soff == (off_t)~0 || slen == ~0 || (int)slen < 0)
+    {
+      free(sects);
+      perror_exit("offset");
+    }
+  strsect = malloc(slen);
+  if (!strsect)
+    {
+      free(sects);
+      perror_exit("offset");
+    }
+  if (fseek(fd, soff, SEEK_SET) != 0 || fread(strsect, 1, slen, fd) != slen)
+    {
+      free(sects);
+      free(strsect);
+      perror_exit("offset");
+    }
+  for (i = 0; i < snum; i++)
+    {
+      o = elf32(sects + i * ssiz, le);
+      if (o > slen)
+        continue;
+      // printf("sect #%d %s (o=%d)\n", i, strsect + o, o);
+  
+      if (o + 11 <= slen && memcmp(strsect + o, ".sha256_sig", 11) == 0) {
+        unsigned int sh_offset = i * ssiz + (is64 ? 24 : 16);
+        sha256_sig_offset = elf64(sects + sh_offset, le, is64);
+        sha256_sig_size = elf64(sects + sh_offset + (is64 ? 8 : 4), le, is64);
+        break;
+      }
+    }
+  free(strsect);
+  free(sects);
+
+  if (sha256_sig_offset == 0)
+      perror_exit(".sha256_sig not found");
+
+  if (fseek(fd, sha256_sig_offset, SEEK_SET) == (off_t)-1)
+      perror_exit("lseek");
+
+  int full_length = length + strlen(clear_signature_header)+ strlen(clear_signature_footer);
+  if (full_length > sha256_sig_size)
+      perror_exit("section too small for signature");
+
+  write_clear_signature(fd, signature, length);
+
+  // fill the rest with zeros
+  for(; sha256_sig_size < full_length; full_length++)
+      fputc(0x0, fd);
+
+  fclose(fd);
+}
+
 static int
 rpminsertsig(byte *rpmsig, int *rpmsigsizep, int *rpmsigcntp, int *rpmsigdlenp, const int *sigtags, byte *newsig, int newsiglen)
 {
@@ -1584,7 +1748,9 @@ sign(char *filename, int isfilter, int mode)
       l = strlen(filename);
       if (l > 4 && (!strcmp(filename + l - 4, ".rpm") || !strcmp(filename + l - 4, ".spm")))
 	mode = MODE_RPMSIGN;
-      else
+      else if (l > 9 && (!strcmp(filename + l - 9, ".AppImage"))) {
+        mode = MODE_APPIMAGESIGN;
+      } else
         mode = MODE_CLEARSIGN;
     }
   if (isfilter)
@@ -1820,6 +1986,24 @@ sign(char *filename, int isfilter, int mode)
     {
       /* sign empty string */
       sock = opensocket();
+    }
+  else if (mode == MODE_APPIMAGESIGN)
+    {
+      sock = opensocket();
+
+      FILE *fp;
+      unsigned char appimagedigest[65]; // sha256 sum
+      unsigned char *digestfilename = malloc(strlen(filename) + 8);
+      sprintf(digestfilename, "%s.digest", filename);
+      if ((fp = fopen(digestfilename, "r")) == 0 || 64 != fread(appimagedigest, 1, 64, fp))
+        {
+          perror(digestfilename);
+          exit(1);
+        }
+      fclose(fp);
+      free(digestfilename);
+
+      hash_write(&ctx, appimagedigest,  64);
     }
   else
     {
@@ -2158,7 +2342,7 @@ sign(char *filename, int isfilter, int mode)
       fout = stdout;
       foutfd = 1;
     }
-  else if (mode != MODE_CLEARSIGN)
+  else if (mode != MODE_CLEARSIGN && mode != MODE_APPIMAGESIGN)
     {
       if ((fout = fopen(outfilename, "w")) == 0)
 	{
@@ -2170,15 +2354,7 @@ sign(char *filename, int isfilter, int mode)
 
   if (mode == MODE_CLEARSIGN || mode == MODE_DETACHEDSIGN)
     {
-      fprintf(fout, "-----BEGIN PGP SIGNATURE-----\nVersion: GnuPG v1.0.7 (GNU/Linux)\n\n");
-      printr64(fout, buf + 6, outl);
-      crc = crc24(buf + 6, outl);
-      hash[0] = crc >> 16;
-      hash[1] = crc >> 8;
-      hash[2] = crc;
-      putc('=', fout);
-      printr64(fout, hash, 3);
-      fprintf(fout, "-----END PGP SIGNATURE-----\n");
+      write_clear_signature(fout, buf + 6, outl);
     }
   else if (mode == MODE_RAWDETACHEDSIGN)
     {
@@ -2330,8 +2506,14 @@ sign(char *filename, int isfilter, int mode)
 	}
       free(rpmsig);
     }
+  else if (mode == MODE_APPIMAGESIGN)
+    {
+      write_appimage_sig_offset(filename, buf + 6, outl);
+      return 0;
+    }
   else
     fwrite(buf + 6, 1, outl, fout);
+
   if (!isfilter)
     {
       close(fd);
@@ -3195,6 +3377,7 @@ void usage()
             "  sign [-v] -c <file> [-u user] [-h hash]: add clearsign signature\n"
             "  sign [-v] -d <file> [-u user] [-h hash]: create detached signature\n"
             "  sign [-v] -r <file> [-u user] [-h hash]: add signature block to rpm\n"
+            "  sign [-v] -a <file> [-u user] [-h hash]: add signature block to appimage\n"
             "  sign [-v] -k [-u user] [-h hash]: print key id\n"
             "  sign [-v] -p [-u user] [-h hash]: print pulbic key\n"
             "  sign [-v] -g <type> <expire> <name> <email>: generate keys\n"
@@ -3389,6 +3572,12 @@ main(int argc, char **argv)
 	  argc--;
 	  argv++;
 	}
+      else if (argc > 1 && !strcmp(argv[1], "-a"))
+	{
+	  mode = MODE_APPIMAGESIGN;
+	  argc--;
+	  argv++;
+	}
       else if (argc > 1 && !strcmp(argv[1], "-v"))
 	{
 	  verbose++;
@@ -3477,7 +3666,7 @@ main(int argc, char **argv)
     }
   if ((mode == MODE_KEYID || mode == MODE_PUBKEY) && argc > 1)
     {
-      fprintf(stderr, "usage: sign [-c|-d|-r] [-u user] <file>\n");
+      fprintf(stderr, "usage: sign [-c|-d|-r|-a] [-u user] <file>\n");
       exit(1);
     }
   if (mode == MODE_KEYGEN)
