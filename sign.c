@@ -897,6 +897,37 @@ printr64(FILE *f, const byte *str, int len)
     putc('\n', f);
 }
 
+static const char *armor_signature_header = "-----BEGIN PGP SIGNATURE-----\nVersion: GnuPG v1.0.7 (GNU/Linux)\n\n";
+static const char *armor_signature_footer = "-----END PGP SIGNATURE-----\n";
+
+void
+write_armored_signature(FILE *fp, byte *signature, int length)
+{
+  u32 crc;
+  byte hash[5], *p, *ph = 0;
+
+  fprintf(fp, armor_signature_header);
+  printr64(fp, signature, length);
+  crc = crc24(signature, length);
+  hash[0] = crc >> 16;
+  hash[1] = crc >> 8;
+  hash[2] = crc;
+  putc('=', fp);
+  printr64(fp, hash, 3);
+  fprintf(fp, armor_signature_footer);
+}
+
+char *
+get_armored_signature(byte *signature, int length)
+{
+  char *ret = 0;
+  size_t size;
+  FILE *fp = open_memstream(&ret, &size);
+  write_armored_signature(fp, signature, length);
+  fclose(fp);
+  return ret;
+}
+
 static ssize_t xread(int fd, void *buf, size_t count)
 {
   ssize_t r, r2;
@@ -1067,8 +1098,10 @@ static unsigned char *hash_read(HASH_CONTEXT *c)
 #define MODE_CREATECERT   10
 #define MODE_APPIMAGESIGN 11
 
-static const char *const modes[] =
-	{"?", "rpm sign", "clear sign", "detached sign"};
+static const char *const modes[] = {
+  "?", "rpm sign", "clear sign", "detached sign", "keyid", "pubkey", "keygen", "keyextend",
+  "raw detached sign" "raw openssl sign" "cert create", "appimage sign"
+};
 
 static void
 readprivkey(void)
@@ -1374,27 +1407,9 @@ perror_exit(const char *s)
   exit(1);
 }
 
-static const char *clear_signature_header = "-----BEGIN PGP SIGNATURE-----\nVersion: GnuPG v1.0.7 (GNU/Linux)\n\n";
-static const char *clear_signature_footer = "-----END PGP SIGNATURE-----\n";
-void
-write_clear_signature(FILE *fd, byte *signature, int length)
-{
-  u32 crc;
-  byte hash[5], *p, *ph = 0;
-
-  fprintf(fd, clear_signature_header);
-  printr64(fd, signature, length);
-  crc = crc24(signature, length);
-  hash[0] = crc >> 16;
-  hash[1] = crc >> 8;
-  hash[2] = crc;
-  putc('=', fd);
-  printr64(fd, hash, 3);
-  fprintf(fd, clear_signature_footer);
-}
 
 void
-write_appimage_sig_offset(char *filename, byte *signature, int length)
+write_appimage_signature(char *filename, byte *signature, int length)
 {
   // find .sha256_sig section offset in ELF file
   unsigned char elfbuf[128];
@@ -1403,16 +1418,18 @@ write_appimage_sig_offset(char *filename, byte *signature, int length)
   off_t soff;
   int snum, ssiz;
   int i, l, stridx;
-  FILE *fd;
+  FILE *fp;
+  char *armored_signature;
+  size_t siglen;
   unsigned int sha256_sig_offset = 0;
   unsigned int sha256_sig_size = 0;
   unsigned char *sects, *strsect;
   unsigned int slen;
   unsigned int o;
 
-  if ((fd = fopen(filename, "r+")) == 0)
-      perror_exit(filename);
-  l = fread(elfbuf, 1, 128, fd);
+  if ((fp = fopen(filename, "r+")) == 0)
+    perror_exit(filename);
+  l = fread(elfbuf, 1, 128, fp);
   if (l < 128)
     perror_exit("offset 1");
   if (elfbuf[0] != 0x7f || elfbuf[1] != 'E' || elfbuf[2] != 'L' || elfbuf[3] != 'F')
@@ -1434,7 +1451,7 @@ write_appimage_sig_offset(char *filename, byte *signature, int length)
   sects = malloc(snum * ssiz);
   if (!sects)
     perror_exit("offset 7");
-  if (fseek(fd, soff, SEEK_SET) != 0 || fread(sects, 1, snum * ssiz, fd) != snum * ssiz)
+  if (fseek(fp, soff, SEEK_SET) != 0 || fread(sects, 1, snum * ssiz, fp) != snum * ssiz)
     {
       free(sects);
       perror_exit("offset");
@@ -1458,7 +1475,7 @@ write_appimage_sig_offset(char *filename, byte *signature, int length)
       free(sects);
       perror_exit("offset");
     }
-  if (fseek(fd, soff, SEEK_SET) != 0 || fread(strsect, 1, slen, fd) != slen)
+  if (fseek(fp, soff, SEEK_SET) != 0 || fread(strsect, 1, slen, fp) != slen)
     {
       free(sects);
       free(strsect);
@@ -1482,22 +1499,21 @@ write_appimage_sig_offset(char *filename, byte *signature, int length)
   free(sects);
 
   if (sha256_sig_offset == 0)
-      perror_exit(".sha256_sig not found");
+    perror_exit(".sha256_sig not found");
 
-  if (fseek(fd, sha256_sig_offset, SEEK_SET) == (off_t)-1)
-      perror_exit("lseek");
+  armored_signature = get_armored_signature(signature, length);
+  siglen = strlen(armored_signature) + 1;
+  if (siglen > sha256_sig_size)
+    perror_exit("section too small for signature");
 
-  int full_length = length + strlen(clear_signature_header)+ strlen(clear_signature_footer);
-  if (full_length > sha256_sig_size)
-      perror_exit("section too small for signature");
-
-  write_clear_signature(fd, signature, length);
-
-  // fill the rest with zeros
-  for(; sha256_sig_size < full_length; full_length++)
-      fputc(0x0, fd);
-
-  fclose(fd);
+  if (fseek(fp, sha256_sig_offset, SEEK_SET) == (off_t)-1)
+    perror_exit("lseek");
+  if (fwrite(armored_signature, siglen, 1, fp) != 1)
+    perror_exit("signature write");
+  for(; siglen < sha256_sig_size; siglen++)
+    fputc(0x0, fp);
+  if (fclose(fp))
+    perror_exit("fclose error");
 }
 
 static int
@@ -1724,7 +1740,7 @@ sign(char *filename, int isfilter, int mode)
   u32 rpmdataoff = 0;
   char *outfilename = 0;
   FILE *fout = 0;
-  int foutfd;
+  int foutfd = -1;
   int getbuildtime = 0;
   int buildtimeoff = 0;
   byte btbuf[4];
@@ -1753,6 +1769,11 @@ sign(char *filename, int isfilter, int mode)
       } else
         mode = MODE_CLEARSIGN;
     }
+  if (mode == MODE_APPIMAGESIGN && isfilter)
+    {
+      fprintf(stderr, "appimage sign cannot work as filter.\n");
+      exit(1);
+    }
   if (isfilter)
     fd = 0;
   else if ((fd = open(filename, O_RDONLY)) == -1)
@@ -1760,7 +1781,7 @@ sign(char *filename, int isfilter, int mode)
       perror(filename);
       exit(1);
     }
-  else
+  else if (mode != MODE_APPIMAGESIGN)
     {
       outfilename = malloc(strlen(filename) + 16);
       if (!outfilename)
@@ -1989,11 +2010,12 @@ sign(char *filename, int isfilter, int mode)
     }
   else if (mode == MODE_APPIMAGESIGN)
     {
-      sock = opensocket();
-
+      unsigned char appimagedigest[64]; /*  sha256 sum */
+      char *digestfilename;
       FILE *fp;
-      unsigned char appimagedigest[65]; // sha256 sum
-      unsigned char *digestfilename = malloc(strlen(filename) + 8);
+
+      sock = opensocket();
+      digestfilename = malloc(strlen(filename) + 8);
       sprintf(digestfilename, "%s.digest", filename);
       if ((fp = fopen(digestfilename, "r")) == 0 || 64 != fread(appimagedigest, 1, 64, fp))
         {
@@ -2002,8 +2024,7 @@ sign(char *filename, int isfilter, int mode)
         }
       fclose(fp);
       free(digestfilename);
-
-      hash_write(&ctx, appimagedigest,  64);
+      hash_write(&ctx, appimagedigest, 64);
     }
   else
     {
@@ -2354,7 +2375,7 @@ sign(char *filename, int isfilter, int mode)
 
   if (mode == MODE_CLEARSIGN || mode == MODE_DETACHEDSIGN)
     {
-      write_clear_signature(fout, buf + 6, outl);
+      write_armored_signature(fout, buf + 6, outl);
     }
   else if (mode == MODE_RAWDETACHEDSIGN)
     {
@@ -2507,24 +2528,22 @@ sign(char *filename, int isfilter, int mode)
       free(rpmsig);
     }
   else if (mode == MODE_APPIMAGESIGN)
-    {
-      write_appimage_sig_offset(filename, buf + 6, outl);
-      return 0;
-    }
+    write_appimage_signature(filename, buf + 6, outl);
   else
     fwrite(buf + 6, 1, outl, fout);
 
   if (!isfilter)
     {
       close(fd);
-      if (fclose(fout))
+      if (fout && fclose(fout))
 	{
 	  perror("fclose");
 	  unlink(outfilename);
 	  exit(1);
 	}
-      if (mode != MODE_DETACHEDSIGN && mode != MODE_RAWDETACHEDSIGN && mode != MODE_RAWOPENSSLSIGN
-		 && rename(outfilename, filename))
+      if (mode != MODE_DETACHEDSIGN && mode != MODE_RAWDETACHEDSIGN
+	  && mode != MODE_RAWOPENSSLSIGN && mode != MODE_APPIMAGESIGN
+	  && rename(outfilename, filename))
 	{
 	  perror("rename");
 	  unlink(outfilename);
