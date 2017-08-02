@@ -568,6 +568,11 @@ sub rungpg_fatal {
   return $out;
 }
 
+
+if (! -d $tmpdir) {
+  mkdir($tmpdir, 0700) || die("$tmpdir: $!\n");
+}
+
 if ($cmd eq 'pubkey') {
   die("pubkey: one argument expected\n") if @argv != 2;
   my $pubkey = rungpg_fatal('/dev/null', undef, $gpg, '--export', '-a', $user);
@@ -581,9 +586,6 @@ if ($cmd eq 'pubkey') {
 }
 
 if ($cmd eq 'keygen') {
-  if (! -d $tmpdir) {
-    mkdir($tmpdir) || die("$tmpdir: $!\n");
-  }
   die("keygen: at least five arguments expected\n") if @argv < 6;
   my $type = $argv[2];
   my $expire = $argv[3];
@@ -641,9 +643,6 @@ if ($cmd eq 'keygen') {
 }
 
 if ($cmd eq 'certgen') {
-  if (! -d $tmpdir) {
-    mkdir($tmpdir) || die("$tmpdir: $!\n");
-  }
   die("keygen: at least five arguments expected\n") if @argv < 6;
   die("bad private key\n") if $argv[2] !~ /^(?:[0-9a-fA-F][0-9a-fA-F])+$/s;
   my $privkey = pack('H*', $argv[2]);
@@ -697,9 +696,6 @@ EOL
 my @keyargs;
 
 if ($cmd eq 'privsign') {
-  if (! -d $tmpdir) {
-    mkdir($tmpdir) || die("$tmpdir: $!\n");
-  }
   die("sign: at least three arguments expected\n") if @argv < 4;
   die("bad private key\n") if $argv[2] !~ /^(?:[0-9a-fA-F][0-9a-fA-F])+$/s;
   my $privkey = pack('H*', $argv[2]);
