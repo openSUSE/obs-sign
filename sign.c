@@ -3398,7 +3398,7 @@ void usage()
             "  sign [-v] -r <file> [-u user] [-h hash]: add signature block to rpm\n"
             "  sign [-v] -a <file> [-u user] [-h hash]: add signature block to appimage\n"
             "  sign [-v] -k [-u user] [-h hash]: print key id\n"
-            "  sign [-v] -p [-u user] [-h hash]: print pulbic key\n"
+            "  sign [-v] -p [-u user] [-h hash]: print public key\n"
             "  sign [-v] -g <type> <expire> <name> <email>: generate keys\n"
             "  sign [-v] -x <expire> <pubkey>: extend pubkey\n"
             "  sign [-v] -C <pubkey>: create certificate\n"
