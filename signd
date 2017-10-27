@@ -129,7 +129,7 @@ sub priv2pub {
     $pack = substr($pack, 0, $mpioff);
     my $ol = length($pack);
     if ($ol < 192) {
-      $pubkey .= pack("CC", $ptag + 128, $ol).$pack;
+      $pubkey .= pack("CC", $ptag + 192, $ol).$pack;
     } elsif ($ol < 8384) {
       $ol = $ol - 192;
       $ol += (192 << 8);
