@@ -1044,6 +1044,7 @@ static int hashalgo = HASH_SHA1;
 static const char *timearg;
 static char *privkey;
 static int noheaderonly;
+static int pkcs1pss;
 static char *chksumfile;
 static int chksumfilefd = -1;
 
@@ -2128,7 +2129,12 @@ sign(char *filename, int isfilter, int mode)
       else
         fprintf(isfilter ? stderr : stdout, "%s %s\n", modes[mode],  filename);
     }
-  if (mode != MODE_RAWOPENSSLSIGN)
+  if (mode == MODE_RAWOPENSSLSIGN)
+    {
+      hash[0] = pkcs1pss ? 0xbc : 0x00;
+      hash[1] = hash[2] = hash[3] = hash[4] = 0;
+    }
+  else
     {
       hash[0] = mode == MODE_CLEARSIGN ? 0x01 : 0x00; /* class */
       hash[1] = signtime >> 24;
@@ -3662,6 +3668,12 @@ main(int argc, char **argv)
 	  argc -= 2;
 	  argv += 2;
         }
+      else if (argc > 1 && !strcmp(argv[1], "--pkcs1pss"))
+        {
+	  pkcs1pss = 1;
+	  argc--;
+	  argv++;
+        }
       else if (argc > 1 && !strcmp(argv[1], "--"))
         {
 	  argc--;
@@ -3686,6 +3698,11 @@ main(int argc, char **argv)
   if ((mode == MODE_KEYID || mode == MODE_PUBKEY) && argc > 1)
     {
       fprintf(stderr, "usage: sign [-c|-d|-r|-a] [-u user] <file>\n");
+      exit(1);
+    }
+  if (pkcs1pss && mode != MODE_RAWOPENSSLSIGN)
+    {
+      fprintf(stderr, "can only generate a pkcs1pss signature in openssl mode\n");
       exit(1);
     }
   if (mode == MODE_KEYGEN)
