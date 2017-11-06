@@ -1,7 +1,7 @@
 #
 # spec file for package obs-signd
 #
-# Copyright (c) 2013 SUSE LINUX Products GmbH, Nuernberg, Germany.
+# Copyright (c) 2017 SUSE LINUX GmbH, Nuernberg, Germany.
 #
 # All modifications and additions to the file contributed by third parties
 # remain the property of their copyright owners, unless otherwise agreed
@@ -21,11 +21,11 @@ Summary:        The sign daemon
 License:        GPL-2.0
 Group:          Productivity/Networking/Web/Utilities
 
-Version:        2.3.0
+Version:        2.4.2
 Release:        0
 
 Url:            http://en.opensuse.org/Build_Service
-Source:         sign-%version.tar.bz2
+Source:         obs-sign-%version.tar.xz
 Source1:        obs-signd-rpmlintrc
 Requires:       gpg2_signd_support
 %if 0%{?suse_version:1}
@@ -40,7 +40,7 @@ This daemon can be used to sign anything via gpg, but it speaks with a remote se
 to avoid the need to host the private key on the same server.
 
 %prep
-%setup -q -n sign-%version
+%setup -n obs-sign-%version
 
 %build
 #

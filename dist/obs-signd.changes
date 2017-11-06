@@ -1,4 +1,22 @@
 -------------------------------------------------------------------
+Mon Nov  6 12:55:14 CET 2017 - mls@suse.de
+
+- update to version 2.4.2
+  * support --pkcs1pss option
+
+-------------------------------------------------------------------
+Mon Mar  6 09:52:35 UTC 2017 - fschreiner@suse.com
+
+- update to version 2.4.1
+  * fix dependency cycle in init script 
+
+-------------------------------------------------------------------
+Wed Mar  1 13:44:38 UTC 2017 - adrian@suse.de
+
+- update to version 2.4.0
+  * support signing of AppImage files
+
+-------------------------------------------------------------------
 Wed Jul  6 16:01:37 CEST 2016 - mls@suse.de
 
 - update to version 2.3.0
