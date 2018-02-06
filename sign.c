@@ -904,7 +904,7 @@ void
 write_armored_signature(FILE *fp, byte *signature, int length)
 {
   u32 crc;
-  byte hash[5], *p, *ph = 0;
+  byte hash[5];
 
   fprintf(fp, armor_signature_header);
   printr64(fp, signature, length);
@@ -1205,7 +1205,7 @@ static int
 doreq(int sock, int argc, const char **argv, byte *buf, int bufl, int nret)
 {
   byte *bp;
-  int i, l, v, outl, errl;
+  int i, l, v, outl;
 
   bp = buf + 2;
   *bp++ = 0;
@@ -1883,10 +1883,10 @@ probe_pubalgo()
 
   sock = opensocket();
   ulen = strlen(user);
-  bp = hashhex;
+  bp = (byte *)hashhex;
   for (i = 0; i < hashlen[hashalgo]; i++, bp += 2)
-    sprintf(bp, "01");
-  sprintf(bp, "@00%08x", (unsigned int)signtime);
+    sprintf((char *)bp, "01");
+  sprintf((char *)bp, "@00%08x", (unsigned int)signtime);
 
   if (!privkey)
     {
@@ -1908,8 +1908,8 @@ probe_pubalgo()
 	  bp += strlen((const char *)bp);
 	  *bp++ = ':';
 	}
-      strcpy(bp, hashhex);
-      bp += strlen(bp);
+      strcpy((char *)bp, hashhex);
+      bp += strlen((char *)bp);
       buf[3] = bp - (buf + 4 + ulen);
       outl = doreq_old(sock, buf, (int)(bp - buf), sizeof(buf));
     }
@@ -1936,7 +1936,6 @@ static int
 sign(char *filename, int isfilter, int mode)
 {
   u32 signtime;
-  u32 crc;
   byte buf[8192], *bp;
   byte *cbuf;
   int cbufl;
@@ -1947,7 +1946,7 @@ sign(char *filename, int isfilter, int mode)
   MD5_CTX md5ctx;
   HASH_CONTEXT hctx;
   int force = 1;
-  int outl, outlh, errl;
+  int outl, outlh;
   int sock;
   int ulen;
   byte rpmlead[96];
