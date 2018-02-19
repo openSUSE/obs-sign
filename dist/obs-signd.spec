@@ -92,7 +92,6 @@ install -m 0644 dist/sysconfig.signd $FILLUP_DIR/
 %fillup_and_insserv
 
 %files
-%defattr(-,root,root)
 %config(noreplace) /etc/sign.conf
 %verify(not mode) %attr(4750,root,obsrun) /usr/bin/sign
 %attr(0755,root,root) /usr/sbin/signd
