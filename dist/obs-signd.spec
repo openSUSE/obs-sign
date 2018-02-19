@@ -91,9 +91,6 @@ install -m 0644 dist/sysconfig.signd $FILLUP_DIR/
 %endif
 %fillup_and_insserv
 
-%clean
-rm -rf $RPM_BUILD_ROOT
-
 %files
 %defattr(-,root,root)
 %config(noreplace) /etc/sign.conf
