@@ -31,6 +31,7 @@ Requires:       gpg2_signd_support
 %if 0%{?suse_version:1}
 PreReq:         %fillup_prereq %insserv_prereq permissions
 %endif
+BuildRequires:  gcc
 
 %description
 The openSUSE Build Service sign client and daemon.
