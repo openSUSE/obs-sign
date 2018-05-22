@@ -1034,7 +1034,6 @@ static int verbose;
 #define PUB_DSA         0
 #define PUB_RSA         1
 
-static const char *const pubname[] = {"DSA", "RSA"};
 static const char *const hashname[] = {"SHA1", "SHA256"};
 static const int  hashlen[] = {20, 32};
 
