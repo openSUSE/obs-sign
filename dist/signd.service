@@ -1,0 +1,12 @@
+[Unit]
+Description=GPG Sign Daemon
+After=syslog.target
+
+[Service]
+Type=forking
+PIDFile=/var/run/signd.pid
+ExecStart=/usr/sbin/signd -f
+Restart=on-abort
+
+[Install]
+WantedBy=multi-user.target
