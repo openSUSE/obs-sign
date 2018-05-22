@@ -906,7 +906,7 @@ write_armored_signature(FILE *fp, byte *signature, int length)
   u32 crc;
   byte hash[5];
 
-  fprintf(fp, armor_signature_header);
+  fprintf(fp, "%s", armor_signature_header);
   printr64(fp, signature, length);
   crc = crc24(signature, length);
   hash[0] = crc >> 16;
@@ -914,7 +914,7 @@ write_armored_signature(FILE *fp, byte *signature, int length)
   hash[2] = crc;
   putc('=', fp);
   printr64(fp, hash, 3);
-  fprintf(fp, armor_signature_footer);
+  fprintf(fp, "%s", armor_signature_footer);
 }
 
 char *
