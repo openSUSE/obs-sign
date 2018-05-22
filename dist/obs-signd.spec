@@ -31,7 +31,7 @@ Requires:       gpg2_signd_support
 %if 0%{?suse_version:1}
 PreReq:         %fillup_prereq %insserv_prereq permissions
 %endif
-BuildRoot:      %{_tmppath}/%{name}-%{version}-build
+BuildRequires:  gcc
 
 %description
 The openSUSE Build Service sign client and daemon.
@@ -91,11 +91,7 @@ install -m 0644 dist/sysconfig.signd $FILLUP_DIR/
 %endif
 %fillup_and_insserv
 
-%clean
-rm -rf $RPM_BUILD_ROOT
-
 %files
-%defattr(-,root,root)
 %config(noreplace) /etc/sign.conf
 %verify(not mode) %attr(4750,root,obsrun) /usr/bin/sign
 %attr(0755,root,root) /usr/sbin/signd
