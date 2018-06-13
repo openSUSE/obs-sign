@@ -731,9 +731,9 @@ if ($cmd eq 'sign' || $cmd eq 'privsign') {
       $argv[2] = substr($argv[2], 0, -10)."0000000000";
     }
     if (@keyargs) {
-      ($status, $lout, $lerr) = rungpg('/dev/null', ["$tmpdir/privkey.$$", "$tmpdir/pubkey.$$"], $gpg, "--batch", "--force-v3-sigs", "--files-are-digests", "--allow-non-selfsigned-uid", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--passphrase-fd=0", @keyargs, "-sbo", "-", $argv[2]);
+      ($status, $lout, $lerr) = rungpg('/dev/null', ["$tmpdir/privkey.$$", "$tmpdir/pubkey.$$"], $gpg, "--batch", "--force-v3-sigs", "--files-are-digests", "--allow-non-selfsigned-uid", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--ignore-time-conflict", "--passphrase-fd=0", @keyargs, "-sbo", "-", $argv[2]);
     } else {
-      ($status, $lout, $lerr) = rungpg("$phrases/$user", undef, $gpg, "--batch", "--force-v3-sigs", "--files-are-digests", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--passphrase-fd=0", "-u", $user, "-sbo", "-", $argv[2]);
+      ($status, $lout, $lerr) = rungpg("$phrases/$user", undef, $gpg, "--batch", "--force-v3-sigs", "--files-are-digests", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--ignore-time-conflict", "--passphrase-fd=0", "-u", $user, "-sbo", "-", $argv[2]);
     }
     $lout = patchclasstime($lout, $classtime) if $classtime && !$status;
     splice(@argv, 2, 1);
