@@ -328,6 +328,19 @@ die("will not proxy to myself\n") if $signhost eq '127.0.0.1' && $port eq $proxy
 my $signaddr = inet_aton($signhost);
 die("$signhost: unknown host\n") unless $signaddr;
 
+my @argv;
+my $oldproto = 0;
+my $testmode;
+
+if ($ARGV[0] eq '-t') {
+  die("test mode need phrases\n") unless $phrases;
+  # test mode
+  $| = 1;
+  @argv = @ARGV;
+  shift @argv;
+  *CLNT = *STDOUT;
+  goto testit;
+}
 if ($ARGV[0] eq '-f') {
   my $pid = fork();
   die("fork") if  !defined($pid) || $pid < 0;
@@ -397,9 +410,6 @@ while (length($pack) < 4 + $user + $arg) {
 }
 die("packet size mismatch\n") if length($pack) !=  4 + $user + $arg;
 
-my @argv;
-my $oldproto = 0;
-
 if ($arg == 0 && $user != 0) {
   # new format
   die("packet too small\n") unless $user >= 2;
@@ -435,6 +445,8 @@ if (($argv[0] eq 'privsign' || $argv[0] eq 'certgen') && @argv > 2) {
 } else {
   printf "%04d-%02d-%02d %02d:%02d:%02d: $peer: %s\n", $lt[5] + 1900, $lt[4] + 1, @lt[3,2,1,0], "@argv";
 }
+
+testit:
 
 my $hashalgo = 'SHA1';
 $user = $argv[1];
