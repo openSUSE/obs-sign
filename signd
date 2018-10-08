@@ -26,6 +26,7 @@ use Math::BigInt;
 use MIME::Base64;
 use Encode;
 use bytes;
+use File::Temp qw/tempdir/;
 use File::Path qw/remove_tree/;
 
 my %allow;
@@ -600,6 +601,13 @@ sub rungpg_fatal {
   return $out;
 }
 
+sub prepare_tmp_gnupghome {
+  my ($tmpdir) = @_;
+  my $tdir = tempdir('XXXXXXXX', DIR => $tmpdir);
+  chmod 0700, $tdir;
+  mkdir("$tdir/gnupg", 0700) || die "Could not create $tdir/gnupg: $!\n";
+  return ($tdir, "$tdir/gnupg");
+}
 
 if (! -d $tmpdir) {
   mkdir($tmpdir, 0700) || die("$tmpdir: $!\n");
@@ -629,41 +637,60 @@ if ($cmd eq 'keygen') {
   die("bad type: $type\n") unless $type =~ /^(dsa|rsa)\@(1024|2048|4096)$/s;
   my $length = $2;
   $type = $1;
-  my $batch = "Key-Type: $type\nKey-Length: $length\nKey-Usage: sign\nName-Real: $real\nName-Email: $email\nExpire-Date: ${expire}d\n%pubring $tmpdir/pubkey.$$\n%secring $tmpdir/privkey.$$\n";
+
+  my $org_gnupghome = $ENV{GNUPGHOME};
+  my $tdir;
+  ($tdir, $ENV{GNUPGHOME}) = prepare_tmp_gnupghome($tmpdir);
+
+  # write params file
+  my $batch = "Key-Type: $type\nKey-Length: $length\nKey-Usage: sign\nName-Real: $real\nName-Email: $email\nExpire-Date: ${expire}d\n%no-protection\n";
   local *F;
-  open(F, ">$tmpdir/params.$$") || die("$tmpdir/params.$$: $!\n");
+  open(F, ">$tdir/params") || die("$tdir/params: $!\n");
   (syswrite(F, $batch) || 0) == length($batch) || die("keygen parameter write error\n");
   close(F) || die("keygen parameter close error\n");
 
-  rungpg_fatal('/dev/null', ["$tmpdir/params.$$"], $gpg, '--batch', '--no-secmem-warning', '--trustdb-name', "$tmpdir/trustdb.$$", '--gen-key', "$tmpdir/params.$$");
-  unlink("$tmpdir/params.$$");
-  unlink("$tmpdir/trustdb.$$");
-  die("gpg did not create private key\n") unless -s "$tmpdir/privkey.$$";
-  die("gpg did not create public key\n") unless -s "$tmpdir/pubkey.$$";
+  rungpg_fatal('/dev/null', $tdir, $gpg, '--batch', '--no-secmem-warning', '--gen-key', "$tdir/params");
 
   # get the keyid so we can add a signature
-  my $keyid = rungpg_fatal('/dev/null', ["$tmpdir/pubkey.$$", "$tmpdir/privkey.$$"], $gpg, '--list-keys', '--no-secmem-warning', '--no-default-keyring', "--keyring=$tmpdir/pubkey.$$", '--fixed-list-mode', '--with-colons');
+  my $keyid = rungpg_fatal('/dev/null', $tdir, $gpg, '--list-keys', '--no-secmem-warning', '--no-default-keyring', '--fixed-list-mode', '--with-colons');
   my @keyid = split("\n", $keyid);
   @keyid = grep {s/^pub:[^:]*:[^:]*:[^:]*:([^:]*):.*$/$1/} @keyid;
   if (@keyid != 1) {
-    unlink("$tmpdir/pubkey.$$");
-    unlink("$tmpdir/privkey.$$");
+    remove_tree($tdir) || die "Could not remove $tdir: $!\n";
     die("keyid not found\n");
   }
   $keyid = $keyid[0];
 
   # add user sig to pubkey
-  rungpg_fatal("$phrases/$user", ["$tmpdir/pubkey.$$", "$tmpdir/privkey.$$"], $gpg, '--batch', '--no-secmem-warning', "--keyring=$tmpdir/pubkey.$$", "--passphrase-fd=0", "-u", $user, '--yes', '--trustdb-name', "$tmpdir/trustdb.$$", '--default-cert-level', '3', '--edit-key', $keyid, 'sign', 'save');
-  unlink("$tmpdir/pubkey.$$~");
-  unlink("$tmpdir/trustdb.$$");
+  $ENV{GNUPGHOME} = $org_gnupghome;
+  my $pubring;
+  if (-e "$tdir/gnupg/pubring.kbx") {
+    $pubring = "$tdir/gnupg/pubring.kbx";
+  } elsif ( -e "$tdir/gnupg/pubring.gpg") {
+    $pubring = "$tdir/gnupg/pubring.gpg";
+  } else {
+    remove_tree($tdir);
+    die "No valid pubring found in $tdir/gnupg\n";
+  }
+
+  rungpg_fatal("$phrases/$user", $tdir, $gpg, '--batch', '--no-secmem-warning',
+        "--passphrase-fd=0", "--yes",
+        "-u", $user,
+        '--default-cert-level', '3',
+        "--keyring", $pubring,
+        '--edit-key', $keyid,
+        'sign',
+        'save');
 
   # export pubkey
-  my $pubkey = rungpg_fatal('/dev/null', ["$tmpdir/pubkey.$$", "$tmpdir/privkey.$$"], $gpg, '--batch', '--no-secmem-warning', '--no-default-keyring', "--keyring=$tmpdir/pubkey.$$", '--export', '-a');
-  unlink("$tmpdir/pubkey.$$");
+  $ENV{GNUPGHOME} = "$tdir/gnupg";
+  my $pubkey = rungpg_fatal('/dev/null', $tdir, $gpg, '--batch', '--no-secmem-warning', '--no-default-keyring', '--export', '-a');
 
   # encrypt privkey
-  my $privkey = rungpg_fatal('/dev/null', ["$tmpdir/privkey.$$"], $gpg, '--batch', '--encrypt', '--no-verbose', '--no-secmem-warning', '--trust-model', 'always', '-o-', '-r', "$user", "$tmpdir/privkey.$$");
-  unlink("$tmpdir/privkey.$$");
+  my $privkey_plain = rungpg_fatal('/dev/null', $tdir, $gpg, '--batch', '--export-secret-keys', '--no-verbose', '--no-secmem-warning', '--trust-model', 'always', '-o', "$tdir/privkey");
+  $ENV{GNUPGHOME} = $org_gnupghome;
+  my $privkey = rungpg_fatal('/dev/null', $tdir, $gpg, '--batch', '--encrypt', '--no-verbose', '--no-secmem-warning', '--trust-model', 'always', '-o-', '-r', "$user", "$tdir/privkey");
+  remove_tree($tdir);
 
   # send back
   $privkey = unpack('H*', $privkey);
