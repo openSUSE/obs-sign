@@ -26,6 +26,7 @@ use Math::BigInt;
 use MIME::Base64;
 use Encode;
 use bytes;
+use File::Path qw/remove_tree/;
 
 my %allow;
 my %map;
@@ -536,6 +537,17 @@ if ($cmd eq 'ping') {
   exit(0);
 }
 
+sub cleanup_tmp_gpg {
+  my ($unlinks) = @_;
+  if(ref($unlinks) eq 'ARRAY') {
+    for (@{$unlinks || []}) {
+      unlink($_);
+    }
+  } elsif (-d $unlinks) {
+    remove_tree($unlinks);
+  }
+};
+
 
 sub rungpg {
   my ($stdin, $unlinks, $prg, @args) = @_;
@@ -547,9 +559,7 @@ sub rungpg {
   pipe RH, WH;
   my $pid = open(KID, "-|");
   if (!defined $pid) {
-    for (@{$unlinks || []}) {
-      unlink($_);
-    }
+    cleanup_tmp_gpg($unlinks);
     die("could not fork: $!\n");
     exit(0);
   }
@@ -584,9 +594,7 @@ sub rungpg_fatal {
   if ($status) {
     $err = "Error $status" if $err eq '';
     $err =~ s/\n$//s;
-    for (@{$unlinks || []}) {
-      unlink($_);
-    }
+    cleanup_tmp_gpg($unlinks);
     die("$err\n");
   }
   return $out;
