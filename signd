@@ -402,10 +402,7 @@ $SIG{'__DIE__'} = sub {
   my @lt = localtime(time);
   printlog("$peer: $err");
   $err .= "\n";
-  $err = pack("nnn", 1, 0, length($err)).$err;
-  swrite(*CLNT, $err);
-  close CLNT;
-  exit(1);
+  reply(1, $err, '');
 };
 
 my ($sport, $saddr) = sockaddr_in($clntaddr);
@@ -532,10 +529,8 @@ if (!$phrases || ($cmd ne 'ping' && $user eq '') || ($cmd ne 'ping' && ! -e "$ph
 }
 
 if ($cmd eq 'ping') {
-  my $ret = pack("nnn", 0, 0, 0);
-  swrite(*CLNT, $ret);
-  close CLNT;
-  exit(0);
+  $oldproto = 1;
+  reply(0, '', '');
 }
 
 sub cleanup_tmp_gpg {
@@ -616,13 +611,7 @@ if (! -d $tmpdir) {
 if ($cmd eq 'pubkey') {
   die("pubkey: one argument expected\n") if @argv != 2;
   my $pubkey = rungpg_fatal('/dev/null', undef, $gpg, '--export', '-a', $user);
-  if (!$oldproto) {
-    $pubkey = pack('nn', 1, length($pubkey)).$pubkey;
-  }
-  my $ret = pack("nnn", 0, length($pubkey), 0).$pubkey;
-  swrite(*CLNT, $ret);
-  close CLNT;
-  exit(0);
+  reply(0, '', $pubkey);
 }
 
 if ($cmd eq 'keygen') {
@@ -694,11 +683,7 @@ if ($cmd eq 'keygen') {
 
   # send back
   $privkey = unpack('H*', $privkey);
-  my $ret = pack("nnn", 2, length($pubkey), length($privkey)).$pubkey.$privkey;
-  $ret = pack("nnn", 0, length($ret), 0).$ret;
-  swrite(*CLNT, $ret);
-  close CLNT;
-  exit(0);
+  reply(0, '', $pubkey, $privkey);
 }
 
 if ($cmd eq 'certgen') {
@@ -746,10 +731,8 @@ EOL
   my $cert = rungpg_fatal('/dev/null', ["$tmpdir/sslreq$$.conf", "$tmpdir/privkey.$$"], $openssl, 'req', '-new', '-x509', '-sha256', '-key', "$tmpdir/privkey.$$", '-days', $expire, '-config', "$tmpdir/sslreq$$.conf");
   unlink("$tmpdir/privkey.$$");
   unlink("$tmpdir/sslreq$$.conf");
-  my $ret = pack("nnn", 0, length($cert), 0).$cert;
-  swrite(*CLNT, $ret);
-  close CLNT;
-  exit(0);
+  $oldproto = 1;
+  reply(0, '', $cert);
 }
 
 
@@ -775,7 +758,7 @@ if ($cmd eq 'privsign') {
   my $status = 0;
   my $err = '';
   my $out = '';
-  my @outlen;
+  my @out;
   while (@argv > 2) {
     my ($lout, $lerr);
     my $classtime;
@@ -786,23 +769,19 @@ if ($cmd eq 'privsign') {
     ($status, $lout, $lerr) = rungpg('/dev/null', undef, $gpg, "--batch", "--force-v3-sigs", "--files-are-digests", "--allow-non-selfsigned-uid", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--ignore-time-conflict", "--passphrase-fd=0", "-sbo", "-", $argv[2]);
     $lout = patchclasstime($lout, $classtime) if $classtime && !$status;
     splice(@argv, 2, 1);
-    $out .= $lout;
+    push @out, $lout;
     $err .= $lerr;
-    push @outlen, length($lout);
     last if $status;
   }
+
   remove_tree($tdir);
-  if (!$oldproto) {
-    while (@argv > 2) {
-      push @outlen, 0;
-      pop @argv;
-    }
-    $out = pack('n' x (1 + scalar(@outlen)), scalar(@outlen), @outlen).$out;
+
+  while (@argv > 2) {
+    push @out, '';
+    pop @argv;
   }
-  my $ret = pack("nnn", $status, length($out), length($err)).$out.$err;
-  swrite(*CLNT, $ret);
-  close CLNT;
-  exit(0);
+
+  reply($status, $err, @out);
 }
 
 if ($cmd eq 'sign') {
@@ -811,7 +790,7 @@ if ($cmd eq 'sign') {
   my $status = 0;
   my $err = '';
   my $out = '';
-  my @outlen;
+  my @out;
   while (@argv > 2) {
     my ($lout, $lerr);
     my $classtime;
@@ -822,23 +801,31 @@ if ($cmd eq 'sign') {
     ($status, $lout, $lerr) = rungpg("$phrases/$user", undef, $gpg, "--batch", "--force-v3-sigs", "--files-are-digests", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--ignore-time-conflict", "--passphrase-fd=0", "-u", $user, "-sbo", "-", $argv[2]);
     $lout = patchclasstime($lout, $classtime) if $classtime && !$status;
     splice(@argv, 2, 1);
-    $out .= $lout;
+    push @out, $lout;
     $err .= $lerr;
-    push @outlen, length($lout);
     last if $status;
   }
-  if (!$oldproto) {
-    while (@argv > 2) {
-      push @outlen, 0;
-      pop @argv;
-    }
-    $out = pack('n' x (1 + scalar(@outlen)), scalar(@outlen), @outlen).$out;
+  while (@argv > 2) {
+    push @out, '';
+    pop @argv;
+  }
+  reply($status, $err, @out);
+}
+
+die("unknown command: $cmd\n");
+
+sub reply {
+  my ($status, $err, @out) = @_;
+  my $out;
+  if ($oldproto) {
+    die("only one reply supported in old protocol") if @out != 1;
+    $out = $out[0];
+  } else {
+    $out = pack('n' x (1 + scalar(@out)), scalar(@out), map {length($_)} @out).join('', @out);
   }
   my $ret = pack("nnn", $status, length($out), length($err)).$out.$err;
   swrite(*CLNT, $ret);
   close CLNT;
   exit(0);
 }
-
-die("unknown command: $cmd\n");
 
