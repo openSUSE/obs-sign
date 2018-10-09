@@ -18,7 +18,9 @@
 #
 ################################################################
 
-use Socket;
+use strict;
+use warnings;
+use Socket qw/IPPROTO_TCP PF_INET SOCK_STREAM SOL_SOCKET SO_REUSEADDR SO_KEEPALIVE INADDR_ANY inet_aton inet_ntoa sockaddr_in/;
 use POSIX;
 use Math::BigInt;
 use MIME::Base64;
@@ -268,7 +270,9 @@ sub checkbadchar {
 }
 
 local *F;
-open(F, '</etc/sign.conf') || die("/etc/sign.conf: $!\n");
+my $testmode = (($ARGV[0] || '') eq '-t') ? 1 : 0;
+my $conf = ($testmode ? 't/etc/sign.conf' : '/etc/sign.conf';
+open(F, '<', $conf) || die("$conf: $!\n");
 while(<F>) {
   chomp;
   next if /^#/;
@@ -330,9 +334,8 @@ die("$signhost: unknown host\n") unless $signaddr;
 
 my @argv;
 my $oldproto = 0;
-my $testmode;
 
-if ($ARGV[0] eq '-t') {
+if ($testmode) {
   die("test mode need phrases\n") unless $phrases;
   # test mode
   $| = 1;
@@ -341,7 +344,7 @@ if ($ARGV[0] eq '-t') {
   *CLNT = *STDOUT;
   goto testit;
 }
-if ($ARGV[0] eq '-f') {
+if (($ARGV[0] || '') eq '-f') {
   my $pid = fork();
   die("fork") if  !defined($pid) || $pid < 0;
   #exit(0) if $pid > 0;
@@ -449,7 +452,7 @@ if (($argv[0] eq 'privsign' || $argv[0] eq 'certgen') && @argv > 2) {
 testit:
 
 my $hashalgo = 'SHA1';
-$user = $argv[1];
+$user = $argv[1] || '';
 if ($user =~ /^(.*?):(.*)$/) {
   $hashalgo = $1;
   $user = $2;
@@ -506,7 +509,7 @@ if (!$phrases || ($cmd ne 'ping' && $user eq '') || ($cmd ne 'ping' && ! -e "$ph
   connect(CS, sockaddr_in($port, $signaddr)) || die("connect: $!\n");
   swrite(*CS, $pack);
   while(1) {
-    $buf = '';
+    my $buf = '';
     my $r = sysread(CS, $buf, 8192);
     if (!defined($r)) {
       die("sysread: $!\n") if $! != POSIX::EINTR;
@@ -561,6 +564,7 @@ sub rungpg {
   1 while sysread(KID, $err, 4096, length($err)) > 0;
   1 while sysread(RH, $out, 4096, length($out)) > 0;
   close(RH);
+  my $status = 0;
   $status = $? || 255 unless close KID;
   $status >>= 8 if $status >= 256;
   return ($status, $out, $err);
