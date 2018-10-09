@@ -6,6 +6,7 @@ use bytes;
 use Test::More tests => 12;
 use File::Temp qw/tempdir/;
 use File::Path qw/remove_tree/;
+use Digest::SHA;
 
 
 ###############################################################################
@@ -97,29 +98,41 @@ is($?, 0, "Checking cmd 'certgen' return code");
 my @certs = decode_reply($certgen_result, 1);
 like($certs[0], qr/-----END CERTIFICATE-----/, "Checking for end of certificate");
 
+
 ###############################################################################
-#if ($cmd eq 'privsign') {
-my $string = 'a94a8fe5ccb19ba61c4c0873d391e987982fbbd3@0000000000';
-$cmd = "GNUPGHOME=t/etc/gnupg ./signd -t privsign \"defaultkey\@localobs\" \"$keys[1]\" \"$string\"";
+### Common vars for sign and privsign
+my $trailer = pack("CN", 0, time());
+my $payload = "test";
+my $arg = Digest::SHA::sha1_hex("$payload$trailer").'@'.unpack("H*", $trailer);
+
+###############################################################################
+### if ($cmd eq 'privsign') {
+$cmd = "GNUPGHOME=t/etc/gnupg ./signd -t privsign \"defaultkey\@localobs\" \"$keys[1]\" $arg";
 my $privsign_result = `$cmd`;
 
 is($?, 0, "Checking cmd 'privsign' return code");
 my @privsign = decode_reply($privsign_result);
-spew("$tmpdir/privsign", $string);
+spew("$tmpdir/privsign", $payload);
 spew("$tmpdir/privsign.sig", $privsign[0]);
 my $verify_privsign = `gpg --verify $tmpdir/privsign.sig 2>&1`;
-unlike($verify_privsign, qr/gpg: verify signatures failed: Unknown system error/, "Checking for 'Unknown system error'");
+like(
+  $verify_privsign,
+  qr/Good signature from/,
+  "Checking cmd 'privsign' for 'Good signature from'"
+);
 
-
-#if ($cmd eq 'sign') {
-my $sign_result = `GNUPGHOME=t/etc/gnupg ./signd -t sign "defaultkey\@localobs" "$string"`;
+###############################################################################
+### if ($cmd eq 'sign') {
+my $sign_result = `GNUPGHOME=t/etc/gnupg ./signd -t sign "defaultkey\@localobs" $arg`;
 is($?, 0, "Checking cmd 'sign' return code");
 my @sign = decode_reply($sign_result);
-spew("$tmpdir/sign", $string);
+spew("$tmpdir/sign", $payload);
 spew("$tmpdir/sign.sig", $sign[0]);
-my @verify_sign = `GNUPGHOME=t/etc/gnupg gpg --verify $tmpdir/sign.sig 2>&1`;
-unlike($verify_sign[0], qr/gpg: verify signatures failed: Unknown system error/, "Checking for 'Unknown system error'");
+my $verify_sign = `GNUPGHOME=t/etc/gnupg gpg --verify $tmpdir/sign.sig 2>&1`;
+like($verify_sign, qr/Good signature from/, "Checking for 'Good signature from'");
 
+###############################################################################
+### cleanup
 remove_tree($tmpdir);
 
 exit 0;
