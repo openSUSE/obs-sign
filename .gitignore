@@ -1,0 +1,3 @@
+t/etc/gnupg/pubring.gpg~
+t/etc/gnupg/random_seed
+*.sw?
