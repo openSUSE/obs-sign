@@ -22,7 +22,6 @@ is($?, 0, "Checking cmd 'pubkey' return code");
 my @out = decode_reply($pubkey_result);
 my $expected = <<'EOF'
 -----BEGIN PGP PUBLIC KEY BLOCK-----
-Version: GnuPG v2
 
 mQENBFu69OoBCAC56ghE41rcnBweNXeAWjwznaglBe3jTKdJiD9iJLQhRvvGY9OC
 mPw2JnLIzqhITFBhF0YD1w0CMXphfTXtPJRuoC65rDQSB5zCBZjAYg8m9+wzMHuU
@@ -59,7 +58,11 @@ foSe9DQQ9z21ko8EDRlnZsOtZlsRR1DNSEU=
 -----END PGP PUBLIC KEY BLOCK-----
 EOF
 ;
-is($out[0], $expected, "Checking exported pubkey");
+my @got = split(/\n/, $out[0]);
+splice(@got, 1, 1) if ($got[1] eq 'Version: GnuPG v2');
+my $clean_got = join("\n", @got) . "\n";
+is($clean_got, $expected, "Checking exported pubkey");
+
 ###############################################################################
 ### if ($cmd eq 'keygen') {
 my $result = `GNUPGHOME=t/etc/gnupg ./signd -t keygen "defaultkey\@localobs" "rsa\@2048" 800 "just for testing" "signd\@localhost"`;
