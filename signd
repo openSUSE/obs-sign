@@ -754,7 +754,6 @@ EOL
 
 
 if ($cmd eq 'privsign') {
-  my @keyargs;
   die("sign: at least three arguments expected\n") if @argv < 4;
   die("bad private key\n") if $argv[2] !~ /^(?:[0-9a-fA-F][0-9a-fA-F])+$/s;
   my $privkey = pack('H*', $argv[2]);
@@ -765,14 +764,14 @@ if ($cmd eq 'privsign') {
   close(F) || die("encoded privkey close error\n");
   $privkey = rungpg_fatal("$phrases/$user", ["$tmpdir/privkey.$$"], $gpg, '--batch', '--decrypt', '--no-verbose', '-q', '--no-secmem-warning', '--passphrase-fd=0', "$tmpdir/privkey.$$");
   unlink("$tmpdir/privkey.$$");
-  my $pubkey = priv2pub($privkey);
   open(F, ">$tmpdir/privkey.$$") || die("$tmpdir/privkey.$$: $!\n");
   (syswrite(F, $privkey) || 0) == length($privkey) || die("decoded privkey write error\n");
   close(F) || die("decoded privkey close error\n");
-  open(F, ">$tmpdir/pubkey.$$") || die("$tmpdir/pubkey.$$: $!\n");
-  (syswrite(F, $pubkey) || 0) == length($pubkey) || die("pubkey write error\n");
-  close(F) || die("pubkey close error\n");
-  @keyargs = ('--no-default-keyring', "--keyring=$tmpdir/pubkey.$$", "--secret-keyring=$tmpdir/privkey.$$");
+  my $tdir;
+  my $oldgpghome = $ENV{GNUPGHOME};
+  ($tdir, $ENV{GNUPGHOME}) = prepare_tmp_gnupghome($tmpdir);
+  rungpg_fatal("$phrases/$user", ["$tmpdir/privkey.$$"], $gpg, '--batch', '--no-verbose', '-q', '--no-secmem-warning', '--passphrase-fd=0', '--import', "$tmpdir/privkey.$$");
+  unlink("$tmpdir/privkey.$$");
   my $status = 0;
   my $err = '';
   my $out = '';
@@ -784,7 +783,7 @@ if ($cmd eq 'privsign') {
       $classtime = $1;
       $argv[2] = substr($argv[2], 0, -10)."0000000000";
     }
-    ($status, $lout, $lerr) = rungpg('/dev/null', ["$tmpdir/privkey.$$", "$tmpdir/pubkey.$$"], $gpg, "--batch", "--force-v3-sigs", "--files-are-digests", "--allow-non-selfsigned-uid", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--ignore-time-conflict", "--passphrase-fd=0", @keyargs, "-sbo", "-", $argv[2]);
+    ($status, $lout, $lerr) = rungpg('/dev/null', undef, $gpg, "--batch", "--force-v3-sigs", "--files-are-digests", "--allow-non-selfsigned-uid", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--ignore-time-conflict", "--passphrase-fd=0", "-sbo", "-", $argv[2]);
     $lout = patchclasstime($lout, $classtime) if $classtime && !$status;
     splice(@argv, 2, 1);
     $out .= $lout;
@@ -792,8 +791,7 @@ if ($cmd eq 'privsign') {
     push @outlen, length($lout);
     last if $status;
   }
-  unlink("$tmpdir/privkey.$$");
-  unlink("$tmpdir/pubkey.$$");
+  remove_tree($tdir);
   if (!$oldproto) {
     while (@argv > 2) {
       push @outlen, 0;
