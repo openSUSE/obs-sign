@@ -5,20 +5,52 @@ use warnings;
 use bytes;
 use Test::More tests => 12;
 use File::Temp qw/tempdir/;
-use File::Path qw/remove_tree/;
+use File::Path qw/remove_tree make_path/;
 use Digest::SHA;
+use FindBin;
 
+my $user     = 'defaultkey@localobs';
+my $prj_user = 'signd@localhost';
+my $comment  = "just for testing";
+my $var_dir  = "$FindBin::Bin/tmp/var";
+
+###############################################################################
+### Prepare tests
+remove_tree("$FindBin::Bin/tmp/");
+
+make_path($var_dir);
+$ENV{SIGND_VAR} = $var_dir;
+$ENV{LANG} = 'C';
+my $fixtures_dir = "$FindBin::Bin/fixtures";
+my $gnupghome=$ENV{GNUPGHOME};
+$ENV{GNUPGHOME} = "$FindBin::Bin/tmp/gnupg";
+make_path($ENV{GNUPGHOME});
+chmod 0700, $ENV{GNUPGHOME};
+`gpg -q --import $fixtures_dir/secret-key.asc `;
+
+my $sign_conf = "$FindBin::Bin/tmp/sign.conf";
+$ENV{SIGN_CONF} = $sign_conf;
+spew("$sign_conf","user: $user
+server: 127.0.0.1
+allowuser: obsrun
+allow: 127.0.0.1
+phrases: $FindBin::Bin/tmp/gnupg/phrases
+");
+
+make_path("$FindBin::Bin/tmp/gnupg/phrases");
+
+# simulate touch
+spew("$FindBin::Bin/tmp/gnupg/phrases/$user", '');
 
 ###############################################################################
 ### if ($cmd eq 'ping') {
-my $ping_result = `GNUPGHOME=t/etc/gnupg ./signd -t ping "defaultkey\@localobs"`;
+my $ping_result = `./signd -t ping $user`;
 is($?, 0, "Checking cmd 'ping' return code");
 
 my @keys = decode_reply($ping_result);
-
 ###############################################################################
 ### if ($cmd eq 'pubkey') {
-my $pubkey_result = `GNUPGHOME=t/etc/gnupg ./signd -t pubkey "defaultkey\@localobs"`;
+my $pubkey_result = `./signd -t pubkey $user`;
 is($?, 0, "Checking cmd 'pubkey' return code");
 my @out = decode_reply($pubkey_result);
 my $expected = <<'EOF'
@@ -66,7 +98,7 @@ is($clean_got, $expected, "Checking exported pubkey");
 
 ###############################################################################
 ### if ($cmd eq 'keygen') {
-my $result = `GNUPGHOME=t/etc/gnupg ./signd -t keygen "defaultkey\@localobs" "rsa\@2048" 800 "just for testing" "signd\@localhost"`;
+my $result = `./signd -t keygen $user "rsa\@2048" 800 "$comment" $prj_user`;
 is($?, 0, "Checking cmd 'keygen' return code");
 @keys = decode_reply($result);
 
@@ -75,28 +107,30 @@ my $tmpdir = "t/tmp";
 
 ( -d $tmpdir ) || mkdir($tmpdir, 0700);
 
-my $tmpprivkey_encrypted = "$tmpdir/privkey_encrypted";
-spew($tmpprivkey_encrypted, $privkey_packed);
+my $tmppriv_encrypted = "$tmpdir/privkey_encrypted";
+spew($tmppriv_encrypted, $privkey_packed);
 
-my $privkey_decrypted = `GNUPGHOME=t/etc/gnupg gpg --batch --decrypt  $tmpprivkey_encrypted 2>/dev/null`;
+my $priv_decrypted = `gpg --batch --decrypt  $tmppriv_encrypted 2>/dev/null`;
 is($?, 0 , "Checking if decryption was successful");
 my $tmpgnupghome = tempdir("XXXXXXX", DIR => $tmpdir);
 
-my $tmpprivkey_decrypted = "$tmpdir/privkey_decrypted";
-spew($tmpprivkey_decrypted, $privkey_decrypted);
+my $tmppriv_decrypted = "$tmpdir/privkey_decrypted";
+spew($tmppriv_decrypted, $priv_decrypted);
 
 $ENV{GNUPGHOME} = $tmpgnupghome;
 
-my $importresult = `gpg --batch --import $tmpprivkey_decrypted 2>&1`;
+my $importresult = `gpg --batch --import $tmppriv_decrypted 2>&1`;
 is($?, 0, "Checking import of decrypted privkey");
 
+$ENV{GNUPGHOME} = "$FindBin::Bin/tmp/gnupg";
 ###############################################################################
 ### if ($cmd eq 'certgen') {
-my $cmd = "GNUPGHOME=t/etc/gnupg ./signd -t certgen \"defaultkey\@localobs\" \"$keys[1]\" 800 \"just for testing\" \"signd\@localhost\"";
+my $cmd = "./signd -t certgen $user $keys[1] 800 \"$comment\" \"$prj_user\"";
 my $certgen_result = `$cmd`;
 is($?, 0, "Checking cmd 'certgen' return code");
 my @certs = decode_reply($certgen_result, 1);
-like($certs[0], qr/-----END CERTIFICATE-----/, "Checking for end of certificate");
+my $end_cert = qr/-----END CERTIFICATE-----$/;
+like($certs[0], $end_cert, "Checking for end of certificate");
 
 
 ###############################################################################
@@ -107,34 +141,35 @@ my $arg = Digest::SHA::sha1_hex("$payload$trailer").'@'.unpack("H*", $trailer);
 
 ###############################################################################
 ### if ($cmd eq 'privsign') {
-$cmd = "GNUPGHOME=t/etc/gnupg ./signd -t privsign \"defaultkey\@localobs\" \"$keys[1]\" $arg";
+$cmd = "./signd -t privsign $user $keys[1] $arg";
 my $privsign_result = `$cmd`;
 
 is($?, 0, "Checking cmd 'privsign' return code");
 my @privsign = decode_reply($privsign_result);
 spew("$tmpdir/privsign", $payload);
 spew("$tmpdir/privsign.sig", $privsign[0]);
+$ENV{GNUPGHOME} = $tmpgnupghome;
 my $verify_privsign = `gpg --verify $tmpdir/privsign.sig 2>&1`;
 like(
   $verify_privsign,
   qr/Good signature from/,
-  "Checking cmd 'privsign' for 'Good signature from'"
+  "Checking cmd 'privsign' for 'Good signature'"
 );
+$ENV{GNUPGHOME} = "$FindBin::Bin/tmp/gnupg";
 
 ###############################################################################
 ### if ($cmd eq 'sign') {
-my $sign_result = `GNUPGHOME=t/etc/gnupg ./signd -t sign "defaultkey\@localobs" $arg`;
+my $sign_result = `./signd -t sign $user $arg`;
 is($?, 0, "Checking cmd 'sign' return code");
 my @sign = decode_reply($sign_result);
 spew("$tmpdir/sign", $payload);
 spew("$tmpdir/sign.sig", $sign[0]);
-my $verify_sign = `GNUPGHOME=t/etc/gnupg gpg --verify $tmpdir/sign.sig 2>&1`;
-like($verify_sign, qr/Good signature from/, "Checking for 'Good signature from'");
+my $verify_sign = `gpg --verify $tmpdir/sign.sig 2>&1`;
+like($verify_sign, qr/Good signature from/, "Checking for 'Good signature'");
 
 ###############################################################################
 ### cleanup
 remove_tree($tmpdir);
-
 exit 0;
 
 sub spew {
