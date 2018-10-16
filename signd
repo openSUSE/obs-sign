@@ -18,12 +18,16 @@
 #
 ################################################################
 
-use Socket;
+use strict;
+use warnings;
+use Socket qw/IPPROTO_TCP PF_INET SOCK_STREAM SOL_SOCKET SO_REUSEADDR SO_KEEPALIVE INADDR_ANY inet_aton inet_ntoa sockaddr_in/;
 use POSIX;
 use Math::BigInt;
 use MIME::Base64;
 use Encode;
 use bytes;
+use File::Temp qw/tempdir/;
+use File::Path qw/remove_tree/;
 
 my %allow;
 my %map;
@@ -34,8 +38,16 @@ my $signuser = '';
 my $gpg = '/usr/bin/gpg';
 my $openssl = '/usr/bin/openssl';
 my $phrases = '';
-my $tmpdir = '/var/run/signd';
+my $tmpdir = $ENV{SIGND_VAR} || '/var/run/signd';
 my $patchclasstime;
+
+sub printlog {
+  my ($msg) = @_;
+  my @lt = localtime(time);
+  my $year = $lt[5] + 1900;
+  my $month = $lt[4] + 1;
+  printf "%04d-%02d-%02d %02d:%02d:%02d: %s\n", $year, $month, @lt[3,2,1,0], $msg;
+}
 
 sub decodetaglenoff {
   my ($pkg) = @_;
@@ -268,7 +280,9 @@ sub checkbadchar {
 }
 
 local *F;
-open(F, '</etc/sign.conf') || die("/etc/sign.conf: $!\n");
+my $testmode = (($ARGV[0] || '') eq '-t') ? 1 : 0;
+my $conf = ($testmode && $ENV{SIGN_CONF}) ? $ENV{SIGN_CONF} : '/etc/sign.conf';
+open(F, '<', $conf) || die("$conf: $!\n");
 while(<F>) {
   chomp;
   next if /^#/;
@@ -330,9 +344,8 @@ die("$signhost: unknown host\n") unless $signaddr;
 
 my @argv;
 my $oldproto = 0;
-my $testmode;
 
-if ($ARGV[0] eq '-t') {
+if ($testmode) {
   die("test mode need phrases\n") unless $phrases;
   # test mode
   $| = 1;
@@ -341,7 +354,7 @@ if ($ARGV[0] eq '-t') {
   *CLNT = *STDOUT;
   goto testit;
 }
-if ($ARGV[0] eq '-f') {
+if (($ARGV[0] || '') eq '-f') {
   my $pid = fork();
   die("fork") if  !defined($pid) || $pid < 0;
   #exit(0) if $pid > 0;
@@ -355,8 +368,7 @@ if ($ARGV[0] eq '-f') {
 POSIX::setsid();
 $SIG{'PIPE'} = 'IGNORE'; 
 $| = 1;
-my @lt = localtime(time);
-printf "%04d-%02d-%02d %02d:%02d:%02d: $myname started\n", $lt[5] + 1900, $lt[4] + 1, @lt[3,2,1,0];
+printlog("$myname started");
 
 socket(MS , PF_INET, SOCK_STREAM, IPPROTO_TCP) || die "socket: $!\n";
 setsockopt(MS, SOL_SOCKET, SO_REUSEADDR, pack("l",1));
@@ -386,13 +398,9 @@ $SIG{'__DIE__'} = sub {
   die(@_) if $^S;
   my $err = $_[0];
   $err =~ s/\n$//s;
-  my @lt = localtime(time);
-  printf "%04d-%02d-%02d %02d:%02d:%02d: $peer: $err\n", $lt[5] + 1900, $lt[4] + 1, @lt[3,2,1,0];
+  printlog("$peer: $err");
   $err .= "\n";
-  $err = pack("nnn", 1, 0, length($err)).$err;
-  swrite(*CLNT, $err);
-  close CLNT;
-  exit(1);
+  reply(1, $err, '');
 };
 
 my ($sport, $saddr) = sockaddr_in($clntaddr);
@@ -436,20 +444,19 @@ if ($arg == 0 && $user != 0) {
   }
 }
 
-@lt = localtime(time);
 if (($argv[0] eq 'privsign' || $argv[0] eq 'certgen') && @argv > 2) {
   my $pk = $argv[2];
   $argv[2] =~ s/^(..)(.*)(..)$/$1...$3/s;
-  printf "%04d-%02d-%02d %02d:%02d:%02d: $peer: %s\n", $lt[5] + 1900, $lt[4] + 1, @lt[3,2,1,0], "@argv";
+  printlog("$peer: @argv");
   $argv[2] = $pk;
 } else {
-  printf "%04d-%02d-%02d %02d:%02d:%02d: $peer: %s\n", $lt[5] + 1900, $lt[4] + 1, @lt[3,2,1,0], "@argv";
+  printlog("$peer: @argv");
 }
 
 testit:
 
 my $hashalgo = 'SHA1';
-$user = $argv[1];
+$user = $argv[1] || '';
 if ($user =~ /^(.*?):(.*)$/) {
   $hashalgo = $1;
   $user = $2;
@@ -506,7 +513,7 @@ if (!$phrases || ($cmd ne 'ping' && $user eq '') || ($cmd ne 'ping' && ! -e "$ph
   connect(CS, sockaddr_in($port, $signaddr)) || die("connect: $!\n");
   swrite(*CS, $pack);
   while(1) {
-    $buf = '';
+    my $buf = '';
     my $r = sysread(CS, $buf, 8192);
     if (!defined($r)) {
       die("sysread: $!\n") if $! != POSIX::EINTR;
@@ -519,11 +526,20 @@ if (!$phrases || ($cmd ne 'ping' && $user eq '') || ($cmd ne 'ping' && ! -e "$ph
 }
 
 if ($cmd eq 'ping') {
-  my $ret = pack("nnn", 0, 0, 0);
-  swrite(*CLNT, $ret);
-  close CLNT;
-  exit(0);
+  $oldproto = 1;
+  reply(0, '', '');
 }
+
+sub cleanup_tmp_gpg {
+  my ($unlinks) = @_;
+  if(ref($unlinks) eq 'ARRAY') {
+    for (@{$unlinks || []}) {
+      unlink($_);
+    }
+  } elsif (-d $unlinks) {
+    remove_tree($unlinks);
+  }
+};
 
 
 sub rungpg {
@@ -536,9 +552,7 @@ sub rungpg {
   pipe RH, WH;
   my $pid = open(KID, "-|");
   if (!defined $pid) {
-    for (@{$unlinks || []}) {
-      unlink($_);
-    }
+    cleanup_tmp_gpg($unlinks);
     die("could not fork: $!\n");
     exit(0);
   }
@@ -561,6 +575,7 @@ sub rungpg {
   1 while sysread(KID, $err, 4096, length($err)) > 0;
   1 while sysread(RH, $out, 4096, length($out)) > 0;
   close(RH);
+  my $status = 0;
   $status = $? || 255 unless close KID;
   $status >>= 8 if $status >= 256;
   return ($status, $out, $err);
@@ -572,14 +587,19 @@ sub rungpg_fatal {
   if ($status) {
     $err = "Error $status" if $err eq '';
     $err =~ s/\n$//s;
-    for (@{$unlinks || []}) {
-      unlink($_);
-    }
+    cleanup_tmp_gpg($unlinks);
     die("$err\n");
   }
   return $out;
 }
 
+sub prepare_tmp_gnupghome {
+  my ($tmpdir) = @_;
+  my $tdir = tempdir('XXXXXXXX', DIR => $tmpdir);
+  chmod 0700, $tdir;
+  mkdir("$tdir/gnupg", 0700) || die "Could not create $tdir/gnupg: $!\n";
+  return ($tdir, "$tdir/gnupg");
+}
 
 if (! -d $tmpdir) {
   mkdir($tmpdir, 0700) || die("$tmpdir: $!\n");
@@ -588,13 +608,7 @@ if (! -d $tmpdir) {
 if ($cmd eq 'pubkey') {
   die("pubkey: one argument expected\n") if @argv != 2;
   my $pubkey = rungpg_fatal('/dev/null', undef, $gpg, '--export', '-a', $user);
-  if (!$oldproto) {
-    $pubkey = pack('nn', 1, length($pubkey)).$pubkey;
-  }
-  my $ret = pack("nnn", 0, length($pubkey), 0).$pubkey;
-  swrite(*CLNT, $ret);
-  close CLNT;
-  exit(0);
+  reply(0, '', $pubkey);
 }
 
 if ($cmd eq 'keygen') {
@@ -609,49 +623,64 @@ if ($cmd eq 'keygen') {
   die("bad type: $type\n") unless $type =~ /^(dsa|rsa)\@(1024|2048|4096)$/s;
   my $length = $2;
   $type = $1;
-  my $batch = "Key-Type: $type\nKey-Length: $length\nKey-Usage: sign\nName-Real: $real\nName-Email: $email\nExpire-Date: ${expire}d\n%pubring $tmpdir/pubkey.$$\n%secring $tmpdir/privkey.$$\n";
+
+  my $org_gnupghome = $ENV{GNUPGHOME};
+  my $tdir;
+  ($tdir, $ENV{GNUPGHOME}) = prepare_tmp_gnupghome($tmpdir);
+
+  # write params file
+  my $batch = "Key-Type: $type\nKey-Length: $length\nKey-Usage: sign\nName-Real: $real\nName-Email: $email\nExpire-Date: ${expire}d\n%no-protection\n";
   local *F;
-  open(F, ">$tmpdir/params.$$") || die("$tmpdir/params.$$: $!\n");
+  open(F, ">$tdir/params") || die("$tdir/params: $!\n");
   (syswrite(F, $batch) || 0) == length($batch) || die("keygen parameter write error\n");
   close(F) || die("keygen parameter close error\n");
 
-  rungpg_fatal('/dev/null', ["$tmpdir/params.$$"], $gpg, '--batch', '--no-secmem-warning', '--trustdb-name', "$tmpdir/trustdb.$$", '--gen-key', "$tmpdir/params.$$");
-  unlink("$tmpdir/params.$$");
-  unlink("$tmpdir/trustdb.$$");
-  die("gpg did not create private key\n") unless -s "$tmpdir/privkey.$$";
-  die("gpg did not create public key\n") unless -s "$tmpdir/pubkey.$$";
+  rungpg_fatal('/dev/null', $tdir, $gpg, '--batch', '--no-secmem-warning', '--gen-key', "$tdir/params");
 
   # get the keyid so we can add a signature
-  my $keyid = rungpg_fatal('/dev/null', ["$tmpdir/pubkey.$$", "$tmpdir/privkey.$$"], $gpg, '--list-keys', '--no-secmem-warning', '--no-default-keyring', "--keyring=$tmpdir/pubkey.$$", '--fixed-list-mode', '--with-colons');
+  my $keyid = rungpg_fatal('/dev/null', $tdir, $gpg, '--list-keys', '--no-secmem-warning', '--no-default-keyring', '--fixed-list-mode', '--with-colons');
   my @keyid = split("\n", $keyid);
   @keyid = grep {s/^pub:[^:]*:[^:]*:[^:]*:([^:]*):.*$/$1/} @keyid;
   if (@keyid != 1) {
-    unlink("$tmpdir/pubkey.$$");
-    unlink("$tmpdir/privkey.$$");
+    remove_tree($tdir) || die "Could not remove $tdir: $!\n";
     die("keyid not found\n");
   }
   $keyid = $keyid[0];
 
   # add user sig to pubkey
-  rungpg_fatal("$phrases/$user", ["$tmpdir/pubkey.$$", "$tmpdir/privkey.$$"], $gpg, '--batch', '--no-secmem-warning', "--keyring=$tmpdir/pubkey.$$", "--passphrase-fd=0", "-u", $user, '--yes', '--trustdb-name', "$tmpdir/trustdb.$$", '--default-cert-level', '3', '--edit-key', $keyid, 'sign', 'save');
-  unlink("$tmpdir/pubkey.$$~");
-  unlink("$tmpdir/trustdb.$$");
+  $ENV{GNUPGHOME} = $org_gnupghome;
+  my $pubring;
+  if (-e "$tdir/gnupg/pubring.kbx") {
+    $pubring = "$tdir/gnupg/pubring.kbx";
+  } elsif ( -e "$tdir/gnupg/pubring.gpg") {
+    $pubring = "$tdir/gnupg/pubring.gpg";
+  } else {
+    remove_tree($tdir);
+    die "No valid pubring found in $tdir/gnupg\n";
+  }
+
+  rungpg_fatal("$phrases/$user", $tdir, $gpg, '--batch', '--no-secmem-warning',
+        "--passphrase-fd=0", "--yes",
+        "-u", $user,
+        '--default-cert-level', '3',
+        "--keyring", $pubring,
+        '--edit-key', $keyid,
+        'sign',
+        'save');
 
   # export pubkey
-  my $pubkey = rungpg_fatal('/dev/null', ["$tmpdir/pubkey.$$", "$tmpdir/privkey.$$"], $gpg, '--batch', '--no-secmem-warning', '--no-default-keyring', "--keyring=$tmpdir/pubkey.$$", '--export', '-a');
-  unlink("$tmpdir/pubkey.$$");
+  $ENV{GNUPGHOME} = "$tdir/gnupg";
+  my $pubkey = rungpg_fatal('/dev/null', $tdir, $gpg, '--batch', '--no-secmem-warning', '--no-default-keyring', '--export', '-a');
 
   # encrypt privkey
-  my $privkey = rungpg_fatal('/dev/null', ["$tmpdir/privkey.$$"], $gpg, '--batch', '--encrypt', '--no-verbose', '--no-secmem-warning', '--trust-model', 'always', '-o-', '-r', "$user", "$tmpdir/privkey.$$");
-  unlink("$tmpdir/privkey.$$");
+  my $privkey_plain = rungpg_fatal('/dev/null', $tdir, $gpg, '--batch', '--export-secret-keys', '--no-verbose', '--no-secmem-warning', '--trust-model', 'always', '-o', "$tdir/privkey");
+  $ENV{GNUPGHOME} = $org_gnupghome;
+  my $privkey = rungpg_fatal('/dev/null', $tdir, $gpg, '--batch', '--encrypt', '--no-verbose', '--no-secmem-warning', '--trust-model', 'always', '-o-', '-r', "$user", "$tdir/privkey");
+  remove_tree($tdir);
 
   # send back
   $privkey = unpack('H*', $privkey);
-  my $ret = pack("nnn", 2, length($pubkey), length($privkey)).$pubkey.$privkey;
-  $ret = pack("nnn", 0, length($ret), 0).$ret;
-  swrite(*CLNT, $ret);
-  close CLNT;
-  exit(0);
+  reply(0, '', $pubkey, $privkey);
 }
 
 if ($cmd eq 'certgen') {
@@ -699,13 +728,10 @@ EOL
   my $cert = rungpg_fatal('/dev/null', ["$tmpdir/sslreq$$.conf", "$tmpdir/privkey.$$"], $openssl, 'req', '-new', '-x509', '-sha256', '-key', "$tmpdir/privkey.$$", '-days', $expire, '-config', "$tmpdir/sslreq$$.conf");
   unlink("$tmpdir/privkey.$$");
   unlink("$tmpdir/sslreq$$.conf");
-  my $ret = pack("nnn", 0, length($cert), 0).$cert;
-  swrite(*CLNT, $ret);
-  close CLNT;
-  exit(0);
+  $oldproto = 1;
+  reply(0, '', $cert);
 }
 
-my @keyargs;
 
 if ($cmd eq 'privsign') {
   die("sign: at least three arguments expected\n") if @argv < 4;
@@ -718,23 +744,18 @@ if ($cmd eq 'privsign') {
   close(F) || die("encoded privkey close error\n");
   $privkey = rungpg_fatal("$phrases/$user", ["$tmpdir/privkey.$$"], $gpg, '--batch', '--decrypt', '--no-verbose', '-q', '--no-secmem-warning', '--passphrase-fd=0', "$tmpdir/privkey.$$");
   unlink("$tmpdir/privkey.$$");
-  my $pubkey = priv2pub($privkey);
   open(F, ">$tmpdir/privkey.$$") || die("$tmpdir/privkey.$$: $!\n");
   (syswrite(F, $privkey) || 0) == length($privkey) || die("decoded privkey write error\n");
   close(F) || die("decoded privkey close error\n");
-  open(F, ">$tmpdir/pubkey.$$") || die("$tmpdir/pubkey.$$: $!\n");
-  (syswrite(F, $pubkey) || 0) == length($pubkey) || die("pubkey write error\n");
-  close(F) || die("pubkey close error\n");
-  @keyargs = ('--no-default-keyring', "--keyring=$tmpdir/pubkey.$$", "--secret-keyring=$tmpdir/privkey.$$");
-}
-
-if ($cmd eq 'sign' || $cmd eq 'privsign') {
-  die("sign: two arguments expected (old protoco)\n") if $oldproto && @argv != 3;
-  die("sign: at least two arguments expected\n") if $cmd eq 'sign' && @argv < 3;
+  my $tdir;
+  my $oldgpghome = $ENV{GNUPGHOME};
+  ($tdir, $ENV{GNUPGHOME}) = prepare_tmp_gnupghome($tmpdir);
+  rungpg_fatal("$phrases/$user", ["$tmpdir/privkey.$$"], $gpg, '--batch', '--no-verbose', '-q', '--no-secmem-warning', '--passphrase-fd=0', '--import', "$tmpdir/privkey.$$");
+  unlink("$tmpdir/privkey.$$");
   my $status = 0;
   my $err = '';
   my $out = '';
-  my @outlen;
+  my @out;
   while (@argv > 2) {
     my ($lout, $lerr);
     my $classtime;
@@ -742,34 +763,66 @@ if ($cmd eq 'sign' || $cmd eq 'privsign') {
       $classtime = $1;
       $argv[2] = substr($argv[2], 0, -10)."0000000000";
     }
-    if (@keyargs) {
-      ($status, $lout, $lerr) = rungpg('/dev/null', ["$tmpdir/privkey.$$", "$tmpdir/pubkey.$$"], $gpg, "--batch", "--force-v3-sigs", "--files-are-digests", "--allow-non-selfsigned-uid", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--ignore-time-conflict", "--passphrase-fd=0", @keyargs, "-sbo", "-", $argv[2]);
-    } else {
-      ($status, $lout, $lerr) = rungpg("$phrases/$user", undef, $gpg, "--batch", "--force-v3-sigs", "--files-are-digests", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--ignore-time-conflict", "--passphrase-fd=0", "-u", $user, "-sbo", "-", $argv[2]);
-    }
+    ($status, $lout, $lerr) = rungpg('/dev/null', undef, $gpg, "--batch", "--force-v3-sigs", "--files-are-digests", "--allow-non-selfsigned-uid", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--ignore-time-conflict", "--passphrase-fd=0", "-sbo", "-", $argv[2]);
     $lout = patchclasstime($lout, $classtime) if $classtime && !$status;
     splice(@argv, 2, 1);
-    $out .= $lout;
+    push @out, $lout;
     $err .= $lerr;
-    push @outlen, length($lout);
     last if $status;
   }
-  if (@keyargs) {
-    unlink("$tmpdir/privkey.$$");
-    unlink("$tmpdir/pubkey.$$");
+
+  remove_tree($tdir);
+
+  while (@argv > 2) {
+    push @out, '';
+    pop @argv;
   }
-  if (!$oldproto) {
-    while (@argv > 2) {
-      push @outlen, 0;
-      pop @argv;
+
+  reply($status, $err, @out);
+}
+
+if ($cmd eq 'sign') {
+  die("sign: two arguments expected (old protoco)\n") if $oldproto && @argv != 3;
+  die("sign: at least two arguments expected\n") if $cmd eq 'sign' && @argv < 3;
+  my $status = 0;
+  my $err = '';
+  my $out = '';
+  my @out;
+  while (@argv > 2) {
+    my ($lout, $lerr);
+    my $classtime;
+    if ($patchclasstime && ($argv[2] =~ /\@([0-9a-fA-F]{10})$/s)) {
+      $classtime = $1;
+      $argv[2] = substr($argv[2], 0, -10)."0000000000";
     }
-    $out = pack('n' x (1 + scalar(@outlen)), scalar(@outlen), @outlen).$out;
+    ($status, $lout, $lerr) = rungpg("$phrases/$user", undef, $gpg, "--batch", "--force-v3-sigs", "--files-are-digests", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--ignore-time-conflict", "--passphrase-fd=0", "-u", $user, "-sbo", "-", $argv[2]);
+    $lout = patchclasstime($lout, $classtime) if $classtime && !$status;
+    splice(@argv, 2, 1);
+    push @out, $lout;
+    $err .= $lerr;
+    last if $status;
+  }
+  while (@argv > 2) {
+    push @out, '';
+    pop @argv;
+  }
+  reply($status, $err, @out);
+}
+
+die("unknown command: $cmd\n");
+
+sub reply {
+  my ($status, $err, @out) = @_;
+  my $out;
+  if ($oldproto) {
+    die("only one reply supported in old protocol") if @out != 1;
+    $out = $out[0];
+  } else {
+    $out = pack('n' x (1 + scalar(@out)), scalar(@out), map {length($_)} @out).join('', @out);
   }
   my $ret = pack("nnn", $status, length($out), length($err)).$out.$err;
   swrite(*CLNT, $ret);
   close CLNT;
   exit(0);
 }
-
-die("unknown command: $cmd\n");
 
