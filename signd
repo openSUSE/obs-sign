@@ -38,8 +38,9 @@ my $signuser = '';
 my $gpg = '/usr/bin/gpg';
 my $openssl = '/usr/bin/openssl';
 my $phrases = '';
-my $tmpdir = $ENV{SIGND_VAR} || '/var/run/signd';
+my $tmpdir = '/var/run/signd';
 my $patchclasstime;
+my $conf = '/etc/sign.conf';
 
 # request data
 my $oldproto = 0;
@@ -285,7 +286,7 @@ sub checkbadchar {
 
 local *F;
 my $testmode = (($ARGV[0] || '') eq '-t') ? 1 : 0;
-my $conf = ($testmode && $ENV{SIGN_CONF}) ? $ENV{SIGN_CONF} : '/etc/sign.conf';
+$conf = $ENV{SIGN_CONF} if $testmode && $ENV{SIGN_CONF};
 open(F, '<', $conf) || die("$conf: $!\n");
 while(<F>) {
   chomp;
@@ -399,10 +400,9 @@ while (1) {
 $SIG{'__DIE__'} = sub {
   die(@_) if $^S;
   my $err = $_[0];
-  $err =~ s/\n$//s;
+  chomp $err;
   printlog("$peer: $err");
-  $err .= "\n";
-  reply(1, $err, '');
+  reply(1, "$err\n");
 };
 
 my ($sport, $saddr) = sockaddr_in($clntaddr);
@@ -433,11 +433,10 @@ sub readreq {
     $oldproto = 1;
     if ($userlen == 0 && $arg == 0) {
       @argv = ('ping', '');
-    } elsif ($userlen == 0) {
-      @argv = ('sign', '', substr($pack, 4 + $userlen, $arg));
     } else {
       @argv = ('sign', substr($pack, 4, $userlen), substr($pack, 4 + $userlen, $arg));
     }
+    # the old protocol has the hashalgo attached to the arg instead of the user
     if ($argv[-1] =~ /^(.*?):(.*$)/) {
       $argv[1] = "$1:$argv[1]";
       $argv[-1] = $2;
@@ -457,8 +456,6 @@ sub doproxy {
   $args[1] = "$hashalgo:$user" if $hashalgo ne 'SHA1';
 
   #forward to next server
-  die("unknown key: $user\n") if $signhost eq '127.0.0.1' && $port eq $proxyport;
-
   socket(CS , PF_INET, SOCK_STREAM, IPPROTO_TCP) || die("socket: $!\n");
   my %blacklist;
   # bindresvport
@@ -581,7 +578,9 @@ sub prepare_tmp_gnupghome {
 sub reply {
   my ($status, $err, @out) = @_;
   my $out;
-  if ($oldproto) {
+  if (!@out || $status) {
+    $out = '';		# always use "old protocol" here
+  } elsif ($oldproto) {
     die("only one reply supported in old protocol") if @out != 1;
     $out = $out[0];
   } else {
@@ -597,8 +596,7 @@ sub reply {
 
 sub cmd_ping {
   my ($cmd, $user, $hashalgo, @args) = @_;
-  $oldproto = 1;	# always uses the old protocol
-  return (0, '', '');
+  return (0, '');
 }
 
 sub cmd_keygen {
@@ -770,10 +768,6 @@ sub cmd_privsign {
     last if $status;
   }
   remove_tree($tdir);
-  while (@args) {
-    push @out, '';
-    pop @args;
-  }
   return ($status, $err, @out);
 }
 
@@ -798,10 +792,6 @@ sub cmd_sign {
     push @out, $lout;
     $err .= $lerr;
     last if $status;
-  }
-  while (@args) {
-    push @out, '';
-    pop @args;
   }
   return ($status, $err, @out);
 }
@@ -843,6 +833,7 @@ if (exists $map{"$hashalgo:$user"}) {
 $user = $signuser if $user eq '' && $signuser ne '';
 
 if (!$phrases || ($cmd ne 'ping' && $user eq '') || ($cmd ne 'ping' && ! -e "$phrases/$user")) {
+  die("unknown key: $user\n") if $signhost eq '127.0.0.1' && $port eq $proxyport;
   doproxy($cmd, $user, $hashalgo, @argv);
   exit(0);
 }

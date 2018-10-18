@@ -32,6 +32,7 @@ my $sign_conf = "$FindBin::Bin/tmp/sign.conf";
 $ENV{SIGN_CONF} = $sign_conf;
 spew("$sign_conf","user: $user
 server: 127.0.0.1
+tmpdir: $var_dir
 allowuser: obsrun
 allow: 127.0.0.1
 phrases: $FindBin::Bin/tmp/gnupg/phrases
