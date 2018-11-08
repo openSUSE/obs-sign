@@ -92,6 +92,20 @@ sub decodetaglenoff {
   return ($tag, $len, $off);
 }
 
+sub encodetag {
+  my ($tag, $pack) = @_;
+  my $l = length($pack);
+  if ($l < 192) {
+    return pack("CC", $tag + 192, $l).$pack;
+  } elsif ($l < 8384) {
+    $l = $l - 192;
+    $l += (192 << 8);
+    return pack("Cn", $tag + 192, $l).$pack;
+  } else {
+    return pack("CCN", $tag + 192, 255, $l).$pack;
+  }
+}
+
 sub priv2pub {
   my ($privkey) = @_;
   my $pubkey = '';
@@ -144,18 +158,15 @@ sub priv2pub {
       $mpinum--;
     }
     $pack = substr($pack, 0, $mpioff);
-    my $ol = length($pack);
-    if ($ol < 192) {
-      $pubkey .= pack("CC", $ptag + 192, $ol).$pack;
-    } elsif ($ol < 8384) {
-      $ol = $ol - 192;
-      $ol += (192 << 8);
-      $pubkey .= pack("Cn", $ptag + 192, $ol).$pack;
-    } else {
-      $pubkey .= pack("CCN", $ptag + 192, 255, $ol).$pack;
-    }
+    $pubkey .= encodetag($ptag, $pack);
   }
   return $pubkey;
+}
+
+sub striptofirst {
+  my ($pkg) = @_;
+  my ($tag, $len, $off) = decodetaglenoff($pkg);
+  return substr($pkg, 0, $off + $len);
 }
 
 sub packlen {
@@ -741,13 +752,15 @@ sub cmd_privsign {
   close(F) || die("encoded privkey close error\n");
   $privkey = rungpg_fatal("$phrases/$user", ["$tmpdir/privkey.$$"], $gpg, '--batch', '--decrypt', '--no-verbose', '-q', '--no-secmem-warning', '--passphrase-fd=0', "$tmpdir/privkey.$$");
   unlink("$tmpdir/privkey.$$");
+  # create import data: pubkey pkg, user pkg, privkey pkg, user pkg
+  $privkey = priv2pub($privkey).encodetag(13, 'privsign').striptofirst($privkey).encodetag(13, 'privsign');
   open(F, ">$tmpdir/privkey.$$") || die("$tmpdir/privkey.$$: $!\n");
   (syswrite(F, $privkey) || 0) == length($privkey) || die("decoded privkey write error\n");
   close(F) || die("decoded privkey close error\n");
   my $tdir;
   my $oldgpghome = $ENV{GNUPGHOME};
   ($tdir, $ENV{GNUPGHOME}) = prepare_tmp_gnupghome($tmpdir);
-  rungpg_fatal("$phrases/$user", ["$tmpdir/privkey.$$"], $gpg, '--batch', '--no-verbose', '-q', '--no-secmem-warning', '--passphrase-fd=0', '--import', "$tmpdir/privkey.$$");
+  rungpg_fatal("$phrases/$user", ["$tmpdir/privkey.$$"], $gpg, '--batch', '--no-verbose', '-q', '--no-secmem-warning', '--allow-non-selfsigned-uid', '--passphrase-fd=0', '--import', "$tmpdir/privkey.$$");
   unlink("$tmpdir/privkey.$$");
   my $status = 0;
   my $err = '';
