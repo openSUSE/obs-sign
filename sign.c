@@ -1741,7 +1741,7 @@ certbuf_pubkey(struct certbuf *cb, byte *p, int pl, byte *e, int el, byte *keyid
 }
 
 static void
-certbuf_extension(struct certbuf *cb, byte *keyid)
+certbuf_extensions(struct certbuf *cb, byte *keyid)
 {
   int offset = cb->len;
   /* basic contraints */
@@ -1751,20 +1751,18 @@ certbuf_extension(struct certbuf *cb, byte *keyid)
       int offset2, offset3;
       /* subject key id */
       offset2 = cb->len;
-      certbuf_add(cb, oid_subject_key_identifier + 1, oid_subject_key_identifier[0]);
-      offset3 = cb->len;
       certbuf_add(cb, keyid, 20);
-      certbuf_tag(cb, offset3, 0x04);
-      certbuf_tag(cb, offset3, 0x04);
+      certbuf_tag(cb, offset2, 0x04);
+      certbuf_tag(cb, offset2, 0x04);
+      certbuf_insert(cb, offset2, oid_subject_key_identifier + 1, oid_subject_key_identifier[0]);
       certbuf_tag(cb, offset2, 0x30);
       /* authority key id */
       offset2 = cb->len;
-      certbuf_add(cb, oid_authority_key_identifier + 1, oid_authority_key_identifier[0]);
-      offset3 = cb->len;
       certbuf_add(cb, keyid, 20);
-      certbuf_tag(cb, offset3, 0x80);	/* CONT | 0 */
-      certbuf_tag(cb, offset3, 0x30);
-      certbuf_tag(cb, offset3, 0x04);
+      certbuf_tag(cb, offset2, 0x80);	/* CONT | 0 */
+      certbuf_tag(cb, offset2, 0x30);
+      certbuf_tag(cb, offset2, 0x04);
+      certbuf_insert(cb, offset2, oid_authority_key_identifier + 1, oid_authority_key_identifier[0]);
       certbuf_tag(cb, offset2, 0x30);
     }
   certbuf_add(cb, key_usage + 1, key_usage[0]);
@@ -1784,7 +1782,7 @@ certbuf_tbscert(struct certbuf *cb, const char *cn, const char *email, time_t st
   certbuf_validity(cb, start, end);
   certbuf_dn(cb, cn, email);
   certbuf_pubkey(cb, p, pl, e, el, keyid);
-  certbuf_extension(cb, keyid);
+  certbuf_extensions(cb, keyid);
   certbuf_tag(cb, 0, 0x30);
 }
 
