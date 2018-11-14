@@ -1654,8 +1654,8 @@ certbuf_random_serial(struct certbuf *cb)
   int offset = cb->len;
   int i;
   certbuf_add(cb, 0, 9);
-  for (i = 0; i < 16; i++)
-    cb->buf[offset + 1 + i] = (byte)random();
+  for (i = 1; i < 9; i++)
+    cb->buf[offset + i] = (byte)random();
   cb->buf[offset] = 0;
   cb->buf[offset + 1] |= 0x80;
   certbuf_tag(cb, offset, 0x02);
@@ -1711,7 +1711,7 @@ certbuf_mpiint(struct certbuf *cb, byte *p, int pl)
     certbuf_add(cb, 0, 1);
   if (pl)
     certbuf_add(cb, p, pl);
-  certbuf_tag(cb, offset, 2);
+  certbuf_tag(cb, offset, 0x02);
 }
 
 static void
@@ -1720,7 +1720,7 @@ certbuf_pubkey(struct certbuf *cb, byte *p, int pl, byte *e, int el, byte *keyid
   int offset = cb->len;
   int offset2, offset3;
   certbuf_add(cb, oid_rsa_encryption + 1, oid_rsa_encryption[0]);
-  certbuf_tag(cb, cb->len, 5);
+  certbuf_tag(cb, cb->len, 0x05);
   certbuf_tag(cb, offset, 0x30);
   offset2 = cb->len;
   certbuf_add(cb, 0, 1);
