@@ -1718,24 +1718,23 @@ static void
 certbuf_pubkey(struct certbuf *cb, byte *p, int pl, byte *e, int el, byte *keyid)
 {
   int offset = cb->len;
-  int offset2, offset3;
+  int offset2;
   certbuf_add(cb, oid_rsa_encryption + 1, oid_rsa_encryption[0]);
   certbuf_tag(cb, cb->len, 0x05);
   certbuf_tag(cb, offset, 0x30);
   offset2 = cb->len;
-  certbuf_add(cb, 0, 1);
-  offset3 = cb->len;
   certbuf_mpiint(cb, p, pl);
   certbuf_mpiint(cb, e, el);
-  certbuf_tag(cb, offset3, 0x30);
+  certbuf_tag(cb, offset2, 0x30);
   if (keyid)
     {
       SHA1_CONTEXT ctx;
       sha1_init(&ctx);
-      sha1_write(&ctx, cb->buf + offset3, cb->len - offset3);
+      sha1_write(&ctx, cb->buf + offset2, cb->len - offset2);
       sha1_final(&ctx);
       memcpy(keyid, sha1_read(&ctx), 20);
     }
+  certbuf_insert(cb, offset2, 0, 1);
   certbuf_tag(cb, offset2, 0x03);
   certbuf_tag(cb, offset, 0x30);
 }
