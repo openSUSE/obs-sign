@@ -673,7 +673,13 @@ sub cmd_keygen {
   my $pubkey = rungpg_fatal('/dev/null', $tdir, $gpg, '--batch', '--no-secmem-warning', '--no-default-keyring', '--export', '-a');
 
   # encrypt privkey
-  my $privkey_plain = rungpg_fatal('/dev/null', $tdir, $gpg, '--batch', '--export-secret-keys', '--no-verbose', '--no-secmem-warning', '--trust-model', 'always', '-o', "$tdir/privkey");
+  my $privkey_plain = rungpg_fatal('/dev/null', $tdir, $gpg, '--batch', '--export-secret-keys', '--no-verbose', '--no-secmem-warning', '--trust-model', 'always');
+  # newer gpg versions also export the userid and signature, so strip to the bare key
+  $privkey_plain = striptofirst($privkey_plain);
+  open(F, '>', "$tdir/privkey") || die("$tdir/privkey: $!\n");
+  (syswrite(F, $privkey_plain) || 0) == length($privkey_plain) || die("privkey write error\n");
+  close(F) || die("privkey close error\n");
+
   $ENV{GNUPGHOME} = $org_gnupghome;
   my $privkey = rungpg_fatal('/dev/null', $tdir, $gpg, '--batch', '--encrypt', '--no-verbose', '--no-secmem-warning', '--trust-model', 'always', '-o-', '-r', "$user", "$tdir/privkey");
   remove_tree($tdir);

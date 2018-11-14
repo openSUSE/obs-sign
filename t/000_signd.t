@@ -116,11 +116,12 @@ is($?, 0 , "Checking if decryption was successful");
 my $tmpgnupghome = tempdir("XXXXXXX", DIR => $tmpdir);
 
 my $tmppriv_decrypted = "$tmpdir/privkey_decrypted";
+$priv_decrypted .= pack('CC', 13 + 192, 8).'privsign';
 spew($tmppriv_decrypted, $priv_decrypted);
 
 $ENV{GNUPGHOME} = $tmpgnupghome;
 
-my $importresult = `gpg --batch --import $tmppriv_decrypted 2>&1`;
+my $importresult = `gpg --batch --allow-non-selfsigned-uid --import $tmppriv_decrypted 2>&1`;
 is($?, 0, "Checking import of decrypted privkey");
 
 $ENV{GNUPGHOME} = "$FindBin::Bin/tmp/gnupg";
@@ -150,7 +151,7 @@ my @privsign = decode_reply($privsign_result);
 spew("$tmpdir/privsign", $payload);
 spew("$tmpdir/privsign.sig", $privsign[0]);
 $ENV{GNUPGHOME} = $tmpgnupghome;
-my $verify_privsign = `gpg --verify $tmpdir/privsign.sig 2>&1`;
+my $verify_privsign = `gpg --allow-non-selfsigned-uid --verify $tmpdir/privsign.sig 2>&1`;
 like(
   $verify_privsign,
   qr/Good signature from/,
