@@ -89,6 +89,7 @@ static int port = MYPORT;
 #include <errno.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/time.h>
 #include <pwd.h>
 
 
@@ -1545,6 +1546,258 @@ write_appimage_signature(char *filename, byte *signature, int length)
     perror_exit("fclose error");
 }
 
+static byte cert_version_3[] = { 0x05, 0xa0, 0x03, 0x02, 0x01, 0x02 };
+static byte oid_common_name[] = { 0x05, 0x06, 0x03, 0x55, 0x04, 0x03 };
+static byte oid_email_address[] = { 0x0b, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x01 };
+static byte oid_rsa_encryption[] = { 0x0b, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01 };
+static byte oid_subject_key_identifier[] = { 0x05, 0x06, 0x03, 0x55, 0x1d, 0x0e };
+static byte oid_authority_key_identifier[] = { 0x05, 0x06, 0x03, 0x55, 0x1d, 0x23 };
+
+static byte sig_algo_rsa_sha256[] = { 0x0f, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05, 0x00 };
+
+static byte basic_constraints[] = { 0x0e, 0x30, 0x0c, 0x06, 0x03, 0x55, 0x1d, 0x13, 0x01, 0x01, 0xff, 0x04, 0x02, 0x30, 0x00 };
+static byte key_usage[] = { 0x10, 0x30, 0x0e, 0x06, 0x03, 0x55, 0x1d, 0x0f, 0x01, 0x01, 0xff, 0x04, 0x04, 0x03, 0x02, 0x02, 0x84 };
+static byte ext_key_usage[] = { 0x15, 0x30, 0x13, 0x06, 0x03, 0x55, 0x1d, 0x25, 0x04, 0x0c, 0x30, 0x0a, 0x06, 0x08, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x03 };
+
+struct certbuf {
+  byte *buf;
+  int len;
+  int alen;		/* allocated length */
+};
+
+static void
+certbuf_room(struct certbuf *cb, int l)
+{
+  if (l < 0 || l > 100000 || cb->len > 100000)
+    abort();
+  if (cb->len + l > cb->alen)
+    {
+      cb->alen = cb->len + l + 256;
+      if (cb->buf)
+        cb->buf = realloc(cb->buf, cb->alen);
+      else
+        cb->buf = malloc(cb->alen);
+      if (!cb->buf)
+	{
+	  fprintf(stderr, "out of certbuf memory\n");
+	  exit(1);
+	}
+    }
+}
+
+static void
+certbuf_add(struct certbuf *cb, byte *blob, int blobl)
+{
+  certbuf_room(cb, blobl);
+  if (blob)
+    memmove(cb->buf + cb->len, blob, blobl);
+  else
+    memset(cb->buf + cb->len, 0, blobl);
+  cb->len += blobl;
+}
+
+static void
+certbuf_insert(struct certbuf *cb, int offset, byte *blob, int blobl)
+{
+  if (offset < 0 || offset > cb->len)
+    abort();
+  certbuf_room(cb, blobl);
+  if (offset < cb->len)
+    memmove(cb->buf + offset + blobl, cb->buf + offset, cb->len - offset);
+  if (blob)
+    memmove(cb->buf + offset, blob, blobl);
+  else
+    memset(cb->buf + offset, 0, blobl);
+  cb->len += blobl;
+}
+
+static void
+certbuf_tag(struct certbuf *cb, int offset, int tag)
+{
+  int ll, l = cb->len - offset;
+  if (l < 0 || l >= 0x1000000)
+    abort();
+  ll = l < 0x80 ? 0 : l < 0x100 ? 1 : l < 0x10000 ? 2 : 3;
+  certbuf_insert(cb, offset, 0, 2 + ll);
+  if (ll)
+    cb->buf[offset + 1] = 0x80 + ll;
+  if (ll > 2)
+    cb->buf[offset + ll - 1] = l >> 16;
+  if (ll > 1)
+    cb->buf[offset + ll] = l >> 8;
+  cb->buf[offset + ll + 1] = l;
+  cb->buf[offset] = tag;
+}
+
+static void
+certbuf_time(struct certbuf *cb, time_t t)
+{
+  int offset = cb->len;
+  struct tm *tm = gmtime(&t);
+  char tbuf[256];
+  sprintf(tbuf, "%04d%02d%02d%02d%02d%02dZ", tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday, tm->tm_hour, tm->tm_min, tm->tm_sec);
+  if (tm->tm_year >= 50 && tm->tm_year < 150)
+    {
+      certbuf_add(cb, (byte *)tbuf + 2, strlen(tbuf + 2));
+      certbuf_tag(cb, offset, 0x17);
+    }
+  else
+    {
+      certbuf_add(cb, (byte *)tbuf, strlen(tbuf));
+      certbuf_tag(cb, offset, 0x18);
+    }
+}
+
+static void
+certbuf_random_serial(struct certbuf *cb)
+{
+  int offset = cb->len;
+  int i;
+  certbuf_add(cb, 0, 9);
+  for (i = 0; i < 16; i++)
+    cb->buf[offset + 1 + i] = (byte)random();
+  cb->buf[offset] = 0;
+  cb->buf[offset + 1] |= 0x80;
+  certbuf_tag(cb, offset, 0x02);
+}
+
+static void
+certbuf_dn(struct certbuf *cb, const char *cn, const char *email)
+{
+  int offset = cb->len;
+  if (cn && *cn)
+    {
+      int offset2 = cb->len;
+      certbuf_add(cb, (byte *)cn, strlen(cn));
+      certbuf_tag(cb, offset2, 0x0c);
+      certbuf_insert(cb, offset2, oid_common_name + 1, oid_common_name[0]);
+      certbuf_tag(cb, offset2, 0x30);
+      certbuf_tag(cb, offset2, 0x31);
+    }
+  if (email && *email)
+    {
+      int offset2 = cb->len;
+      certbuf_add(cb, (byte *)email, strlen(email));
+      for (; *email; email++)
+	if (*(unsigned char *)email >= 128)
+	  break;
+      certbuf_tag(cb, offset2, *email ? 0x0c: 0x16);
+      certbuf_insert(cb, offset2, oid_email_address + 1, oid_email_address[0]);
+      certbuf_tag(cb, offset2, 0x30);
+      certbuf_tag(cb, offset2, 0x31);
+    }
+  certbuf_tag(cb, offset, 0x30);
+}
+
+static void
+certbuf_validity(struct certbuf *cb, time_t start, time_t end)
+{
+  int offset = cb->len;
+  certbuf_time(cb, start);
+  certbuf_time(cb, end);
+  certbuf_tag(cb, offset, 0x30);
+}
+
+static void
+certbuf_mpiint(struct certbuf *cb, byte *p, int pl)
+{
+  int offset = cb->len;
+  while (pl && !*p)
+    {
+      p++;
+      pl--;
+    }
+  if (!pl || p[0] >= 128)
+    certbuf_add(cb, 0, 1);
+  if (pl)
+    certbuf_add(cb, p, pl);
+  certbuf_tag(cb, offset, 2);
+}
+
+static void
+certbuf_pubkey(struct certbuf *cb, byte *p, int pl, byte *e, int el, byte *keyid)
+{
+  int offset = cb->len;
+  int offset2, offset3;
+  certbuf_add(cb, oid_rsa_encryption + 1, oid_rsa_encryption[0]);
+  certbuf_tag(cb, cb->len, 5);
+  certbuf_tag(cb, offset, 0x30);
+  offset2 = cb->len;
+  certbuf_add(cb, 0, 1);
+  offset3 = cb->len;
+  certbuf_mpiint(cb, p, pl);
+  certbuf_mpiint(cb, e, el);
+  certbuf_tag(cb, offset3, 0x30);
+  if (keyid)
+    {
+      SHA1_CONTEXT ctx;
+      sha1_init(&ctx);
+      sha1_write(&ctx, cb->buf + offset3, cb->len - offset3);
+      sha1_final(&ctx);
+      memcpy(keyid, sha1_read(&ctx), 20);
+    }
+  certbuf_tag(cb, offset2, 0x03);
+  certbuf_tag(cb, offset, 0x30);
+}
+
+static void
+certbuf_extension(struct certbuf *cb, byte *keyid)
+{
+  int offset = cb->len;
+  /* basic contraints */
+  certbuf_add(cb, basic_constraints + 1, basic_constraints[0]);
+  if (keyid)
+    {
+      int offset2, offset3;
+      /* subject key id */
+      offset2 = cb->len;
+      certbuf_add(cb, oid_subject_key_identifier + 1, oid_subject_key_identifier[0]);
+      offset3 = cb->len;
+      certbuf_add(cb, keyid, 20);
+      certbuf_tag(cb, offset3, 0x04);
+      certbuf_tag(cb, offset3, 0x04);
+      certbuf_tag(cb, offset2, 0x30);
+      /* authority key id */
+      offset2 = cb->len;
+      certbuf_add(cb, oid_authority_key_identifier + 1, oid_authority_key_identifier[0]);
+      offset3 = cb->len;
+      certbuf_add(cb, keyid, 20);
+      certbuf_tag(cb, offset3, 0x80);	/* CONT | 0 */
+      certbuf_tag(cb, offset3, 0x30);
+      certbuf_tag(cb, offset3, 0x04);
+      certbuf_tag(cb, offset2, 0x30);
+    }
+  certbuf_add(cb, key_usage + 1, key_usage[0]);
+  certbuf_add(cb, ext_key_usage + 1, ext_key_usage[0]);
+  certbuf_tag(cb, offset, 0x30);
+  certbuf_tag(cb, offset, 0xa3);	/* CONT | CONS | 3 */
+}
+
+void
+certbuf_tbscert(struct certbuf *cb, const char *cn, const char *email, time_t start, time_t end, byte *p, int pl, byte *e, int el)
+{
+  byte keyid[20];
+  certbuf_add(cb, cert_version_3 + 1, cert_version_3[0]);
+  certbuf_random_serial(cb);
+  certbuf_add(cb, sig_algo_rsa_sha256 + 1, sig_algo_rsa_sha256[0]);
+  certbuf_dn(cb, cn, email);
+  certbuf_validity(cb, start, end);
+  certbuf_dn(cb, cn, email);
+  certbuf_pubkey(cb, p, pl, e, el, keyid);
+  certbuf_extension(cb, keyid);
+  certbuf_tag(cb, 0, 0x30);
+}
+
+void
+certbuf_finishcert(struct certbuf *cb, byte *sig, int sigl)
+{
+  certbuf_add(cb, sig_algo_rsa_sha256 + 1, sig_algo_rsa_sha256[0]);
+  certbuf_add(cb, 0, 1);
+  certbuf_add(cb, sig, sigl);
+  certbuf_tag(cb, cb->len - (sigl + 1), 0x03);
+  certbuf_tag(cb, 0, 0x30);
+}
+
 static int
 rpminsertsig(byte *rpmsig, int *rpmsigsizep, int *rpmsigcntp, int *rpmsigdlenp, const int *sigtags, byte *newsig, int newsiglen)
 {
@@ -1929,6 +2182,44 @@ probe_pubalgo()
 	}
     }
   return outl > 0 ? sigtopubalgo(buf, outl) : -1;
+}
+
+static byte *
+getrawopensslsig(byte *buf, int outl, int *lenp)
+{
+  int off, pubalgo = sigtopubalgo(buf, outl);
+  int bytes, nbytes;
+  byte *ret;
+
+  if (pubalgo != PUB_RSA)
+    {
+      fprintf(stderr, "Need RSA key for openssl sign\n");
+      return 0;
+    }
+  off = findsigoff(buf, outl);
+  if (off <= 0)
+    {
+      fprintf(stderr, "Could not determine offset\n");
+      return 0;
+    }
+  if (off + 2 > outl)
+    {
+      fprintf(stderr, "truncated sig\n");
+      return 0;
+    }
+  bytes = ((buf[off] << 8) + buf[1 + off] + 7) >> 3;
+  if (off + 2 + bytes > outl)
+    {
+      fprintf(stderr, "truncated sig\n");
+      return 0;
+    }
+  /* zero pad to multiple of 16 */
+  ret = malloc(bytes + 15);
+  memset(ret, 0, 15);
+  nbytes = (bytes + 15) & ~15;
+  memcpy(ret + nbytes - bytes, buf + off + 2, bytes);
+  *lenp = nbytes;
+  return ret;
 }
 
 static int
@@ -2576,49 +2867,22 @@ sign(char *filename, int isfilter, int mode)
     }
   else if (mode == MODE_RAWOPENSSLSIGN)
     {
-      int off, pubalgo = sigtopubalgo(buf + 6, outl);
-      int bytes;
-      if (pubalgo != PUB_RSA)
+      int rawssllen = 0;
+      byte *rawssl = getrawopensslsig(buf + 6, outl, &rawssllen);
+      if (!rawssl)
 	{
-          fprintf(stderr, "Need RSA key for openssl sign\n");
 	  if (!isfilter)
 	    unlink(outfilename);
 	  exit(1);
 	}
-      off = findsigoff(buf + 6, outl);
-      if (off <= 0)
-	{
-          fprintf(stderr, "Could not determine offset\n");
-	  if (!isfilter)
-	    unlink(outfilename);
-	  exit(1);
-	}
-      if (off + 2 > outl)
-	{
-          fprintf(stderr, "truncated sig\n");
-	  exit(1);
-	}
-      bytes = ((buf[6 + off] << 8) + buf[7 + off] + 7) >> 3;
-      if (off + 2 + bytes > outl)
-	{
-          fprintf(stderr, "truncated sig\n");
-	  exit(1);
-	}
-      /* zero pad to multiple of 16 */
-      if ((bytes & 15) != 0 && fwrite("\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 16 - (bytes & 15), 1, fout) != 1)
+      if (fwrite(rawssl, rawssllen, 1, fout) != 1)
 	{
 	  perror("fwrite");
 	  if (!isfilter)
 	    unlink(outfilename);
 	  exit(1);
 	}
-      if (fwrite(buf + 6 + off + 2, bytes, 1, fout) != 1)
-	{
-	  perror("fwrite");
-	  if (!isfilter)
-	    unlink(outfilename);
-	  exit(1);
-	}
+      free(rawssl);
     }
   else if (mode == MODE_RPMSIGN)
     {
@@ -3415,27 +3679,79 @@ certsizelimit(char *s, int l)
   s[l - 1] = s[l - 2] = s[l - 3] = '.';
 }
 
+static char *
+der2pem(byte *in, int inl, char *what)
+{
+  static const char bintoasc[64] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  char *buf;
+  char *bp;
+  int whatl = strlen(what);
+  int i, a, b, c;
+
+  buf = malloc(28 + whatl + (inl / 3) * 4 + (inl / 48) + 28 + whatl + 30);
+  if (!buf)
+    return 0;
+  bp = buf;
+  sprintf(bp, "-----BEGIN %s-----\n", what);
+  bp += strlen(bp);
+  for (i = -1; inl > 0; inl -= 3)
+    {  
+      if (++i == 16)
+        {  
+          i = 0;
+          *bp++ = '\n';
+        }
+      a = *in++;
+      b = inl > 1 ? *in++ : 0;
+      c = inl > 2 ? *in++ : 0; 
+      *bp++ = bintoasc[a >> 2];
+      *bp++ = bintoasc[(a & 3) << 4 | b >> 4];
+      *bp++ = inl > 1 ? bintoasc[(b & 15) << 2 | c >> 6] : '=';
+      *bp++ = inl > 2 ? bintoasc[c & 63] : '=';
+    }
+  sprintf(bp, "\n-----END %s-----\n", what);
+  return buf;
+}
+
+void
+initrandom()
+{
+  unsigned int seed = 0x23468676;
+  struct timeval tv;
+  gettimeofday(&tv, 0);
+  seed ^= (int)tv.tv_sec;
+  seed ^= (int)tv.tv_usec;
+  seed ^= (int)getpid() * 37;
+  srandom(seed);
+}
+
 void
 createcert(char *pubkey)
 {
+  struct certbuf cb;
   FILE *fp;
   char buf[8192];
   unsigned char rbuf[8192];
+  char hashhex[1024];
   unsigned char *pubk;
   int pubkl;
   unsigned char *p, *pp;
-  int l, ll, tag, pl;
+  int i, l, ll, tag, pl;
   time_t pkcreat, now, exp;
   unsigned char *ex;
   unsigned char *userid;
   int useridl;
   const char *args[6];
-  int argc;
   int sock = -1;
   int rl;
   char *name, *nameend;
   char *email;
-  char expire[20];
+  byte *mpin, *mpie;
+  int mpinl, mpiel;
+  byte *rawssl;
+  int rawssllen;
+  char *pem;
+  HASH_CONTEXT ctx;
 
   if (!privkey)
     {
@@ -3473,12 +3789,26 @@ createcert(char *pubkey)
       fprintf(stderr, "pubkey does not start with a pubkey paket\n");
       exit(1);
     }
-  if (*pp != 4)
+  if (pp[0] != 4)
     {
       fprintf(stderr, "pubkey is not type 4\n");
       exit(1);
     }
+  if (pp[5] != 1)
+    {
+      fprintf(stderr, "not a RSA pubkey\n");
+      exit(1);
+    }
+
+  /* get creattion time */
   pkcreat = pp[1] << 24 | pp[2] << 16 | pp[3] << 8 | pp[4];
+
+  /* get MPIs */
+  mpin = pp + 8;
+  mpinl = ((mpin[-2] << 8 | mpin[-1]) + 7) / 8;
+  mpie = mpin + 2 + mpinl;
+  mpiel = ((mpie[-2] << 8 | mpie[-1]) + 7) / 8;
+
   pp = nextpkg(&tag, &pl, &p, &l);
   if (tag != 13)
     {
@@ -3528,7 +3858,7 @@ createcert(char *pubkey)
       fprintf(stderr, "pubkey is already expired\n");
       exit(1);
     }
-  sprintf(expire, "%d", (int)(exp - now + 24 * 3600 - 1) / (24 * 3600));
+  
   name = malloc(useridl + 1);
   if (!name)
     {
@@ -3556,25 +3886,50 @@ createcert(char *pubkey)
   /* limit to fixed sizes, see rfc 3280 */
   certsizelimit(name, 64);
   certsizelimit(email, 128);
-  args[0] = "certgen";
+
+  /* create tbscert */
+  memset(&cb, 0, sizeof(cb));
+  certbuf_tbscert(&cb, name, email, now, exp, mpin, mpinl, mpie, mpiel);
+  free(name);
+  free(pubk);
+
+  /* self-sign it */
+  hash_init(&ctx);
+  hash_write(&ctx, cb.buf, cb.len);
+  hash_final(&ctx);
+  p = hash_read(&ctx);
+  for (i = 0; i < hashlen[hashalgo]; i++)
+    sprintf(hashhex + i * 2, "%02x", p[i]);
+  strcpy(hashhex + i * 2, "@0000000000");
+
+  args[0] = "privsign";
   args[1] = algouser;
   args[2] = privkey;
-  args[3] = expire;
-  args[4] = name;
-  args[5] = email;
-  argc = 6;
-
+  args[3] = hashhex;
   sock = opensocket();
-  rl = doreq(sock, argc, args, rbuf, sizeof(rbuf), 0);
+  rl = doreq(sock, 4, args, rbuf, sizeof(rbuf), 1);
   close(sock);
   if (rl < 0)
     exit(-rl);
-  if (fwrite(rbuf, rl, 1, stdout) != 1)
+
+  /* get signnature */
+  rawssl = getrawopensslsig(rbuf + 4, rbuf[2] << 8 | rbuf[3], &rawssllen);
+
+  /* finish cert */
+  certbuf_finishcert(&cb, rawssl, rawssllen);
+  free(rawssl);
+
+  /* convert to pem */
+  pem = der2pem(cb.buf, cb.len, "CERTIFICATE");
+  free(cb.buf);
+
+  /* write as PEM */
+  if (fwrite(pem, strlen(pem), 1, stdout) != 1)
     {
       fprintf(stderr, "cert write error\n");
       exit(1);
     }
-  free(name);
+  free(pem);
 }
 
 void usage()
@@ -3875,6 +4230,8 @@ main(int argc, char **argv)
       else
         break;
     }
+  if (mode == MODE_CREATECERT)
+    hashalgo = HASH_SHA256;	/* always sign certs with sha256 */
   if (hashalgo == HASH_SHA1)
     algouser = user;
   else
@@ -3914,6 +4271,7 @@ main(int argc, char **argv)
     }
   if (mode == MODE_CREATECERT)
     {
+      initrandom();
       if (argc != 2)
 	{
 	  fprintf(stderr, "usage: sign -C <pubkey>\n");
