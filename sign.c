@@ -1332,71 +1332,25 @@ datalen(byte *rpmsig, int rpmsigcnt, byte *rsp)
   return cnt;
 }
 
-static int
-sigtopubalgo(byte *buf, int outl)
-{
-  int o;
-  if (outl < 2)
-    return -1;
-  if (buf[0] == 0x88)
-    o = 2;
-  else if (buf[0] == 0x89)
-    o = 3;
-  else if (buf[0] == 0x8a)
-    o = 5;
-  else
-    return -1;
-  if (o >= outl)
-    return -1;
-  if (buf[o] == 3)
-    o += 15;
-  else if (buf[o] == 4)
-    o += 2;
-  else
-    return -1;
-  if (o >= outl)
-    return -1;
-  if (buf[o] == 1)
-    return PUB_RSA;
-  if (buf[o] == 17)
-    return PUB_DSA;
-  return -1;
-}
+byte *pkg2sig(byte *pk, int pkl, int *siglp);
+void calculatefingerprint(byte *pub, int publ, byte *fingerprintp);
+int findsigmpioffset(byte *sig, int sigl);
+byte *findsigissuer(byte *sig, int sigl);
 
 static int
-findsigoff(byte *buf, int outl)
+findsigpubalgo(byte *pk, int pkl)
 {
-  int o;
-  if (outl < 2)
-    return -1;
-  if (buf[0] == 0x88)
-    o = 2;
-  else if (buf[0] == 0x89)
-    o = 3;
-  else if (buf[0] == 0x8a)
-    o = 5;
-  else
-    return -1;
-  if (o >= outl)
-    return -1;
-  if (buf[o] == 3)
-    o += 19;
-  else if (buf[o] == 4)
-    {
-      o += 4;
-      if (o + 1 >= outl)
-        return -1;
-      o += 2 + (buf[o] << 8) + buf[o];
-      if (o + 1 >= outl)
-        return -1;
-      o += 2 + (buf[o] << 8) + buf[o];
-      o += 2;
-    }
-  else
-    return -1;
-  if (o >= outl)
-    return -1;
-  return o;
+  int sigl, algo = -1;
+  byte *sig = pkg2sig(pk, pkl, &sigl);
+  if (sig[0] == 3)
+    algo = sig[15];
+  else if (sig[0] == 4)
+    algo = sig[2];
+  if (algo == 1)
+    return PUB_RSA;
+  if (algo == 17)
+    return PUB_DSA;
+  return -1;
 }
 
 static inline int
@@ -1803,7 +1757,7 @@ rpminsertsig(byte *rpmsig, int *rpmsigsizep, int *rpmsigcntp, int *rpmsigdlenp, 
       fprintf(stderr, "signature too big: %d\n", newsiglen);
       return -1;
     }
-  pubalgo = sigtopubalgo(newsig, newsiglen);
+  pubalgo = findsigpubalgo(newsig, newsiglen);
   if (pubalgo < 0)
     {
       fprintf(stderr, "signature has unknown pubkey algorithm\n");
@@ -2166,13 +2120,8 @@ probe_pubalgo()
 	  memmove(buf, buf + 4, outl);
 	}
     }
-  return outl > 0 ? sigtopubalgo(buf, outl) : -1;
+  return outl > 0 ? findsigpubalgo(buf, outl) : -1;
 }
-
-byte *pkg2sig(byte *pk, int pkl, int *siglp);
-void calculatefingerprint(byte *pub, int publ, byte *fingerprintp);
-int findsigmpioffset(byte *sig, int sigl);
-byte *findsigissuer(byte *sig, int sigl);
 
 static byte *
 getrawopensslsig(byte *sig, int sigl, int *lenp)
