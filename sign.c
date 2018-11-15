@@ -895,7 +895,7 @@ printr64(FILE *f, const byte *str, int len)
       putc(len > -2 ? bintoasc[(b & 15) << 2 | c >> 6] : '=', f);
       putc(len > -1 ? bintoasc[c & 63] : '=', f);
     }
-    putc('\n', f);
+  putc('\n', f);
 }
 
 static const char *armor_signature_header = "-----BEGIN PGP SIGNATURE-----\nVersion: GnuPG v1.0.7 (GNU/Linux)\n\n";
@@ -2169,31 +2169,31 @@ probe_pubalgo()
   return outl > 0 ? sigtopubalgo(buf, outl) : -1;
 }
 
+byte *pkg2sig(byte *pk, int pkl, int *siglp);
+void calculatefingerprint(byte *pub, int publ, byte *fingerprintp);
+int findsigmpioffset(byte *sig, int sigl);
+byte *findsigissuer(byte *sig, int sigl);
+
 static byte *
-getrawopensslsig(byte *buf, int outl, int *lenp)
+getrawopensslsig(byte *sig, int sigl, int *lenp)
 {
-  int off, pubalgo = sigtopubalgo(buf, outl);
-  int bytes, nbytes;
+  int pkalg, off, bytes, nbytes;
   byte *ret;
 
-  if (pubalgo != PUB_RSA)
+  pkalg = sig[0] == 3 ? sig[15] : sig[2];
+  if (pkalg != 1)
     {
       fprintf(stderr, "Need RSA key for openssl sign\n");
       return 0;
     }
-  off = findsigoff(buf, outl);
-  if (off <= 0)
-    {
-      fprintf(stderr, "Could not determine offset\n");
-      return 0;
-    }
-  if (off + 2 > outl)
+  off = findsigmpioffset(sig, sigl);
+  if (sigl < off + 2)
     {
       fprintf(stderr, "truncated sig\n");
       return 0;
     }
-  bytes = ((buf[off] << 8) + buf[1 + off] + 7) >> 3;
-  if (off + 2 + bytes > outl)
+  bytes = ((sig[off] << 8) + sig[off + 1] + 7) >> 3;
+  if (sigl < off + 2 + bytes)
     {
       fprintf(stderr, "truncated sig\n");
       return 0;
@@ -2202,7 +2202,7 @@ getrawopensslsig(byte *buf, int outl, int *lenp)
   ret = malloc(bytes + 15);
   memset(ret, 0, 15);
   nbytes = (bytes + 15) & ~15;
-  memcpy(ret + nbytes - bytes, buf + off + 2, bytes);
+  memcpy(ret + nbytes - bytes, sig + off + 2, bytes);
   *lenp = nbytes;
   return ret;
 }
@@ -2771,45 +2771,16 @@ sign(char *filename, int isfilter, int mode)
     }
   if (mode == MODE_KEYID)
     {
-      int o;
-      if (outl < 2)
+      int sigl;
+      byte *sig = pkg2sig(buf + 6, outl, &sigl);
+      byte *issuer = findsigissuer(sig, sigl);
+      if (!issuer)
 	{
-          fprintf(stderr, "answer package too short\n");
+	  fprintf(stderr, "issuer not found in signature\n");
 	  exit(1);
 	}
-      if (buf[6] == 0x88)
-	o = 8;
-      else if (buf[6] == 0x89)
-	o = 9;
-      else if (buf[6] == 0x8a)
-	o = 11;
-      else
-	{
-          fprintf(stderr, "bad answer package: %02x\n", buf[6]);
-	  exit(1);
-	}
-      if (buf[o] == 3)
-	{
-	  printf("%02X%02X%02X%02X\n", buf[o + 11], buf[o + 12], buf[o + 13], buf[o + 14]);
-	  exit(0);
-	}
-      else if (buf[o] == 4)
-	{
-	  /* assumes sign id is first in unhashed data */
-	  o += (buf[o + 4] << 8) + buf[o + 5];	/* skip over hashed data */
-	  if (buf[o + 9] != 16)
-	    {
-	      fprintf(stderr, "issuer not first in unhashed data\n");
-	      exit(1);
-	    }
-	  printf("%02X%02X%02X%02X\n", buf[o + 14], buf[o + 15], buf[o + 16], buf[o + 17]);
-	  exit(0);
-	}
-      else
-	{
-          fprintf(stderr, "unknown signature version: %d\n", buf[o]);
-	  exit(1);
-	}
+      printf("%02X%02X%02X%02X\n", issuer[4], issuer[5], issuer[6], issuer[7]);
+      exit(0);
     }
 
   /* transcode v3sigs to v4sigs if requested */
@@ -2853,7 +2824,9 @@ sign(char *filename, int isfilter, int mode)
   else if (mode == MODE_RAWOPENSSLSIGN)
     {
       int rawssllen = 0;
-      byte *rawssl = getrawopensslsig(buf + 6, outl, &rawssllen);
+      int sigl;
+      byte *sig = pkg2sig(buf + 6, outl, &sigl);
+      byte *rawssl = getrawopensslsig(sig, sigl, &rawssllen);
       if (!rawssl)
 	{
 	  if (!isfilter)
@@ -3285,7 +3258,7 @@ nextpkg(int *tagp, int *pkgl, unsigned char **pp, int *ppl)
 }
 
 static unsigned char *
-finddate(unsigned char *q, int l, int type)
+findsubpkg(unsigned char *q, int l, int type)
 {
   int x;
   int ql = q[0] << 8 | q[1];
@@ -3358,7 +3331,100 @@ addpkg(unsigned char *to, unsigned char *p, int l, int tag, int newformat)
   return to + l;
 }
 
+byte *
+pkg2sig(byte *pk, int pkl, int *siglp)
+{
+  byte *sig;
+  int l, ll, tag = 0;
+  sig = nextpkg(&tag, &l, &pk, &pkl);
+  if (!sig || l < 6 || tag != 2)
+    {
+      fprintf(stderr, "packet is not a signature [%d]\n", tag);
+      exit(1);
+    }
+  if (sig[0] == 3)
+    ll = 19;
+  else if (sig[0] == 4)
+    {
+      int ll = 4;
+      if (l < ll + 2)
+	{
+	  fprintf(stderr, "signature packet is too small\n");
+	  exit(1);
+	}
+      ll += 2 + sig[ll] << 8 + sig[ll + 1];
+      if (l < ll + 2)
+	{
+	  fprintf(stderr, "signature packet is too small\n");
+	  exit(1);
+	}
+      ll += 2 + sig[ll] << 8 + sig[ll + 1];
+    }
+  else
+    {
+      fprintf(stderr, "not a V3 or V4 signature\n");
+      exit(1);
+    }
+  if (l < ll + 2)
+    {
+      fprintf(stderr, "signature packet is too small\n");
+      exit(1);
+    }
+  *siglp = l;
+  return sig;
+}
 
+void
+calculatefingerprint(byte *pub, int publ, byte *fingerprintp)
+{
+  byte b[3];
+  if (!publ || *pub != 4)
+    {
+      fprintf(stderr, "only know how to calculate the fingerprint of V4 keys\n");
+      exit(1);
+    }
+  SHA1_CONTEXT ctx;
+  sha1_init(&ctx);
+  b[0] = 0x99;
+  b[1] = publ >> 8;
+  b[2] = publ;
+  sha1_write(&ctx, b, 3);
+  sha1_write(&ctx, pub, publ);
+  sha1_final(&ctx);
+  memcpy(fingerprintp, sha1_read(&ctx), 20);
+}
+
+byte *
+findsigissuer(byte *sig, int sigl)
+{
+  byte *issuer;
+  int hl;
+
+  if (!sigl)
+    return 0;
+  if (sig[0] == 3)
+    return sigl >= 15 ? sig + 7 : 0;
+  if (sig[0] != 4)
+    return 0;
+  issuer = findsubpkg(sig + 4, sigl - 4, 16);
+  if (issuer)
+    return issuer;
+  hl = 4 + 2 + ((sig[4] << 8) | sig[5]);
+  return findsubpkg(sig + hl, sigl - hl, 16);
+}
+
+int
+findsigmpioffset(byte *sig, int sigl)
+{
+  int off;
+  if (sig[0] == 3)
+    return 19;
+  if (sig[0] != 4)
+    abort();
+  off = 6 + (sig[4] << 8) + sig[5];
+  off += 2 + (sig[off] << 8) + sig[off + 1] + 2;
+  return off;
+}
 
 void
 keyextend(char *expire, char *pubkey)
@@ -3370,7 +3436,7 @@ keyextend(char *expire, char *pubkey)
   int i, l, ll, pubkl, tag, pl;
   unsigned char b[6];
   unsigned char *newpubk, *selfsigpkg;
-  unsigned char *issuer;
+  byte *issuer, *sigissuer;
 
   unsigned char *pk;
   int pkl;
@@ -3383,8 +3449,7 @@ keyextend(char *expire, char *pubkey)
   time_t now;
   int expdays;
 
-  SHA1_CONTEXT fingerprint;
-  unsigned char *fingerprintp;
+  byte fingerprint[20];
 
   HASH_CONTEXT dig;
   unsigned char *digp;
@@ -3394,8 +3459,8 @@ keyextend(char *expire, char *pubkey)
   char hashhex[1024];
   int argc;
   int sock = -1;
-  unsigned char *rsig, *rsigp;
-  int rsigl, rl;
+  byte *rsig;
+  int rsigl, rsighl, rl;
 
   u32 crc;
 
@@ -3447,14 +3512,7 @@ keyextend(char *expire, char *pubkey)
   pkcreat = pp[1] << 24 | pp[2] << 16 | pp[3] << 8 | pp[4];
   pk = pp;
   pkl = pl;
-  sha1_init(&fingerprint);
-  b[0] = 0x99;
-  b[1] = pkl >> 8;
-  b[2] = pkl;
-  sha1_write(&fingerprint, b, 3);
-  sha1_write(&fingerprint, pk, pkl);
-  sha1_final(&fingerprint);
-  fingerprintp = sha1_read(&fingerprint);
+  calculatefingerprint(pk, pkl, fingerprint);
 
   pp = nextpkg(&tag, &pl, &p, &l);
   if (tag != 13)
@@ -3507,7 +3565,7 @@ keyextend(char *expire, char *pubkey)
       fprintf(stderr, "self-sig is too short\n");
       exit(1);
     }
-  ex = finddate(pp + 4, pl - 4, 2);
+  ex = findsubpkg(pp + 4, pl - 4, 2);
   if (!ex)
     {
       fprintf(stderr, "self-sig has no creation time\n");
@@ -3519,7 +3577,7 @@ keyextend(char *expire, char *pubkey)
   ex[2] = now >> 8;
   ex[3] = now;
 
-  ex = finddate(pp + 4, pl - 4, 9);
+  ex = findsubpkg(pp + 4, pl - 4, 9);
   if (!ex)
     {
       fprintf(stderr, "self-sig does not expire\n");
@@ -3530,6 +3588,8 @@ keyextend(char *expire, char *pubkey)
   ex[1] = now >> 16;
   ex[2] = now >> 8;
   ex[3] = now;
+
+  issuer = findsigissuer(pp, pl);
 
   /* now create new digest */
   hash_init(&dig);
@@ -3545,11 +3605,7 @@ keyextend(char *expire, char *pubkey)
   b[4] = useridl;
   hash_write(&dig, b, 5);
   hash_write(&dig, userid, useridl);
-
   hl = 4 + 2 + ((pp[4] << 8) | pp[5]);
-  issuer = finddate(pp + 4, pl - 4, 16);
-  if (!issuer)
-    issuer = finddate(pp + hl, pl - hl, 16);
   if (hl > pl)
     {
       fprintf(stderr, "self-sig has bad hashed-length\n");
@@ -3601,44 +3657,34 @@ keyextend(char *expire, char *pubkey)
   sock = -1;
   if (rl < 0)
     exit(-rl);
-  if (rbuf[0] != 0 || rbuf[1] != 1)
-    {
-      fprintf(stderr, "bad return count\n");
-      exit(1);
-    }
-  ll = rbuf[2] << 8 | rbuf[3];
-  if (ll > rl - 2)
-    {
-      fprintf(stderr, "returned sig too small\n");
-      exit(1);
-    }
-  rsigp = rbuf + 4;
-  rsig = nextpkg(&tag, &rsigl, &rsigp, &ll);
-  if (tag != 2)
-    {
-      fprintf(stderr, "returned data is no sig\n");
-      exit(1);
-    }
-  if (*rsig != 3)
-    {
-      fprintf(stderr, "returned data is no V3 sig\n");
-      exit(1);
-    }
-  if (issuer && memcmp(issuer, rsig + 7, 4))
+  rsig = pkg2sig(rbuf + 4, rbuf[2] << 8 | rbuf[3], &rsigl);
+  sigissuer = findsigissuer(rsig, rsigl);
+  if (issuer && sigissuer && memcmp(issuer, sigissuer, 8))
     {
       fprintf(stderr, "issuer does not match, did you forget -P?\n");
       exit(1);
     }
-  if (memcmp(fingerprintp + 12, rsig + 7, 8))
+  if (memcmp(fingerprint + 12, sigissuer, 8))
     {
       fprintf(stderr, "fingerprint does not match self sig\n");
       exit(1);
     }
-  newpubk = malloc(pubkl + (rsigl - 17) - (pl - hl) + 6);
+  rsighl = findsigmpioffset(rsig, rsigl) - 2;	/* subtract 2 for hash bits */
+  /*
+   * pp: self-sig
+   * pl: length of self-sig
+   * hl: offset of left 16 bits of hash in v4 self-sig
+   * rsig: new v3 sig
+   * rsigl: length of new v3 sig
+   * rsighl: offset of left 16 bits of hash in new v3 sig
+   */
+  newpubk = malloc((selfsigpkg - pubk) + 4 + hl + (rsigl - rsighl));
   memcpy(newpubk, pubk, selfsigpkg - pubk);
-  memcpy(newpubk + (selfsigpkg - pubk) + 4, pp, pl);
-  memcpy(newpubk + (selfsigpkg - pubk) + 4 + hl, rsig + 17, rsigl - 17);
-  pp = addpkg(newpubk + (selfsigpkg - pubk), newpubk + (selfsigpkg - pubk) + 4, pl + (rsigl - 17) - (pl - hl), 2, selfsigpkg[0] & 64);
+  /* leave 4 bytes space for pkg header */
+  memcpy(newpubk + (selfsigpkg - pubk) + 4, pp, hl);
+  memcpy(newpubk + (selfsigpkg - pubk) + 4 + hl, rsig + rsighl, rsigl - rsighl);
+  pp = addpkg(newpubk + (selfsigpkg - pubk), newpubk + (selfsigpkg - pubk) + 4, hl + (rsigl - rsighl), 2, selfsigpkg[0] & 64);
+  /* add remaining packages that come after the v4 self-sig */
   if (l)
     {
       memcpy(pp, p, l);
@@ -3653,6 +3699,7 @@ keyextend(char *expire, char *pubkey)
   putc('=', stdout);
   printr64(stdout, b, 3);
   printf("-----END PGP PUBLIC KEY BLOCK-----\n");
+  free(newpubk);
 }
 
 static void
@@ -3662,40 +3709,6 @@ certsizelimit(char *s, int l)
     return;
   s[l] = 0;
   s[l - 1] = s[l - 2] = s[l - 3] = '.';
-}
-
-static char *
-der2pem(byte *in, int inl, char *what)
-{
-  static const char bintoasc[64] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  char *buf;
-  char *bp;
-  int whatl = strlen(what);
-  int i, a, b, c;
-
-  buf = malloc(28 + whatl + (inl / 3) * 4 + (inl / 48) + 28 + whatl + 30);
-  if (!buf)
-    return 0;
-  bp = buf;
-  sprintf(bp, "-----BEGIN %s-----\n", what);
-  bp += strlen(bp);
-  for (i = -1; inl > 0; inl -= 3)
-    {  
-      if (++i == 16)
-        {  
-          i = 0;
-          *bp++ = '\n';
-        }
-      a = *in++;
-      b = inl > 1 ? *in++ : 0;
-      c = inl > 2 ? *in++ : 0; 
-      *bp++ = bintoasc[a >> 2];
-      *bp++ = bintoasc[(a & 3) << 4 | b >> 4];
-      *bp++ = inl > 1 ? bintoasc[(b & 15) << 2 | c >> 6] : '=';
-      *bp++ = inl > 2 ? bintoasc[c & 63] : '=';
-    }
-  sprintf(bp, "\n-----END %s-----\n", what);
-  return buf;
 }
 
 void
@@ -3722,11 +3735,12 @@ createcert(char *pubkey)
   int pubkl;
   unsigned char *p, *pp;
   int i, l, ll, tag, pl;
-  time_t pkcreat, now, exp;
+  time_t pkcreat, now, beg, exp;
   unsigned char *ex;
   unsigned char *userid;
   int useridl;
   const char *args[6];
+  int argc;
   int sock = -1;
   int rl;
   char *name, *nameend;
@@ -3737,10 +3751,13 @@ createcert(char *pubkey)
   int rawssllen;
   char *pem;
   HASH_CONTEXT ctx;
+  byte *sigissuer, fingerprint[20];
+  int sigl;
+  byte *sig;
 
-  if (!privkey)
+  if (uid && !privkey)
     {
-      fprintf(stderr, "need -P option for cert creation\n");
+      fprintf(stderr, "need -P option for non-root operation\n");
       exit(1);
     }
   if (privkey)
@@ -3784,6 +3801,7 @@ createcert(char *pubkey)
       fprintf(stderr, "not a RSA pubkey\n");
       exit(1);
     }
+  calculatefingerprint(pp, pl, fingerprint);
 
   /* get creattion time */
   pkcreat = pp[1] << 24 | pp[2] << 16 | pp[3] << 8 | pp[4];
@@ -3824,14 +3842,17 @@ createcert(char *pubkey)
       fprintf(stderr, "self-sig is too short\n");
       exit(1);
     }
-  ex = finddate(pp + 4, pl - 4, 2);
+  ex = findsubpkg(pp + 4, pl - 4, 2);
   if (!ex)
     {
       fprintf(stderr, "self-sig has no creation time\n");
       exit(1);
     }
+  beg = (ex[0] << 24 | ex[1] << 16 | ex[2] << 8 | ex[3]);
   now = (u32)time((time_t)0);
-  ex = finddate(pp + 4, pl - 4, 9);
+  if (beg > now)
+    beg = now;
+  ex = findsubpkg(pp + 4, pl - 4, 9);
   if (!ex)
     {
       fprintf(stderr, "self-sig does not expire\n");
@@ -3874,7 +3895,7 @@ createcert(char *pubkey)
 
   /* create tbscert */
   memset(&cb, 0, sizeof(cb));
-  certbuf_tbscert(&cb, name, email, now, exp, mpin, mpinl, mpie, mpiel);
+  certbuf_tbscert(&cb, name, email, beg, exp, mpin, mpinl, mpie, mpiel);
   free(name);
   free(pubk);
 
@@ -3886,35 +3907,37 @@ createcert(char *pubkey)
   for (i = 0; i < hashlen[hashalgo]; i++)
     sprintf(hashhex + i * 2, "%02x", p[i]);
   strcpy(hashhex + i * 2, "@0000000000");
-
-  args[0] = "privsign";
+  args[0] = privkey ? "privsign" : "sign";
   args[1] = algouser;
-  args[2] = privkey;
-  args[3] = hashhex;
+  argc = 2;
+  if (privkey)
+    args[argc++] = privkey;
+  args[argc++] = hashhex;
   sock = opensocket();
-  rl = doreq(sock, 4, args, rbuf, sizeof(rbuf), 1);
+  rl = doreq(sock, argc, args, rbuf, sizeof(rbuf), 1);
   close(sock);
   if (rl < 0)
     exit(-rl);
 
+  sig = pkg2sig(rbuf + 4, rbuf[2] << 8 | rbuf[3], &sigl);
+  sigissuer = findsigissuer(sig, sigl);
+  if (sigissuer && memcmp(sigissuer, fingerprint + 12, 8))
+    {
+      fprintf(stderr, "signature issuer does not match fingerprint\n");
+      exit(1);
+    }
   /* get signnature */
-  rawssl = getrawopensslsig(rbuf + 4, rbuf[2] << 8 | rbuf[3], &rawssllen);
+  rawssl = getrawopensslsig(sig, sigl, &rawssllen);
 
   /* finish cert */
   certbuf_finishcert(&cb, rawssl, rawssllen);
   free(rawssl);
 
-  /* convert to pem */
-  pem = der2pem(cb.buf, cb.len, "CERTIFICATE");
+  /* print as PEM */
+  printf("-----BEGIN CERTIFICATE-----\n");
+  printr64(stdout, cb.buf, cb.len);
+  printf("-----END CERTIFICATE-----\n");
   free(cb.buf);
-
-  /* write as PEM */
-  if (fwrite(pem, strlen(pem), 1, stdout) != 1)
-    {
-      fprintf(stderr, "cert write error\n");
-      exit(1);
-    }
-  free(pem);
 }
 
 void usage()
