@@ -23,6 +23,8 @@ static char *host;
 static char *user;
 static char *algouser;
 static int port = MYPORT;
+static int allowuser;
+static char *test_sign;
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,6 +41,7 @@ static int port = MYPORT;
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/time.h>
+#include <sys/wait.h>
 #include <pwd.h>
 
 #include "inc.h"
@@ -52,6 +55,8 @@ static int opensocket(void)
   int sock;
   int optval;
 
+  if (test_sign)
+    return -1;
   if (!hostknown)
     {
       svt.sin_addr.s_addr = inet_addr(host);
@@ -174,12 +179,90 @@ readprivkey(void)
   privkey[l] = 0;
 }
 
+static pid_t
+pipe_and_fork(int *pip)
+{
+  pid_t pid;
+  if (pipe(pip) == -1)
+    {
+      perror("pipe");
+      exit(1);
+    }
+  if ((pid = fork()) == (pid_t)-1)
+    {
+      perror("fork");
+      exit(1);
+    }
+  if (pid == 0)
+    {
+      close(pip[0]);
+      dup2(pip[1], 1);
+      close(pip[1]);
+    }
+  else
+    close(pip[1]);
+  return pid;
+}
+
+static int
+doreq_test(byte *buf, int inbufl, int bufl)
+{
+  pid_t pid;
+  int pip[2];
+  
+  pid = pipe_and_fork(pip);
+  if (pid == 0)
+    {
+      pid = pipe_and_fork(pip);
+      if (pid == 0)
+	{
+	  while (inbufl > 0)
+	    {
+	      int l = write(1, buf, inbufl);
+	      if (l == -1)
+		{
+		  perror("write");
+		  _exit(1);
+		}
+	      buf += l;
+	      inbufl -= l;
+	    }
+	  _exit(0);
+	}
+      dup2(pip[0], 0);
+      close(pip[0]);
+      execlp(test_sign, test_sign, "--test-sign", (char *)0);
+      perror(test_sign);
+      _exit(1);
+    }
+  return pip[0];
+}
+
+static void
+reap_test_signd()
+{
+  int status;
+  pid_t pid = waitpid(0, &status, 0);
+  if (pid <= 0)
+    {
+      perror("waitpid");
+      exit(1);
+    }
+  if (status)
+    {
+      fprintf(stderr, "test signd returned status 0x%x\n", status);
+      exit(1);
+    }
+}
+
 static int
 doreq_old(int sock, byte *buf, int inbufl, int bufl)
 {
   int l, outl, errl;
 
-  if (write(sock, buf, inbufl) != inbufl)
+  if (test_sign)
+    sock = doreq_test(buf, inbufl, bufl);
+  else if (write(sock, buf, inbufl) != inbufl)
     {
       perror("write");
       close(sock);
@@ -208,6 +291,8 @@ doreq_old(int sock, byte *buf, int inbufl, int bufl)
       l += ll;
     }
   close(sock);
+  if (test_sign)
+    reap_test_signd();
   if (l < 6)
     {
       fprintf(stderr, "packet too small\n");
@@ -926,7 +1011,6 @@ keygen(const char *type, const char *expire, const char *name,
   args[4] = name;
   args[5] = email;
   l = doreq(sock, 6, args, buf, sizeof(buf), 2);
-  close(sock);
   if (l < 0)
     exit(-l);
   publ = buf[2] << 8 | buf[3];
@@ -1017,7 +1101,7 @@ keyextend(char *expire, char *pubkey)
   char *bp;
   char hashhex[1024];
   int argc;
-  int sock = -1;
+  int sock;
   byte *rsig;
   int rsigl, rsighl, rl;
 
@@ -1210,8 +1294,6 @@ keyextend(char *expire, char *pubkey)
   args[argc++] = hashhex;
   sock = opensocket();
   rl = doreq(sock, argc, args, rbuf, sizeof(rbuf), 1);
-  close(sock);
-  sock = -1;
   if (rl < 0)
     exit(-rl);
   rsig = pkg2sig(rbuf + 4, rbuf[2] << 8 | rbuf[3], &rsigl);
@@ -1290,7 +1372,7 @@ createcert(char *pubkey)
   int useridl;
   const char *args[6];
   int argc;
-  int sock = -1;
+  int sock;
   int rl;
   char *name, *nameend;
   char *email;
@@ -1463,7 +1545,6 @@ createcert(char *pubkey)
   args[argc++] = hashhex;
   sock = opensocket();
   rl = doreq(sock, argc, args, rbuf, sizeof(rbuf), 1);
-  close(sock);
   if (rl < 0)
     exit(-rl);
 
@@ -1488,47 +1569,30 @@ createcert(char *pubkey)
   free(cb.buf);
 }
 
-void usage()
+void
+ping()
 {
-    fprintf(stderr, "usage:  sign [-v] [options]\n\n"
-            "  sign [-v] -c <file> [-u user] [-h hash]: add clearsign signature\n"
-            "  sign [-v] -d <file> [-u user] [-h hash]: create detached signature\n"
-            "  sign [-v] -r <file> [-u user] [-h hash]: add signature block to rpm\n"
-            "  sign [-v] -a <file> [-u user] [-h hash]: add signature block to appimage\n"
-            "  sign [-v] -k [-u user] [-h hash]: print key id\n"
-            "  sign [-v] -p [-u user] [-h hash]: print public key\n"
-            "  sign [-v] -g <type> <expire> <name> <email>: generate keys\n"
-            "  sign [-v] -x <expire> <pubkey>: extend pubkey\n"
-            "  sign [-v] -C <pubkey>: create certificate\n"
-            "  sign [-v] -t: test connection to signd server\n"
-            //"  -D: RAWDETACHEDSIGN\n"
-            //"  -O: RAWOPENSSLSIGN\n"
-            //"  --noheaderonly\n"
-            //"  -S <file>: verify checksum\n"
-            //"  -T  time?\n"
-            //"  -P  privkey\n" 
-            "\n"
-           );
+  byte buf[256];
+  int r, sock = opensocket();
+  memset(buf, 0, 4);
+  r = doreq_old(sock, buf, 4, sizeof(buf));
+  if (r)
+    exit(-r);
 }
 
-int
-main(int argc, char **argv)
+void
+read_sign_conf(const char *conf)
 {
   FILE *cfp;
   char buf[256], *bp;
   int c, l;
-  int allowuser = 0;
   struct passwd *pwd = 0;
-  int mode = MODE_UNSET;
 
-  uid = getuid();
   if (uid)
     pwd = getpwuid(uid);
-  user = strdup("");
-  host = strdup("127.0.0.1");
-  if ((cfp = fopen("/etc/sign.conf", "r")) == 0)
+  if ((cfp = fopen(conf, "r")) == 0)
     {
-      perror("/etc/sign.conf");
+      perror(conf);
       exit(1);
     }
   while (fgets(buf, sizeof(buf), cfp))
@@ -1597,6 +1661,51 @@ main(int argc, char **argv)
 	}
     }
   fclose(cfp);
+}
+
+void usage()
+{
+    fprintf(stderr, "usage:  sign [-v] [options]\n\n"
+            "  sign [-v] -c <file> [-u user] [-h hash]: add clearsign signature\n"
+            "  sign [-v] -d <file> [-u user] [-h hash]: create detached signature\n"
+            "  sign [-v] -r <file> [-u user] [-h hash]: add signature block to rpm\n"
+            "  sign [-v] -a <file> [-u user] [-h hash]: add signature block to appimage\n"
+            "  sign [-v] -k [-u user] [-h hash]: print key id\n"
+            "  sign [-v] -p [-u user] [-h hash]: print public key\n"
+            "  sign [-v] -g <type> <expire> <name> <email>: generate keys\n"
+            "  sign [-v] -x <expire> <pubkey>: extend pubkey\n"
+            "  sign [-v] -C <pubkey>: create certificate\n"
+            "  sign [-v] -t: test connection to signd server\n"
+            //"  -D: RAWDETACHEDSIGN\n"
+            //"  -O: RAWOPENSSLSIGN\n"
+            //"  --noheaderonly\n"
+            //"  -S <file>: verify checksum\n"
+            //"  -T  time?\n"
+            //"  -P  privkey\n" 
+            "\n"
+           );
+}
+
+int
+main(int argc, char **argv)
+{
+  int mode = MODE_UNSET;
+  const char *conf = 0;
+
+  uid = getuid();
+  user = strdup("");
+  host = strdup("127.0.0.1");
+
+  if (argc > 2 && !strcmp(argv[1], "--test-sign"))
+    {
+      test_sign = argv[2];
+      argc -= 2;
+      argv += 2;
+      conf = getenv("SIGN_CONF");
+      allowuser = 1;
+    }
+  read_sign_conf(conf ? conf : "/etc/sign.conf");
+
   if (uid)
     {
       if (!allowuser)
@@ -1612,34 +1721,17 @@ main(int argc, char **argv)
     }
   if (argc == 2 && !strcmp(argv[1], "-t"))
     {
-      char buf[6];
-      int r;
-      int sock = opensocket();
-      if (sock == -1)
-	exit(1);
-      if (write(sock, "\0\0\0\0", 4) != 4)
-	{
-	  perror("write");
-	  exit(1);
-	}
-      r = read(sock, buf, 6);
-      if (r == -1)
-	{
-	  perror("read");
-	  exit(1);
-	}
-      close(sock);
-      if (r != 6)
-	exit(1);
-      exit(buf[0] << 8 | buf[1]);
+      ping();
+      exit(0);
     }
   while (argc > 1)
     {
       if (!strcmp(argv[1], "--help"))
-      {
+        {
           usage();
           exit(0);
-      } else if (argc > 2 && !strcmp(argv[1], "-u"))
+        }
+      else if (argc > 2 && !strcmp(argv[1], "-u"))
 	{
 	  user = argv[2];
 	  argc -= 2;

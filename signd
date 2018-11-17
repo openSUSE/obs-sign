@@ -297,6 +297,7 @@ sub checkbadchar {
 
 local *F;
 my $testmode = (($ARGV[0] || '') eq '-t') ? 1 : 0;
+$testmode = 2 if ($ARGV[0] || '') eq '--test-sign';
 $conf = $ENV{SIGN_CONF} if $testmode && $ENV{SIGN_CONF};
 open(F, '<', $conf) || die("$conf: $!\n");
 while(<F>) {
@@ -364,8 +365,13 @@ if ($testmode) {
   die("test mode need phrases\n") unless $phrases;
   # test mode
   $| = 1;
-  @argv = @ARGV;
-  shift @argv;
+  if ($testmode == 2) {
+    *CLNT = *STDIN;
+    @argv = readreq();
+  } else {
+    @argv = @ARGV;
+    shift @argv;
+  }
   *CLNT = *STDOUT;
   goto testit;
 }

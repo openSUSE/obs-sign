@@ -424,7 +424,7 @@ rpm_readheaderpayload(struct rpmdata *rd, int fd, char *filename, HASH_CONTEXT *
   MD5_CTX md5ctx;
   u32 lensig, lenhdr;
   int l, i;
-  int buildtimeoff;
+  int buildtimeoff = 0;
 
   md5_init(&md5ctx);
   hash_init(hctx);
@@ -511,6 +511,7 @@ rpm_readheaderpayload(struct rpmdata *rd, int fd, char *filename, HASH_CONTEXT *
 	}
       rd->buildtime = btbuf[0] << 24 | btbuf[1] << 16 | btbuf[2] << 8 | btbuf[3];
     }
+  return 0;
 }
 
 int

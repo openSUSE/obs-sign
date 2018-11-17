@@ -121,6 +121,7 @@ unarmor_pubkey(char *pubkey, int *pktlp)
     return 0;
   l = p - pubkey;
   buf = malloc(l * 3 / 4 + 4 + 16);
+  bp = buf;
   pubkey = r64dec(pubkey, &bp);
   if (!pubkey)
     {
