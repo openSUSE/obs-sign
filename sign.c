@@ -254,7 +254,7 @@ sign(char *filename, int isfilter, int mode)
     }
 
   /* set sign time */
-  if (!timearg || mode == MODE_KEYID || mode == MODE_PUBKEY)
+  if (!timearg || mode == MODE_KEYID)
     signtime = time(NULL);
   else if (*timearg >= '0' && *timearg <= '9')
     signtime = strtoul(timearg, NULL, 0);
@@ -294,7 +294,7 @@ sign(char *filename, int isfilter, int mode)
 	  return(1);
 	}
     }
-  else if (mode == MODE_KEYID || mode == MODE_PUBKEY)
+  else if (mode == MODE_KEYID)
     {
       /* sign empty string */
       opensocket();
@@ -339,14 +339,14 @@ sign(char *filename, int isfilter, int mode)
 	hash_write(&ctx, buf,  l);
     }
 
-  if (verbose && mode != MODE_KEYID && mode != MODE_PUBKEY)
+  if (verbose && mode != MODE_KEYID)
     {
       if (*user)
         fprintf(isfilter ? stderr : stdout, "%s %s user %s\n", modes[mode],  filename, user);
       else
         fprintf(isfilter ? stderr : stdout, "%s %s\n", modes[mode],  filename);
     }
-  if (mode != MODE_RAWOPENSSLSIGN && mode != MODE_KEYID && mode != MODE_PUBKEY && dov4sig)
+  if (mode != MODE_RAWOPENSSLSIGN && mode != MODE_KEYID && dov4sig)
     v4sigtrail = genv4sigtrail(mode == MODE_CLEARSIGN ? 1 : 0, pubalgoprobe >= 0 ? pubalgoprobe : PUB_RSA, hashalgo, signtime, &v4sigtraillen);
   if (mode == MODE_RAWOPENSSLSIGN)
     {
@@ -405,13 +405,7 @@ sign(char *filename, int isfilter, int mode)
 	  bp += strlen((const char *)bp);
 	  *bp++ = ':';
 	}
-      if (mode == MODE_PUBKEY)
-	{
-	  strcpy((char *)bp, "PUBKEY");
-	  bp += 6;
-	}
-      else
-	bp = digest2arg(bp, p, sigtrail);
+      bp = digest2arg(bp, p, sigtrail);
       buf[3] = bp - (buf + 4 + ulen);
       outl = doreq_old(buf, (int)(bp - buf), sizeof(buf));
       if (outl >= 0)
@@ -425,11 +419,6 @@ sign(char *filename, int isfilter, int mode)
       char hashhexh[1024];
       int argc;
 
-      if (mode == MODE_PUBKEY)
-	{
-	  fprintf(stderr, "pubkey mode does not work with a private key\n");
-	  exit(1);
-	}
       if (privkey)
         readprivkey();
       digest2arg((byte *)hashhex, p, sigtrail);
@@ -1160,6 +1149,45 @@ createcert(char *pubkey)
 }
 
 void
+getpubkey()
+{
+  byte buf[8192], *bp;
+  int outl;
+  int ulen = strlen(user);
+  if (privkey)
+    {
+      fprintf(stderr, "pubkey fetching does not work with a private key\n");
+      exit(1);
+    }
+  opensocket();
+  /* we always use old style requests for the pubkey */
+  if (ulen + 6 + 4 + 1 + (hashalgo == HASH_SHA1 ? 0 : strlen(hashname[hashalgo]) + 1) > sizeof(buf))
+    {
+      fprintf(stderr, "packet too big\n");
+      exit(1);
+    }
+  buf[0] = ulen >> 8;
+  buf[1] = ulen;
+  buf[2] = 0;
+  buf[3] = 0;
+  memmove(buf + 4, user, ulen);
+  bp = buf + 4 + ulen;
+  if (hashalgo != HASH_SHA1)
+    {
+      strcpy((char *)bp, hashname[hashalgo]);
+      bp += strlen((const char *)bp);
+      *bp++ = ':';
+    }
+  strcpy((char *)bp, "PUBKEY");
+  bp += 6;
+  buf[3] = bp - (buf + 4 + ulen);
+  outl = doreq_old(buf, (int)(bp - buf), sizeof(buf));
+  if (outl < 0)
+    exit(-outl);
+  fwrite(buf, 1, outl, stdout);
+}
+
+void
 ping()
 {
   byte buf[256];
@@ -1481,15 +1509,20 @@ main(int argc, char **argv)
       algouser = malloc(strlen(user) + strlen(hashname[hashalgo]) + 2);
       sprintf(algouser, "%s:%s", hashname[hashalgo], user);
     }
-  if ((mode == MODE_KEYID || mode == MODE_PUBKEY) && argc > 1)
-    {
-      fprintf(stderr, "usage: sign [-c|-d|-r|-a] [-u user] <file>\n");
-      exit(1);
-    }
   if (pkcs1pss && mode != MODE_RAWOPENSSLSIGN)
     {
       fprintf(stderr, "can only generate a pkcs1pss signature in openssl mode\n");
       exit(1);
+    }
+  if (mode == MODE_PUBKEY)
+    {
+      if (argc != 1)
+	{
+	  fprintf(stderr, "usage: sign -p [-u user]\n");
+	  exit(1);
+	}
+      getpubkey();
+      exit(0);
     }
   if (mode == MODE_KEYGEN)
     {
@@ -1522,13 +1555,18 @@ main(int argc, char **argv)
       createcert(argv[1]);
       exit(0);
     }
+  if (mode == MODE_KEYID && argc != 1)
+    {
+      fprintf(stderr, "usage: sign [-c|-d|-r|-a] [-u user] <file>\n");
+      exit(1);
+    }
   if (privkey && access(privkey, R_OK))
     {
       perror(privkey);
       exit(1);
     }
 
-  if (dov4sig && mode != MODE_KEYID && mode != MODE_PUBKEY && mode != MODE_RAWOPENSSLSIGN)
+  if (dov4sig && mode != MODE_KEYID && mode != MODE_RAWOPENSSLSIGN)
     pubalgoprobe = probe_pubalgo();
 
   if (chksumfile)
