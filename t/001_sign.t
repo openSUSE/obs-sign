@@ -3,7 +3,7 @@
 use strict;
 use warnings;
 use bytes;
-use Test::More tests => 32;
+use Test::More tests => 35;
 use File::Temp qw/tempdir/;
 use File::Path qw/remove_tree make_path/;
 use Digest::SHA;
@@ -167,6 +167,17 @@ is($?, 0, "Checking rpm sign return code");
 $result = `rpm --dbpath $tmpdir --checksig -v $tmpdir/empty.rpm`;
 like($result, qr/^\s*Header V3 RSA\/SHA256 Signature, key ID [0-9a-f]*: OK/m, "Checking rpm header signature");
 like($result, qr/^\s*V3 RSA\/SHA256 Signature, key ID [0-9a-f]*: OK/m, "Checking rpm header+payload signature");
+
+###############################################################################
+### rpm v4 sign
+$result = `rpm --dbpath $tmpdir --initdb`;
+$result = `rpm --dbpath $tmpdir --import $fixtures_dir/public-key.asc`;
+spew("$tmpdir/empty.rpm", slurp("$fixtures_dir/empty.rpm"));
+$result = `$sign -h sha256 -4 -r $tmpdir/empty.rpm`;
+is($?, 0, "Checking rpm v4 sign return code");
+$result = `rpm --dbpath $tmpdir --checksig -v $tmpdir/empty.rpm`;
+like($result, qr/^\s*Header V4 RSA\/SHA256 Signature, key ID [0-9a-f]*: OK/m, "Checking rpm v4 header signature");
+like($result, qr/^\s*V4 RSA\/SHA256 Signature, key ID [0-9a-f]*: OK/m, "Checking rpm v4 header+payload signature");
 
 ###############################################################################
 ### rpm priv sign
