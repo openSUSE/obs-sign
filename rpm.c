@@ -343,7 +343,7 @@ rpm_insertsig(struct rpmdata *rd, int hdronly, byte *newsig, int newsiglen)
   return 0;
 }
 
-int
+static int
 rpm_readsigheader(struct rpmdata *rd, int fd, const char *filename)
 {
   byte *p, *rsp;
@@ -416,7 +416,7 @@ rpm_readsigheader(struct rpmdata *rd, int fd, const char *filename)
   return 1;
 }
 
-int
+static int
 rpm_readheaderpayload(struct rpmdata *rd, int fd, char *filename, HASH_CONTEXT *ctx, HASH_CONTEXT *hctx, int getbuildtime)
 {
   byte buf[8192];
@@ -511,7 +511,19 @@ rpm_readheaderpayload(struct rpmdata *rd, int fd, char *filename, HASH_CONTEXT *
 	}
       rd->buildtime = btbuf[0] << 24 | btbuf[1] << 16 | btbuf[2] << 8 | btbuf[3];
     }
-  return 0;
+  return 1;
+}
+
+int
+rpm_read(struct rpmdata *rd, int fd, char *filename, HASH_CONTEXT *ctx, HASH_CONTEXT *hctx, int getbuildtime)
+{
+  memset(rd, 0, sizeof(*rd));
+  if (!rpm_readsigheader(rd, fd, filename))
+    return 0;	/* already signed */
+  opensocket();
+  if (!rpm_readheaderpayload(rd, fd, filename, ctx, hctx, getbuildtime))
+    exit(1);
+  return 1;
 }
 
 int

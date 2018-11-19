@@ -287,3 +287,14 @@ getrawopensslsig(byte *sig, int sigl, int *lenp)
   return ret;
 }
 
+void
+certsizelimit(char *s, int l)
+{
+  if (strlen(s) <= l)
+    return;
+  s += l - 4;
+  for (l = 0; l < 3; l++, s--)
+    if ((*s & 0xc0) != 0x80)
+      break;
+  strcpy(s, "...");
+}

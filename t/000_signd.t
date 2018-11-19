@@ -21,9 +21,7 @@ my $fixtures_dir = "$FindBin::Bin/fixtures";
 remove_tree($tmp_dir);
 
 make_path($var_dir);
-$ENV{SIGND_VAR} = $var_dir;
 $ENV{LANG} = 'C';
-my $gnupghome=$ENV{GNUPGHOME};
 $ENV{GNUPGHOME} = "$tmp_dir/gnupg";
 make_path($ENV{GNUPGHOME});
 chmod 0700, $ENV{GNUPGHOME};

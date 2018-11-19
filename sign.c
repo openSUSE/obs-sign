@@ -19,23 +19,12 @@
 
 #define MYPORT 5167
 
-static char *host;
-static char *user;
-static char *algouser;
-static int port = MYPORT;
-static int allowuser;
-static char *test_sign;
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <assert.h>
 #include <fcntl.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <netdb.h>
 #include <time.h>
 #include <errno.h>
 #include <sys/stat.h>
@@ -46,72 +35,14 @@ static char *test_sign;
 
 #include "inc.h"
 
-static uid_t uid;
-
-static int opensocket(void)
-{
-  static int hostknown;
-  static struct sockaddr_in svt;
-  int sock;
-  int optval;
-
-  if (test_sign)
-    return -1;
-  if (!hostknown)
-    {
-      svt.sin_addr.s_addr = inet_addr(host);
-      svt.sin_family = AF_INET;
-      if (svt.sin_addr.s_addr == -1)
-	{
-	  struct hostent *hp;
-	  if (!(hp = gethostbyname(host)))
-	    {
-	      printf("%s: unknown host\n", host);
-	      exit(1);
-	    }
-	  memmove(&svt.sin_addr, hp->h_addr, hp->h_length);
-	  svt.sin_family = hp->h_addrtype;
-	}
-      svt.sin_port = htons(port);
-      hostknown = 1;
-    }
-  if ((sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0)
-    {
-      perror("socket");
-      exit(1);
-    }
-  if (uid)
-    seteuid(0);
-  for (;;)
-    {
-      if (!bindresvport(sock, NULL))
-	break;
-      if (errno != EADDRINUSE)
-	{
-	  perror("bindresvport");
-	  exit(1);
-	}
-      sleep(1);
-    }
-  if (uid)
-    {
-      if (seteuid(uid))
-	{
-	  perror("seteuid");
-	  exit(1);
-	}
-    }
-  if (connect(sock, (struct sockaddr *)&svt, sizeof(svt)))
-    {
-      perror(host);
-      exit(1);
-    }
-  optval = 1;
-  setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &optval, sizeof(optval));
-  return sock;
-}
-
+char *host;
+int port = MYPORT;
+char *test_sign;
+static char *user;
+static char *algouser;
+static int allowuser;
 static int verbose;
+uid_t uid;
 
 static const char *const hashname[] = {"SHA1", "SHA256"};
 static const int  hashlen[] = {20, 32};
@@ -179,242 +110,15 @@ readprivkey(void)
   privkey[l] = 0;
 }
 
-static pid_t
-pipe_and_fork(int *pip)
-{
-  pid_t pid;
-  if (pipe(pip) == -1)
-    {
-      perror("pipe");
-      exit(1);
-    }
-  if ((pid = fork()) == (pid_t)-1)
-    {
-      perror("fork");
-      exit(1);
-    }
-  if (pid == 0)
-    {
-      close(pip[0]);
-      dup2(pip[1], 1);
-      close(pip[1]);
-    }
-  else
-    close(pip[1]);
-  return pid;
-}
-
-static int
-doreq_test(byte *buf, int inbufl, int bufl)
-{
-  pid_t pid;
-  int pip[2];
-  
-  pid = pipe_and_fork(pip);
-  if (pid == 0)
-    {
-      pid = pipe_and_fork(pip);
-      if (pid == 0)
-	{
-	  while (inbufl > 0)
-	    {
-	      int l = write(1, buf, inbufl);
-	      if (l == -1)
-		{
-		  perror("write");
-		  _exit(1);
-		}
-	      buf += l;
-	      inbufl -= l;
-	    }
-	  _exit(0);
-	}
-      dup2(pip[0], 0);
-      close(pip[0]);
-      execlp(test_sign, test_sign, "--test-sign", (char *)0);
-      perror(test_sign);
-      _exit(1);
-    }
-  return pip[0];
-}
-
-static void
-reap_test_signd()
-{
-  int status;
-  pid_t pid = waitpid(0, &status, 0);
-  if (pid <= 0)
-    {
-      perror("waitpid");
-      exit(1);
-    }
-  if (status)
-    {
-      fprintf(stderr, "test signd returned status 0x%x\n", status);
-      exit(1);
-    }
-}
-
-static int
-doreq_old(int sock, byte *buf, int inbufl, int bufl)
-{
-  int l, outl, errl;
-
-  if (test_sign)
-    sock = doreq_test(buf, inbufl, bufl);
-  else if (write(sock, buf, inbufl) != inbufl)
-    {
-      perror("write");
-      close(sock);
-      return -1;
-    }
-
-  l = 0; 
-  for (;;) 
-    {
-      int ll;
-      if (l == bufl)
-	{
-	  fprintf(stderr, "packet too big\n");
-	  close(sock);
-	  return -1;
-	}
-      ll = read(sock, buf + l, bufl - l);
-      if (ll == -1)
-	{
-	  perror("read");
-	  close(sock);
-	  return -1;
-	}
-      if (ll == 0)
-	break;
-      l += ll;
-    }
-  close(sock);
-  if (test_sign)
-    reap_test_signd();
-  if (l < 6)
-    {
-      fprintf(stderr, "packet too small\n");
-      return -1;
-    }
-  outl = buf[2] << 8 | buf[3];
-  errl = buf[4] << 8 | buf[5];
-  if (l != outl + errl + 6)
-    {
-      fprintf(stderr, "packet size mismatch %d %d %d\n", l, outl, errl);
-      return -1;
-    }
-  if (errl)
-    fwrite(buf + 6 + outl, 1, errl, stderr);
-  if (buf[0] << 8 | buf[1])
-    return -(buf[0] << 8 | buf[1]);
-  memmove(buf, buf + 6, outl);
-  return outl;
-}
-
-static int
-doreq(int sock, int argc, const char **argv, byte *buf, int bufl, int nret)
-{
-  byte *bp;
-  int i, l, v, outl;
-
-  bp = buf + 2;
-  *bp++ = 0;
-  *bp++ = 0;
-  *bp++ = argc >> 8;
-  *bp++ = argc & 255;
-  for (i = 0; i < argc; i++)
-    {
-      v = strlen(argv[i]);
-      *bp++ = v >> 8;
-      *bp++ = v & 255;
-    }
-  for (i = 0; i < argc; i++)
-    {
-      v = strlen(argv[i]);
-      if (bp + v > buf + bufl)
-	{
-	  fprintf(stderr, "request buffer overflow\n");
-	  close(sock);
-	  return -1;
-	}
-      memcpy(bp, argv[i], v);
-      bp += v;
-    }
-  v = bp - (buf + 4);
-  buf[0] = v >> 8;
-  buf[1] = v & 255;
-
-  outl = doreq_old(sock, buf, (int)(bp - buf), bufl);
-  if (outl < 0)
-    return outl;
-
-  if (nret)
-    {
-      /* verify returned data */
-      if (outl < 2 + 2 * nret)
-	{
-	  fprintf(stderr, "answer too small\n");
-	  return -1;
-	}
-      if (buf[0] != 0 || buf[1] != nret)
-	{
-	  fprintf(stderr, "bad return count\n");
-	  return -1;
-	}
-      l = 2;
-      for (i = 0; i < nret; i++)
-	l += 2 + (buf[2 + i * 2] << 8 | buf[2 + i * 2 + 1]);
-      if (l != outl)
-	{
-	  fprintf(stderr, "answer size mismatch\n");
-	  return -1;
-	}
-    }
-  return outl;
-}
-
-static inline int
-elf16(unsigned char *buf, int le)
-{
-  if (le)
-    return buf[0] | buf[1] << 8;
-  return buf[0] << 8 | buf[1];
-}
-
-static inline unsigned int
-elf32(unsigned char *buf, int le)
-{
-  if (le)
-    return buf[0] | buf[1] << 8 | buf[2] << 16 | buf[3] << 24;
-  return buf[0] << 24 | buf[1] << 16 | buf[2] << 8 | buf[3];
-}
-
-static inline unsigned int
-elf64(unsigned char *buf, int le, int is64)
-{
-  if (is64)
-    {
-      buf += le ? 4 : 0;
-      if (buf[0] || buf[1] || buf[2] || buf[3])
-        return ~0;
-      buf += le ? -4 : 4;
-    }
-  if (le)
-    return buf[0] | buf[1] << 8 | buf[2] << 16 | buf[3] << 24;
-  return buf[0] << 24 | buf[1] << 16 | buf[2] << 8 | buf[3];
-}
-
 static int
 probe_pubalgo()
 {
   char hashhex[1024];
   byte buf[8192], *bp;
   u32 signtime = time(NULL);
-  int i, sock, ulen, outl;
+  int i, ulen, outl;
 
-  sock = opensocket();
+  opensocket();
   ulen = strlen(user);
   bp = (byte *)hashhex;
   for (i = 0; i < hashlen[hashalgo]; i++, bp += 2)
@@ -426,7 +130,7 @@ probe_pubalgo()
       /* old style sign */
       if (ulen + strlen(hashhex) + 4 + 1 + (hashalgo == HASH_SHA1 ? 0 : strlen(hashname[hashalgo]) + 1) > sizeof(buf))
 	{
-	  close(sock);
+	  closesocket();
 	  return -1;
 	}
       buf[0] = ulen >> 8;
@@ -444,7 +148,7 @@ probe_pubalgo()
       strcpy((char *)bp, hashhex);
       bp += strlen((char *)bp);
       buf[3] = bp - (buf + 4 + ulen);
-      outl = doreq_old(sock, buf, (int)(bp - buf), sizeof(buf));
+      outl = doreq_old(buf, (int)(bp - buf), sizeof(buf));
     }
   else
     {
@@ -455,7 +159,7 @@ probe_pubalgo()
       args[1] = algouser;
       args[2] = privkey;
       args[3] = hashhex;
-      outl = doreq(sock, 4, args, buf, sizeof(buf), 1);
+      outl = doreq(4, args, buf, sizeof(buf), 1);
       if (outl >= 0)
 	{
 	  outl = buf[2] << 8 | buf[3];
@@ -465,26 +169,33 @@ probe_pubalgo()
   return outl > 0 ? findsigpubalgo(buf, outl) : -1;
 }
 
+static byte *
+digest2arg(byte *bp, byte *dig, byte *sigtrail)
+{
+  int i;
+  for (i = 0; i < hashlen[hashalgo]; i++, bp += 2)
+    sprintf((char *)bp, "%02x", dig[i]);
+  *bp++ = '@';
+  for (i = 0; i < 5; i++, bp += 2)
+    sprintf((char *)bp, "%02x", sigtrail[i]);
+  return bp;
+}
+
 static int
 sign(char *filename, int isfilter, int mode)
 {
   u32 signtime;
   struct rpmdata rpmrd;
-  byte buf[8192], *bp;
-  byte *cbuf;
-  int cbufl;
+  byte buf[8192];
   int l, fd;
-  int i;
-  byte hash[5], *p, *ph = 0;
+  byte sigtrail[5], *p, *ph = 0;
   HASH_CONTEXT ctx;
   HASH_CONTEXT hctx;
   int force = 1;
   int outl, outlh;
-  int sock;
-  int ulen;
   char *outfilename = 0;
+  char *finaloutfilename = 0;	/* rename outfilename to finaloutfilename when done */
   FILE *fout = 0;
-  int foutfd = -1;
   int getbuildtime = 0;
 
   unsigned char *v4sigtrail = 0;
@@ -506,11 +217,14 @@ sign(char *filename, int isfilter, int mode)
       } else
         mode = MODE_CLEARSIGN;
     }
+
   if (mode == MODE_APPIMAGESIGN && isfilter)
     {
       fprintf(stderr, "appimage sign cannot work as filter.\n");
       exit(1);
     }
+
+  /* open input file */
   if (isfilter)
     fd = 0;
   else if ((fd = open(filename, O_RDONLY)) == -1)
@@ -518,7 +232,9 @@ sign(char *filename, int isfilter, int mode)
       perror(filename);
       exit(1);
     }
-  else if (mode != MODE_APPIMAGESIGN)
+
+  /* calculate output file name (but do not open yet) */
+  if (!isfilter && mode != MODE_APPIMAGESIGN)
     {
       outfilename = malloc(strlen(filename) + 16);
       if (!outfilename)
@@ -531,8 +247,13 @@ sign(char *filename, int isfilter, int mode)
       else if (mode == MODE_RAWDETACHEDSIGN || mode == MODE_RAWOPENSSLSIGN)
 	sprintf(outfilename, "%s.sig", filename);
       else
-	sprintf(outfilename, "%s.sIgN%d", filename, getpid());
+	{
+	  sprintf(outfilename, "%s.sIgN%d", filename, getpid());
+	  finaloutfilename = filename;
+	}
     }
+
+  /* set sign time */
   if (!timearg || mode == MODE_KEYID || mode == MODE_PUBKEY)
     signtime = time(NULL);
   else if (*timearg >= '0' && *timearg <= '9')
@@ -542,7 +263,7 @@ sign(char *filename, int isfilter, int mode)
       getbuildtime = 1;
       signtime = 0;		/* rpmsign && buildtime */
     }
-  else
+  else	/* timearg is buildtime or mtime */
     {
       struct stat stb;
       if (fstat(fd, &stb))
@@ -558,42 +279,11 @@ sign(char *filename, int isfilter, int mode)
       signtime = stb.st_mtime;
     }
 
-  if (mode == MODE_RPMSIGN)
-    {
-      memset(&rpmrd, 0, sizeof(rpmrd));
-      if (!rpm_readsigheader(&rpmrd, fd, filename))
-	{
-	  fprintf(isfilter ? stderr : stdout, "%s: already signed\n", filename);
-	  close(fd);
-	  if (outfilename)
-	    free(outfilename);
-	  if (isfilter)
-	    exit(1);
-	  return 1;
-	}
-    }
-
   hash_init(&ctx);
   if (mode == MODE_CLEARSIGN)
     {
-      int have = 0;
-      int i, j;
-      int nl = 0;
-      int first = 1;
-
-      if ((cbuf = malloc(8192)) == NULL)
-	{
-	  fprintf(stderr, "no mem for clearsign buffer\n");
-	  exit(1);
-	}
-      cbufl = 8192;
-      l = read(fd, cbuf, cbufl);
-      if (l < 0)
-	{
-	  perror("read");
-	  exit(1);
-	}
-      if (l >= 34 && !strncmp((char *)cbuf, "-----BEGIN PGP SIGNED MESSAGE-----", 34))
+      /* clearsign is somewhat special: it can open fout */
+      if (clearsign(fd, filename, outfilename, &ctx, hashname[hashalgo], isfilter, force, &fout) == 0)
 	{
 	  fprintf(isfilter ? stderr : stdout, "%s: already signed\n", filename);
 	  close(fd);
@@ -603,89 +293,11 @@ sign(char *filename, int isfilter, int mode)
 	    exit(1);
 	  return(1);
 	}
-      for (i = 0; i < l; i++)
-	{
-	  if (cbuf[i] >= 32 || cbuf[i] == '\t' || cbuf[i] == '\r' || cbuf[i] == '\n')
-	    continue;
-	  first++;
-	}
-      if (first > 4 && !force)
-	{
-	  fprintf(stderr, "%s: won't clearsign binaries\n", filename);
-	  exit(1);
-	}
-      sock = opensocket();
-      if (isfilter)
-	fout = stdout;
-      else if ((fout = fopen(outfilename, "w")) == 0)
-	{
-	  perror(outfilename);
-	  exit(1);
-	}
-      foutfd = fileno(fout);
-      fprintf(fout, "-----BEGIN PGP SIGNED MESSAGE-----\nHash: %s\n\n", hashname[hashalgo]);
-      while (first || (l = read(fd, cbuf + have, cbufl - have)) > 0 || (l == 0 && have))
-	{
-	  first = 0;
-	  if (nl)
-	    hash_write(&ctx, (const unsigned char *)"\r\n",  2);
-          nl = 0;
-	  l += have;
-	  for (i = 0; i < l; i++)
-	    if (cbuf[i] == '\n')
-	      break;
-	  if (i == l && i == cbufl && l != have)
-	    {
-	      cbufl *= 2;
-	      cbuf = realloc(cbuf, cbufl);
-	      if (!cbuf)
-		{
-		  fprintf(stderr, "no mem for clearsign buffer\n");
-		  exit(1);
-		}
-	      have = l;
-	      continue;
-	    }
-          if ((l > 0 && cbuf[0] == '-') || (l > 4 && !strncmp((char *)cbuf, "From ", 5)))
-	    fprintf(fout, "- ");
-	  if (i == l)
-	    {
-	      /* EOF reached, line is unterminated */
-	      cbuf[l] = '\n';
-	      l++;
-	    }
-          if (i > 20000)
-	    {
-	      fprintf(stderr, "line too long for clearsign\n");
-	      exit(1);
-	    }
-	  fwrite(cbuf, 1, i + 1, fout);
-	  for (j = i - 1; j >= 0; j--)
-	    if (cbuf[j] != '\r' && cbuf[j] != ' ' && cbuf[j] != '\t')
-	      break;
-	  if (j >= 0)
-	    hash_write(&ctx, cbuf, j + 1);
-	  nl = 1;
-	  i++;
-	  if (i < l)
-	    memmove(cbuf, cbuf + i, l - i);
-	  have = l - i;
-	}
-      if (l < 0)
-	{
-	  perror("read");
-          if (!isfilter)
-	    unlink(outfilename);
-	  exit(1);
-	}
-      free(cbuf);
-      cbuf = 0;
-      cbufl = 0;
     }
   else if (mode == MODE_KEYID || mode == MODE_PUBKEY)
     {
       /* sign empty string */
-      sock = opensocket();
+      opensocket();
     }
   else if (mode == MODE_APPIMAGESIGN)
     {
@@ -693,7 +305,6 @@ sign(char *filename, int isfilter, int mode)
       char *digestfilename;
       FILE *fp;
 
-      sock = opensocket();
       digestfilename = malloc(strlen(filename) + 8);
       sprintf(digestfilename, "%s.digest", filename);
       if ((fp = fopen(digestfilename, "r")) == 0 || 64 != fread(appimagedigest, 1, 64, fp))
@@ -703,19 +314,27 @@ sign(char *filename, int isfilter, int mode)
         }
       fclose(fp);
       free(digestfilename);
+      opensocket();
       hash_write(&ctx, appimagedigest, 64);
     }
   else if (mode == MODE_RPMSIGN)
     {
-      sock = opensocket();
-      if (!rpm_readheaderpayload(&rpmrd, fd, filename, &ctx, &hctx, getbuildtime))
-	exit(1);
+      if (rpm_read(&rpmrd, fd, filename, &ctx, &hctx, getbuildtime) == 0)
+	{
+	  fprintf(isfilter ? stderr : stdout, "%s: already signed\n", filename);
+	  close(fd);
+	  if (outfilename)
+	    free(outfilename);
+	  if (isfilter)
+	    exit(1);
+	  return 1;
+	}
       if (getbuildtime)
 	signtime = rpmrd.buildtime;
     }
   else
     {
-      sock = opensocket();
+      opensocket();
       while ((l = read(fd, buf, sizeof(buf))) > 0)
 	hash_write(&ctx, buf,  l);
     }
@@ -731,20 +350,20 @@ sign(char *filename, int isfilter, int mode)
     v4sigtrail = genv4sigtrail(mode == MODE_CLEARSIGN ? 1 : 0, pubalgoprobe >= 0 ? pubalgoprobe : PUB_RSA, hashalgo, signtime, &v4sigtraillen);
   if (mode == MODE_RAWOPENSSLSIGN)
     {
-      hash[0] = pkcs1pss ? 0xbc : 0x00;
-      hash[1] = hash[2] = hash[3] = hash[4] = 0;
+      sigtrail[0] = pkcs1pss ? 0xbc : 0x00;
+      sigtrail[1] = sigtrail[2] = sigtrail[3] = sigtrail[4] = 0;
     }
   else
     {
-      hash[0] = mode == MODE_CLEARSIGN ? 0x01 : 0x00; /* class */
-      hash[1] = signtime >> 24;
-      hash[2] = signtime >> 16;
-      hash[3] = signtime >> 8;
-      hash[4] = signtime;
+      sigtrail[0] = mode == MODE_CLEARSIGN ? 0x01 : 0x00; /* class */
+      sigtrail[1] = signtime >> 24;
+      sigtrail[2] = signtime >> 16;
+      sigtrail[3] = signtime >> 8;
+      sigtrail[4] = signtime;
       if (v4sigtrail)
         hash_write(&ctx, v4sigtrail, v4sigtraillen);
       else
-        hash_write(&ctx, hash, 5);
+        hash_write(&ctx, sigtrail, 5);
     }
   hash_final(&ctx);
   p = hash_read(&ctx);
@@ -755,17 +374,18 @@ sign(char *filename, int isfilter, int mode)
       if (v4sigtrail)
         hash_write(&hctx, v4sigtrail, v4sigtraillen);
       else
-        hash_write(&hctx, hash, 5);
+        hash_write(&hctx, sigtrail, 5);
       hash_final(&hctx);
       /* header only seems to work only if there's a header only hash */
       if (!noheaderonly && rpmrd.gotsha1)
         ph = hash_read(&hctx);
     }
 
-  ulen = strlen(user);
   if (!privkey && !ph)
     {
       /* old style sign */
+      int ulen = strlen(user);
+      byte *bp;
       if (ulen + hashlen[hashalgo] * 2 + 1 + 5 * 2 + 4 + 1 + (hashalgo == HASH_SHA1 ? 0 : strlen(hashname[hashalgo]) + 1) > sizeof(buf))
 	{
 	  fprintf(stderr, "packet too big\n");
@@ -791,15 +411,9 @@ sign(char *filename, int isfilter, int mode)
 	  bp += 6;
 	}
       else
-	{
-	  for (i = 0; i < hashlen[hashalgo]; i++, bp += 2)
-	    sprintf((char *)bp, "%02x", p[i]);
-	  *bp++ = '@';
-	  for (i = 0; i < 5; i++, bp += 2)
-	    sprintf((char *)bp, "%02x", hash[i]);
-	}
+	bp = digest2arg(bp, p, sigtrail);
       buf[3] = bp - (buf + 4 + ulen);
-      outl = doreq_old(sock, buf, (int)(bp - buf), sizeof(buf));
+      outl = doreq_old(buf, (int)(bp - buf), sizeof(buf));
       if (outl >= 0)
         memmove(buf + 6, buf, outl);	/* make 1st arg start at offset 6, we know there is room */
     }
@@ -807,7 +421,6 @@ sign(char *filename, int isfilter, int mode)
     {
       /* new style sign with doreq */
       const char *args[5];
-      char *bp;
       char hashhex[1024];
       char hashhexh[1024];
       int argc;
@@ -819,23 +432,9 @@ sign(char *filename, int isfilter, int mode)
 	}
       if (privkey)
         readprivkey();
-      bp = hashhex;
-      for (i = 0; i < hashlen[hashalgo]; i++, bp += 2)
-	sprintf(bp, "%02x", p[i]);
-      *bp++ = '@';
-      for (i = 0; i < 5; i++, bp += 2)
-	sprintf(bp, "%02x", hash[i]);
-      *bp = 0;
+      digest2arg((byte *)hashhex, p, sigtrail);
       if (ph)
-	{
-	  bp = hashhexh;
-	  for (i = 0; i < hashlen[hashalgo]; i++, bp += 2)
-	    sprintf(bp, "%02x", ph[i]);
-	  *bp++ = '@';
-	  for (i = 0; i < 5; i++, bp += 2)
-	    sprintf(bp, "%02x", hash[i]);
-	  *bp = 0;
-	}
+        digest2arg((byte *)hashhexh, ph, sigtrail);
       args[0] = privkey ? "privsign" : "sign";
       args[1] = algouser;
       argc = 2;
@@ -844,7 +443,7 @@ sign(char *filename, int isfilter, int mode)
       args[argc++] = hashhex;
       if (ph)
         args[argc++] = hashhexh;
-      outl = doreq(sock, argc, args, buf, sizeof(buf), ph ? 2 : 1);
+      outl = doreq(argc, args, buf, sizeof(buf), ph ? 2 : 1);
       if (outl >= 0)
 	{
 	  outl = buf[2] << 8 | buf[3];
@@ -866,6 +465,7 @@ sign(char *filename, int isfilter, int mode)
 	unlink(outfilename);
       exit(-outl);
     }
+
   if (mode == MODE_KEYID)
     {
       int sigl;
@@ -889,11 +489,9 @@ sign(char *filename, int isfilter, int mode)
       free(v4sigtrail);
     }
 
+  /* open output file */
   if (isfilter)
-    {
-      fout = stdout;
-      foutfd = 1;
-    }
+    fout = stdout;
   else if (mode != MODE_CLEARSIGN && mode != MODE_APPIMAGESIGN)
     {
       if ((fout = fopen(outfilename, "w")) == 0)
@@ -901,9 +499,9 @@ sign(char *filename, int isfilter, int mode)
 	  perror(outfilename);
 	  exit(1);
 	}
-      foutfd = fileno(fout);
     }
 
+  /* write/incorporate signature */
   if (mode == MODE_CLEARSIGN || mode == MODE_DETACHEDSIGN)
     {
       write_armored_signature(fout, buf + 6, outl);
@@ -956,7 +554,7 @@ sign(char *filename, int isfilter, int mode)
 	      exit(1);
 	    }
 	}
-      if (!rpm_write(&rpmrd, foutfd, fd, chksumfilefd))
+      if (!rpm_write(&rpmrd, isfilter ? 1 : fileno(fout), fd, chksumfilefd))
 	{
 	  if (!isfilter)
 	    unlink(outfilename);
@@ -970,6 +568,7 @@ sign(char *filename, int isfilter, int mode)
   else
     fwrite(buf + 6, 1, outl, fout);
 
+  /* close and rename output file */
   if (!isfilter)
     {
       close(fd);
@@ -979,9 +578,7 @@ sign(char *filename, int isfilter, int mode)
 	  unlink(outfilename);
 	  exit(1);
 	}
-      if (mode != MODE_DETACHEDSIGN && mode != MODE_RAWDETACHEDSIGN
-	  && mode != MODE_RAWOPENSSLSIGN && mode != MODE_APPIMAGESIGN
-	  && rename(outfilename, filename))
+      if (finaloutfilename && rename(outfilename, finaloutfilename) != 0)
 	{
 	  perror("rename");
 	  unlink(outfilename);
@@ -990,27 +587,28 @@ sign(char *filename, int isfilter, int mode)
     }
   if (outfilename)
     free(outfilename);
+
+  /* append to checksums file if needed */
   if (mode == MODE_RPMSIGN && chksumfilefd >= 0)
     rpm_writechecksums(&rpmrd, chksumfilefd);
   return 0;
 }
 
 static void
-keygen(const char *type, const char *expire, const char *name,
-       const char *email)
+keygen(const char *type, const char *expire, const char *name, const char *email)
 {
   const char *args[6];
   byte buf[8192];
   int l, publ, privl;
-  int sock = opensocket();
 
+  opensocket();
   args[0] = "keygen";
   args[1] = algouser;
   args[2] = type;
   args[3] = expire;
   args[4] = name;
   args[5] = email;
-  l = doreq(sock, 6, args, buf, sizeof(buf), 2);
+  l = doreq(6, args, buf, sizeof(buf), 2);
   if (l < 0)
     exit(-l);
   publ = buf[2] << 8 | buf[3];
@@ -1101,7 +699,6 @@ keyextend(char *expire, char *pubkey)
   char *bp;
   char hashhex[1024];
   int argc;
-  int sock;
   byte *rsig;
   int rsigl, rsighl, rl;
 
@@ -1292,8 +889,8 @@ keyextend(char *expire, char *pubkey)
   if (privkey)
     args[argc++] = privkey;
   args[argc++] = hashhex;
-  sock = opensocket();
-  rl = doreq(sock, argc, args, rbuf, sizeof(rbuf), 1);
+  opensocket();
+  rl = doreq(argc, args, rbuf, sizeof(rbuf), 1);
   if (rl < 0)
     exit(-rl);
   rsig = pkg2sig(rbuf + 4, rbuf[2] << 8 | rbuf[3], &rsigl);
@@ -1317,7 +914,7 @@ keyextend(char *expire, char *pubkey)
    * rsigl: length of new v3 sig
    * rsighl: offset of left 16 bits of hash in new v3 sig
    */
-  newpubk = malloc((selfsigpkg - pubk) + 4 + hl + (rsigl - rsighl));
+  newpubk = malloc((selfsigpkg - pubk) + 4 + hl + (rsigl - rsighl) + l);
   memcpy(newpubk, pubk, selfsigpkg - pubk);
   /* leave 4 bytes space for pkg header */
   memcpy(newpubk + (selfsigpkg - pubk) + 4, pp, hl);
@@ -1331,15 +928,7 @@ keyextend(char *expire, char *pubkey)
     }
   write_armored_pubkey(stdout, newpubk, pp - newpubk);
   free(newpubk);
-}
-
-static void
-certsizelimit(char *s, int l)
-{
-  if (strlen(s) <= l)
-    return;
-  s[l] = 0;
-  s[l - 1] = s[l - 2] = s[l - 3] = '.';
+  free(pubk);
 }
 
 void
@@ -1372,7 +961,6 @@ createcert(char *pubkey)
   int useridl;
   const char *args[6];
   int argc;
-  int sock;
   int rl;
   char *name, *nameend;
   char *email;
@@ -1495,6 +1083,7 @@ createcert(char *pubkey)
       exit(1);
     }
   
+  /* split user id into name and email */
   name = malloc(useridl + 1);
   if (!name)
     {
@@ -1519,6 +1108,7 @@ createcert(char *pubkey)
   *email++ = 0;
   while (nameend > name && (nameend[-1] == ' ' || nameend[-1] == '\t'))
     *--nameend = 0;
+
   /* limit to fixed sizes, see rfc 3280 */
   certsizelimit(name, 64);
   certsizelimit(email, 128);
@@ -1543,8 +1133,8 @@ createcert(char *pubkey)
   if (privkey)
     args[argc++] = privkey;
   args[argc++] = hashhex;
-  sock = opensocket();
-  rl = doreq(sock, argc, args, rbuf, sizeof(rbuf), 1);
+  opensocket();
+  rl = doreq(argc, args, rbuf, sizeof(rbuf), 1);
   if (rl < 0)
     exit(-rl);
 
@@ -1573,9 +1163,10 @@ void
 ping()
 {
   byte buf[256];
-  int r, sock = opensocket();
+  int r;
   memset(buf, 0, 4);
-  r = doreq_old(sock, buf, 4, sizeof(buf));
+  opensocket();
+  r = doreq_old(buf, 4, sizeof(buf));
   if (r)
     exit(-r);
 }
@@ -1621,11 +1212,13 @@ read_sign_conf(const char *conf)
 	bp++;
       if (!strcmp(buf, "user"))
 	{
+	  free(user);
 	  user = strdup(bp);
 	  continue;
 	}
       if (!strcmp(buf, "server"))
 	{
+	  free(host);
 	  host = strdup(bp);
 	  continue;
 	}
@@ -1733,7 +1326,8 @@ main(int argc, char **argv)
         }
       else if (argc > 2 && !strcmp(argv[1], "-u"))
 	{
-	  user = argv[2];
+	  free(user);
+	  user = strdup(argv[2]);
 	  argc -= 2;
 	  argv += 2;
 	}

@@ -10,6 +10,9 @@ typedef unsigned char byte;
 #define PUB_DSA         0
 #define PUB_RSA         1
 
+/* sign.c */
+extern int hashalgo;
+
 /* hash.c */
 typedef struct {
     u32  h0,h1,h2,h3,h4;
@@ -35,8 +38,6 @@ typedef union {
   SHA1_CONTEXT sha1;
   SHA256_CONTEXT sha256;
 } HASH_CONTEXT;
-
-extern int hashalgo;
 
 void sha1_init(SHA1_CONTEXT *hd);
 void sha1_write(SHA1_CONTEXT *hd, const byte *inbuf, size_t inlen);
@@ -89,6 +90,7 @@ struct certbuf {
 void certbuf_tbscert(struct certbuf *cb, const char *cn, const char *email, time_t start, time_t end, byte *p, int pl, byte *e, int el);
 void certbuf_finishcert(struct certbuf *cb, byte *sig, int sigl);
 byte *getrawopensslsig(byte *sig, int sigl, int *lenp);
+void certsizelimit(char *s, int l);
 
 /* rpm.c */
 struct rpmdata {
@@ -114,11 +116,19 @@ struct rpmdata {
 };
 
 int rpm_insertsig(struct rpmdata *rd, int hdronly, byte *newsig, int newsiglen);
-int rpm_readsigheader(struct rpmdata *rd, int fd, const char *filename);
-int rpm_readheaderpayload(struct rpmdata *rd, int fd, char *filename, HASH_CONTEXT *ctx, HASH_CONTEXT *hctx, int getbuildtime);
+int rpm_read(struct rpmdata *rd, int fd, char *filename, HASH_CONTEXT *ctx, HASH_CONTEXT *hctx, int getbuildtime);
 int rpm_write(struct rpmdata *rd, int foutfd, int fd, int chksumfilefd);
 void rpm_writechecksums(struct rpmdata *rd, int chksumfilefd);
 
 /* appimage.c */
 void appimage_write_signature(char *filename, byte *signature, int length);
+
+/* sock.c */
+void opensocket(void);
+void closesocket(void);
+int doreq_old(byte *buf, int inbufl, int bufl);
+int doreq(int argc, const char **argv, byte *buf, int bufl, int nret);
+
+/* clearsign.c */
+int clearsign(int fd, char *filename, char *outfilename, HASH_CONTEXT *ctx, const char *hname, int isfilter, int force, FILE **foutp);
 
