@@ -352,16 +352,15 @@ sign(char *filename, int isfilter, int mode)
     }
   else
     {
+      if (dov4sig)
+        v4sigtrail = genv4sigtrail(mode == MODE_CLEARSIGN ? 1 : 0, pubalgoprobe >= 0 ? pubalgoprobe : PUB_RSA, hashalgo, signtime, &v4sigtraillen);
       sigtrail[0] = mode == MODE_CLEARSIGN ? 0x01 : 0x00; /* class */
       sigtrail[1] = signtime >> 24;
       sigtrail[2] = signtime >> 16;
       sigtrail[3] = signtime >> 8;
       sigtrail[4] = signtime;
-      if (dov4sig)
-	{
-	  v4sigtrail = genv4sigtrail(mode == MODE_CLEARSIGN ? 1 : 0, pubalgoprobe >= 0 ? pubalgoprobe : PUB_RSA, hashalgo, signtime, &v4sigtraillen);
-          hash_write(&ctx, v4sigtrail, v4sigtraillen);
-	}
+      if (v4sigtrail)
+        hash_write(&ctx, v4sigtrail, v4sigtraillen);
       else
         hash_write(&ctx, sigtrail, 5);
     }
