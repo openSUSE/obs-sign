@@ -197,7 +197,6 @@ sign(char *filename, int isfilter, int mode)
   char *finaloutfilename = 0;	/* rename outfilename to finaloutfilename when done */
   FILE *fout = 0;
   int getbuildtime = 0;
-
   unsigned char *v4sigtrail = 0;
   int v4sigtraillen = 0;
 
@@ -346,8 +345,6 @@ sign(char *filename, int isfilter, int mode)
       else
         fprintf(isfilter ? stderr : stdout, "%s %s\n", modes[mode],  filename);
     }
-  if (mode != MODE_RAWOPENSSLSIGN && mode != MODE_KEYID && dov4sig)
-    v4sigtrail = genv4sigtrail(mode == MODE_CLEARSIGN ? 1 : 0, pubalgoprobe >= 0 ? pubalgoprobe : PUB_RSA, hashalgo, signtime, &v4sigtraillen);
   if (mode == MODE_RAWOPENSSLSIGN)
     {
       sigtrail[0] = pkcs1pss ? 0xbc : 0x00;
@@ -360,13 +357,17 @@ sign(char *filename, int isfilter, int mode)
       sigtrail[2] = signtime >> 16;
       sigtrail[3] = signtime >> 8;
       sigtrail[4] = signtime;
-      if (v4sigtrail)
-        hash_write(&ctx, v4sigtrail, v4sigtraillen);
+      if (dov4sig)
+	{
+	  v4sigtrail = genv4sigtrail(mode == MODE_CLEARSIGN ? 1 : 0, pubalgoprobe >= 0 ? pubalgoprobe : PUB_RSA, hashalgo, signtime, &v4sigtraillen);
+          hash_write(&ctx, v4sigtrail, v4sigtraillen);
+	}
       else
         hash_write(&ctx, sigtrail, 5);
     }
   hash_final(&ctx);
   p = hash_read(&ctx);
+
   ph = 0;
   outlh = 0;
   if (mode == MODE_RPMSIGN)
@@ -1555,18 +1556,26 @@ main(int argc, char **argv)
       createcert(argv[1]);
       exit(0);
     }
-  if (mode == MODE_KEYID && argc != 1)
+  if (mode == MODE_KEYID)
     {
-      fprintf(stderr, "usage: sign [-c|-d|-r|-a] [-u user] <file>\n");
-      exit(1);
+      if (argc != 1)
+	{
+	  fprintf(stderr, "usage: sign [-c|-d|-r|-a] [-u user] <file>\n");
+	  exit(1);
+	}
+      dov4sig = 0;	/* no need for the extra work */
+      sign("<stdin>", 1, mode);
+      exit(0);
     }
+  if (mode == MODE_RAWOPENSSLSIGN)
+    dov4sig = 0;	/* no need for the extra work */
   if (privkey && access(privkey, R_OK))
     {
       perror(privkey);
       exit(1);
     }
 
-  if (dov4sig && mode != MODE_KEYID && mode != MODE_RAWOPENSSLSIGN)
+  if (dov4sig)
     pubalgoprobe = probe_pubalgo();
 
   if (chksumfile)

@@ -3,7 +3,7 @@
 use strict;
 use warnings;
 use bytes;
-use Test::More tests => 35;
+use Test::More tests => 36;
 use File::Temp qw/tempdir/;
 use File::Path qw/remove_tree make_path/;
 use Digest::SHA;
@@ -52,11 +52,6 @@ $result = `$sign -t`;
 is($?, 0, "Checking ping return code");
 
 ###############################################################################
-### keyid
-$result = `$sign -k`;
-is($?, 0, "Checking keyid return code");
-
-###############################################################################
 ### pubkey
 $result = `$sign -p`;
 is($?, 0, "Checking cmd 'pubkey' return code");
@@ -81,6 +76,16 @@ is($?, 0, "Checking cmd 'keyextend' return code");
 spew("$tmpdir/p2", $pubkey2);
 system("gpg -q --import $tmpdir/p2");
 is($?, 0, "Checking pubkey import return code");
+
+###############################################################################
+### keyid
+$result = `$sign -k`;
+is($?, 0, "Checking keyid return code");
+
+###############################################################################
+### privkeyid
+$result = `$sign -P $tmpdir/P -k`;
+is($?, 0, "Checking privkeyid return code");
 
 ###############################################################################
 ### certgen
