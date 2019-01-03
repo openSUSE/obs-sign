@@ -666,6 +666,7 @@ sub cmd_keygen {
   }
 
   rungpg_fatal("$phrases/$user", $tdir, $gpg, '--batch', '--no-secmem-warning',
+        "--pinentry-mode=loopback",
         "--passphrase-fd=0", "--yes",
         "-u", $user,
         '--default-cert-level', '3',
@@ -710,7 +711,7 @@ sub cmd_certgen {
   open(F, ">$tmpdir/privkey.$$") || die("$tmpdir/privkey.$$: $!\n");
   (syswrite(F, $privkey) || 0) == length($privkey) || die("encoded privkey write error\n");
   close(F) || die("encoded privkey close error\n");
-  $privkey = rungpg_fatal("$phrases/$user", ["$tmpdir/privkey.$$"], $gpg, '--batch', '--decrypt', '--no-verbose', '-q', '--no-secmem-warning', '--passphrase-fd=0', "$tmpdir/privkey.$$");
+  $privkey = rungpg_fatal("$phrases/$user", ["$tmpdir/privkey.$$"], $gpg, '--batch', '--decrypt', '--no-verbose', '-q', '--no-secmem-warning', '--pinentry-mode=loopback', '--passphrase-fd=0', "$tmpdir/privkey.$$");
   unlink("$tmpdir/privkey.$$");
   my $opensslprivkey = priv2openssl($privkey);
   my $reqconf = <<"EOL";
@@ -762,7 +763,7 @@ sub cmd_privsign {
   open(F, ">$tmpdir/privkey.$$") || die("$tmpdir/privkey.$$: $!\n");
   (syswrite(F, $privkey) || 0) == length($privkey) || die("encoded privkey write error\n");
   close(F) || die("encoded privkey close error\n");
-  $privkey = rungpg_fatal("$phrases/$user", ["$tmpdir/privkey.$$"], $gpg, '--batch', '--decrypt', '--no-verbose', '-q', '--no-secmem-warning', '--passphrase-fd=0', "$tmpdir/privkey.$$");
+  $privkey = rungpg_fatal("$phrases/$user", ["$tmpdir/privkey.$$"], $gpg, '--batch', '--decrypt', '--no-verbose', '-q', '--no-secmem-warning', '--pinentry-mode=loopback', '--passphrase-fd=0', "$tmpdir/privkey.$$");
   unlink("$tmpdir/privkey.$$");
   # create import data: pubkey pkg, user pkg, privkey pkg, user pkg
   $privkey = priv2pub($privkey).encodetag(13, 'privsign').striptofirst($privkey).encodetag(13, 'privsign');
@@ -772,7 +773,7 @@ sub cmd_privsign {
   my $tdir;
   my $oldgpghome = $ENV{GNUPGHOME};
   ($tdir, $ENV{GNUPGHOME}) = prepare_tmp_gnupghome($tmpdir);
-  rungpg_fatal("$phrases/$user", ["$tmpdir/privkey.$$"], $gpg, '--batch', '--no-verbose', '-q', '--no-secmem-warning', '--allow-non-selfsigned-uid', '--passphrase-fd=0', '--import', "$tmpdir/privkey.$$");
+  rungpg_fatal("$phrases/$user", ["$tmpdir/privkey.$$"], $gpg, '--batch', '--no-verbose', '-q', '--no-secmem-warning', '--allow-non-selfsigned-uid', '--pinentry-mode=loopback', '--passphrase-fd=0', '--import', "$tmpdir/privkey.$$");
   unlink("$tmpdir/privkey.$$");
   my $status = 0;
   my $err = '';
@@ -785,7 +786,7 @@ sub cmd_privsign {
       $classtime = $1;
       $args[0] = substr($args[0], 0, -10)."0000000000";
     }
-    ($status, $lout, $lerr) = rungpg('/dev/null', undef, $gpg, "--batch", "--force-v3-sigs", "--files-are-digests", "--allow-non-selfsigned-uid", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--ignore-time-conflict", "--passphrase-fd=0", "-sbo", "-", $args[0]);
+    ($status, $lout, $lerr) = rungpg('/dev/null', undef, $gpg, "--batch", "--force-v3-sigs", "--files-are-digests", "--allow-non-selfsigned-uid", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--ignore-time-conflict", "--pinentry-mode=loopback", "--passphrase-fd=0", "-sbo", "-", $args[0]);
     $lout = patchclasstime($lout, $classtime) if $classtime && !$status;
     shift @args;
     push @out, $lout;
@@ -811,7 +812,7 @@ sub cmd_sign {
       $classtime = $1;
       $args[0] = substr($args[0], 0, -10)."0000000000";
     }
-    ($status, $lout, $lerr) = rungpg("$phrases/$user", undef, $gpg, "--batch", "--force-v3-sigs", "--files-are-digests", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--ignore-time-conflict", "--passphrase-fd=0", "-u", $user, "-sbo", "-", $args[0]);
+    ($status, $lout, $lerr) = rungpg("$phrases/$user", undef, $gpg, "--batch", "--force-v3-sigs", "--files-are-digests", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--ignore-time-conflict", "--pinentry-mode=loopback", "--passphrase-fd=0", "-u", $user, "-sbo", "-", $args[0]);
     $lout = patchclasstime($lout, $classtime) if $classtime && !$status;
     shift @args;
     push @out, $lout;
