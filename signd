@@ -20,7 +20,7 @@
 
 use strict;
 use warnings;
-use Socket qw/IPPROTO_TCP PF_INET SOCK_STREAM SOL_SOCKET SO_REUSEADDR SO_KEEPALIVE INADDR_ANY inet_aton inet_ntoa sockaddr_in/;
+use Socket qw/IPPROTO_TCP PF_INET SOCK_STREAM SOL_SOCKET SO_REUSEADDR SO_KEEPALIVE INADDR_ANY inet_aton inet_ntoa sockaddr_in getnameinfo/;
 use POSIX;
 use Math::BigInt;
 use MIME::Base64;
@@ -29,7 +29,7 @@ use bytes;
 use File::Temp qw/tempdir/;
 use File::Path qw/remove_tree/;
 
-my %allow;
+my @allows;
 my %map;
 my $signhost = '127.0.0.1';
 my $port = 5167;
@@ -41,6 +41,7 @@ my $phrases = '';
 my $tmpdir = '/var/run/signd';
 my $patchclasstime;
 my $conf = '/etc/sign.conf';
+my $allow_unprivileged_ports = 0;
 
 # request data
 my $oldproto = 0;
@@ -52,6 +53,31 @@ sub printlog {
   my $year = $lt[5] + 1900;
   my $month = $lt[4] + 1;
   printf "%04d-%02d-%02d %02d:%02d:%02d: %s\n", $year, $month, @lt[3,2,1,0], $msg;
+}
+
+# convert CIDR prefix to netmask array
+sub calc_netmask {
+  my $prefix = @_;
+  my $mask  = (2 ** $prefix - 1) << (32 - $prefix);
+  my @netmask = unpack( "C4", pack( "N", $mask ) );
+  return @netmask;
+}
+
+# Check if an ip falls within a CIDR-style subnet
+sub ip_in_network {
+  return 0 if !$_[0] || !$_[1];
+  my @ip_a = split '\.', $_[0];
+  my @network_a = split '\.', $_[1];
+  my @netmask_a = calc_netmask($_[2]);
+  my $in_network = 1;
+  for (my $i = 0; $i < 4; $i++) {
+    my $top_octet = $network_a[$i] + (255 - $netmask_a[$i]);
+    if ($ip_a[$i] < $network_a[$i] || $ip_a[$i] > $top_octet) {
+      $in_network = 0;
+      last;
+    }
+  }
+  return $in_network;
 }
 
 sub decodetaglenoff {
@@ -319,7 +345,7 @@ while(<F>) {
   }
   if ($s[0] eq 'allow:') {
     shift @s;
-    $allow{$_} = 1 for @s;
+    push @allows, $_ for @s;
     next;
   }
   if ($s[0] eq 'map:') {
@@ -349,6 +375,11 @@ while(<F>) {
   if ($s[0] eq 'patchclasstime:') {
     $patchclasstime = $s[1];
     next;
+  }
+  if ($s[0] eq 'allow-unprivileged-ports:') {
+    if ($s[1] =~ /^(true|false)$/i) {
+      $allow_unprivileged_ports = lc $1 eq 'true';
+    }
   }
 }
 
@@ -424,8 +455,18 @@ $SIG{'__DIE__'} = sub {
 
 my ($sport, $saddr) = sockaddr_in($clntaddr);
 $peer = inet_ntoa($saddr);
-die("not coming from a reserved port\n") if $sport < 0 || $sport > 1024;
-die("illegal host $peer\n") unless $allow{$peer};
+die("not coming from a reserved port\n") if !$allow_unprivileged_ports &&
+  ($sport < 0 || $sport > 1024);
+my $allowed = 0;
+my ($hosterr, $hostname, $servicename) = getnameinfo($clntaddr);
+foreach my $allow (@allows) {
+  $allow =~ /([0-9\.]+)\/([0-9]+)/;
+  if (ip_in_network($peer, $1, $2) || $peer eq $allow || $hostname eq $allow) {
+    $allowed = 1;
+    last;
+  }
+}
+die("illegal host $peer\n") unless $allowed;
 
 # read request from client, split into argv array
 sub readreq {

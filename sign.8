@@ -160,8 +160,9 @@ Hash: either sha1 or sha256
 
 
 .SH SECURITY
-sign needs to bind to a reserved port, it thus works only for user root
-or needs to be installed suid-root. If the latter is the case, sign
+Unless the allow-unprivileged-ports option has been set to true for signd,
+sign needs to bind to a reserved port, in which case it works only for user
+root or needs to be installed suid-root. If the latter is the case, sign
 grants the users specified in the "allowuser" lines of the configuration
 the right to sign files.
 

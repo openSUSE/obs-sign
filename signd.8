@@ -17,8 +17,10 @@ It needs a gpg implementation that understands the
 "--files-are-digests" option to work correctly.
 
 .SH SECURITY
-signd allows only connections from reserved ports and ip
-addresses listed in the "allow" field of the configuration.
+Unless the allow-unprivileged-ports option is set to true in
+/etc/sign.conf, signd allows only connections from reserved ports
+and the ip addresses, subnets expressed in CIDR notation, and
+hostnames listed in the "allow" field of the configuration.
 
 .SH SEE ALSO
 .BR sign (8),

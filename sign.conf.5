@@ -32,8 +32,13 @@ Set a default user to use for signing.
 Set a default hash to use for signing. The default hash
 is SHA1.
 .TP 4
-.BR allow: " ip1 ip2 ip3..."
-Allow only connections from the specified ip addresses.
+.BR allow: " ip subnet hostname..."
+Allow only connections from the specified ip addresses,
+subnets expressed in CIDR notation, and/or hostnames.
+Note that hostnames are resolved using reverse DNS
+lookups, so there must be reverse entries in the DNS
+server, and it should be secured against DNS poisoning
+attacks.
 Must be present.
 .TP 4
 .BR gpg: " path_to_gpg"
@@ -53,6 +58,11 @@ Grant the user the right to sign. the sign binary must
 be installed suid-root for this to work. Multiple
 users can be specified by using multiple allowuser
 lines in the configuration.
+.TP 4
+.BR allow-unprivileged-ports: " true|false"
+Allow signd to accept connections from source ports >
+1024.
+Defaults to false.
 
 .SH FILES
 .I /etc/sign.conf
