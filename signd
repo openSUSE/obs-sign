@@ -65,19 +65,15 @@ sub calc_netmask {
 
 # Check if an ip falls within a CIDR-style subnet
 sub ip_in_network {
-  return 0 if !$_[0] || !$_[1];
-  my @ip_a = split '\.', $_[0];
-  my @network_a = split '\.', $_[1];
-  my @netmask_a = calc_netmask($_[2]);
-  my $in_network = 1;
+  my ($ip, $network) = @_;
+  return 0 unless $network =~ /^([0-9\.]+)\/([0-9]+)$/;
+  my @ip_a = split '\.', $ip;
+  my @network_a = split '\.', "$1.0.0.0.0";
+  my @netmask_a = unpack('C4', pack('N', 0xffffffff >> $2));
   for (my $i = 0; $i < 4; $i++) {
-    my $top_octet = $network_a[$i] + (255 - $netmask_a[$i]);
-    if ($ip_a[$i] < $network_a[$i] || $ip_a[$i] > $top_octet) {
-      $in_network = 0;
-      last;
-    }
+    return 0 if ($ip_a[$i] | $netmask_a[$i]) != ($network_a[$i] | $netmask_a[$i]);
   }
-  return $in_network;
+  return 1;
 }
 
 sub decodetaglenoff {
@@ -345,7 +341,7 @@ while(<F>) {
   }
   if ($s[0] eq 'allow:') {
     shift @s;
-    push @allows, $_ for @s;
+    push @allows, @s;
     next;
   }
   if ($s[0] eq 'map:') {
@@ -377,9 +373,7 @@ while(<F>) {
     next;
   }
   if ($s[0] eq 'allow-unprivileged-ports:') {
-    if ($s[1] =~ /^(true|false)$/i) {
-      $allow_unprivileged_ports = lc $1 eq 'true';
-    }
+    $allow_unprivileged_ports = ($s[1] =~ /^true$/i) ? 1 : 0;
   }
 }
 
@@ -455,13 +449,13 @@ $SIG{'__DIE__'} = sub {
 
 my ($sport, $saddr) = sockaddr_in($clntaddr);
 $peer = inet_ntoa($saddr);
-die("not coming from a reserved port\n") if !$allow_unprivileged_ports &&
-  ($sport < 0 || $sport > 1024);
+die("not coming from a reserved port\n") if !$allow_unprivileged_ports && ($sport < 0 || $sport > 1024);
 my $allowed = 0;
 my ($hosterr, $hostname, $servicename) = getnameinfo($clntaddr);
-foreach my $allow (@allows) {
-  $allow =~ /([0-9\.]+)\/([0-9]+)/;
-  if (ip_in_network($peer, $1, $2) || $peer eq $allow || $hostname eq $allow) {
+my $hostnameinfo;
+for my $allow (@allows) {
+  $hostnameinfo ||= [ getnameinfo($clntaddr) ] if $allow !~ /^[0-9\.]+(:?\/[0-9]+)?$/;
+  if (ip_in_network($peer, $allow) || $peer eq $allow || ($hostnameinfo && $hostnameinfo->[1] && $hostnameinfo->[1] eq $allow)) {
     $allowed = 1;
     last;
   }
