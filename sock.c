@@ -71,7 +71,13 @@ opensocket(void)
       exit(1);
     }
   if (uid)
-    seteuid(0);
+    {
+      if (seteuid(0))
+	{
+	  perror("seteuid");
+	  exit(1);
+	}
+    }
   while (bindresvport(sock, NULL) != 0)
     {
       if (errno != EADDRINUSE)
