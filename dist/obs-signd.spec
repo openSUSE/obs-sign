@@ -1,7 +1,7 @@
 #
 # spec file for package obs-signd
 #
-# Copyright (c) 2018 SUSE LINUX GmbH, Nuernberg, Germany.
+# Copyright (c) 2019 SUSE LINUX GmbH, Nuernberg, Germany.
 #
 # All modifications and additions to the file contributed by third parties
 # remain the property of their copyright owners, unless otherwise agreed
@@ -47,10 +47,7 @@ to avoid the need to host the private key on the same server.
 %setup -n obs-sign-%version
 
 %build
-#
-# make sign binary
-#
-gcc $RPM_OPT_FLAGS -fPIC -pie -o sign sign.c
+make CFLAGS="$RPM_OPT_FLAGS"
 
 %install
 # run level script
