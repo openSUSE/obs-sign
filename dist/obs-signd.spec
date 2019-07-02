@@ -1,7 +1,7 @@
 #
 # spec file for package obs-signd
 #
-# Copyright (c) 2017 SUSE LINUX GmbH, Nuernberg, Germany.
+# Copyright (c) 2018 SUSE LINUX GmbH, Nuernberg, Germany.
 #
 # All modifications and additions to the file contributed by third parties
 # remain the property of their copyright owners, unless otherwise agreed
@@ -12,13 +12,13 @@
 # license that conforms to the Open Source Definition (Version 1.9)
 # published by the Open Source Initiative.
 
-# Please submit bugfixes or comments via http://bugs.opensuse.org/
+# Please submit bugfixes or comments via https://bugs.opensuse.org/
 #
 
 
 Name:           obs-signd
 Summary:        The sign daemon
-License:        GPL-2.0
+License:        GPL-2.0-only
 Group:          Productivity/Networking/Web/Utilities
 
 Version:        2.5.3
@@ -31,7 +31,11 @@ Requires:       gpg2_signd_support
 %if 0%{?suse_version:1}
 PreReq:         %fillup_prereq %insserv_prereq permissions
 %endif
-BuildRequires:  gcc
+BuildRoot:      %{_tmppath}/%{name}-%{version}-build
+
+%if ! %{defined _fillupdir}
+  %define _fillupdir /var/adm/fillup-templates
+%endif
 
 %description
 The openSUSE Build Service sign client and daemon.
@@ -50,29 +54,29 @@ gcc $RPM_OPT_FLAGS -fPIC -pie -o sign sign.c
 
 %install
 # run level script
-mkdir -p $RPM_BUILD_ROOT/etc/init.d/ $RPM_BUILD_ROOT/usr/sbin
-install -m 0755 dist/obssignd $RPM_BUILD_ROOT/etc/init.d/
-ln -sf /etc/init.d/obssignd $RPM_BUILD_ROOT/usr/sbin/rcobssignd
+mkdir -p %{buildroot}/etc/init.d/ %{buildroot}/usr/sbin
+install -m 0755 dist/obssignd %{buildroot}/etc/init.d/
+ln -sf /etc/init.d/obssignd %{buildroot}/usr/sbin/rcobssignd
 
 # man pages
-install -d -m 0755 $RPM_BUILD_ROOT%{_mandir}/man{5,8}
-install -d -m 0755 $RPM_BUILD_ROOT/usr/bin
+install -d -m 0755 %{buildroot}%{_mandir}/man{5,8}
+install -d -m 0755 %{buildroot}/usr/bin
 for j in `ls sig*.{5,8}`; do
   gzip -9 ${j}
 done
 for k in 5 8; do
-  install -m 0644 sig*.${k}.gz $RPM_BUILD_ROOT%{_mandir}/man${k}/
+  install -m 0644 sig*.${k}.gz %{buildroot}%{_mandir}/man${k}/
 done
 
 # binaries and configuration
-install -d -m 0755 $RPM_BUILD_ROOT/etc/permissions.d
-install -m 0755 signd $RPM_BUILD_ROOT/usr/sbin/
-install -m 0750 sign $RPM_BUILD_ROOT/usr/bin/
-install -m 0644 sign.conf $RPM_BUILD_ROOT/etc/
-install -m 0644 dist/sign.permission $RPM_BUILD_ROOT/etc/permissions.d/sign
+install -d -m 0755 %{buildroot}/etc/permissions.d
+install -m 0755 signd %{buildroot}/usr/sbin/
+install -m 0750 sign %{buildroot}/usr/bin/
+install -m 0644 sign.conf %{buildroot}/etc/
+install -m 0644 dist/sign.permission %{buildroot}/etc/permissions.d/sign
 
 # install fillups
-FILLUP_DIR=$RPM_BUILD_ROOT/var/adm/fillup-templates
+FILLUP_DIR=%{buildroot}%{_fillupdir}
 install -d -m 755 $FILLUP_DIR
 install -m 0644 dist/sysconfig.signd $FILLUP_DIR/
 
@@ -92,12 +96,13 @@ install -m 0644 dist/sysconfig.signd $FILLUP_DIR/
 %fillup_and_insserv
 
 %files
+%defattr(-,root,root)
 %config(noreplace) /etc/sign.conf
 %verify(not mode) %attr(4750,root,obsrun) /usr/bin/sign
 %attr(0755,root,root) /usr/sbin/signd
 %attr(0755,root,root) /usr/sbin/rcobssignd
 %attr(0755,root,root) /etc/init.d/obssignd
-/var/adm/fillup-templates/sysconfig.signd
+%{_fillupdir}/sysconfig.signd
 /etc/permissions.d/sign
 %doc %{_mandir}/man*/*
 
