@@ -27,7 +27,11 @@ $ENV{GNUPGHOME} = "$tmp_dir/gnupg";
 make_path($ENV{GNUPGHOME});
 chmod 0700, $ENV{GNUPGHOME};
 system("gpg -q --import $fixtures_dir/secret-key.asc");
-system("echo xxx | gpg -q --batch --pinentry-mode=loopback --passphrase-fd=0 --import $fixtures_dir/secret-key-passphrase.asc");
+if (system("gpg --pinentry-mode=loopback --version >/dev/null 2>&1 </dev/null") == 0)  {
+  system("echo xxx | gpg -q --batch --pinentry-mode=loopback --passphrase-fd=0 --import $fixtures_dir/secret-key-passphrase.asc");
+} else {
+  system("echo xxx | gpg -q --batch --passphrase-fd=0 --import $fixtures_dir/secret-key-passphrase.asc");
+}
 
 my $sign_conf = "$tmp_dir/sign.conf";
 $ENV{SIGN_CONF} = $sign_conf;
