@@ -28,7 +28,7 @@ Url:            http://en.opensuse.org/Build_Service
 Source:         obs-sign-%version.tar.xz
 Source1:        obs-signd-rpmlintrc
 Requires:       gpg2_signd_support
-%if 0%{?suse_version:1}
+%if 0%{?suse_version}
 PreReq:         %fillup_prereq %insserv_prereq permissions
 %endif
 BuildRoot:      %{_tmppath}/%{name}-%{version}-build
@@ -37,8 +37,12 @@ BuildRoot:      %{_tmppath}/%{name}-%{version}-build
   %define _fillupdir /var/adm/fillup-templates
 %endif
 
-# for the testsuite
+# the following build requires are needed for the testsuite
+%if 0%{?suse_version}
 BuildRequires:  gpg2
+%else
+BuildRequires:  gpg
+%endif
 BuildRequires:  openssl
 
 %description
@@ -51,7 +55,7 @@ to avoid the need to host the private key on the same server.
 %setup -n obs-sign-%version
 
 %build
-make CFLAGS="$RPM_OPT_FLAGS"
+make CFLAGS="$RPM_OPT_FLAGS -fpie" LDFLAGS="-pie"
 
 %check
 make test
