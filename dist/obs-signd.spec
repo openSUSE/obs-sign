@@ -37,6 +37,10 @@ BuildRoot:      %{_tmppath}/%{name}-%{version}-build
   %define _fillupdir /var/adm/fillup-templates
 %endif
 
+# for the testsuite
+BuildRequires:  gpg2
+BuildRequires:  openssl
+
 %description
 The openSUSE Build Service sign client and daemon.
 
@@ -48,6 +52,9 @@ to avoid the need to host the private key on the same server.
 
 %build
 make CFLAGS="$RPM_OPT_FLAGS"
+
+%check
+make test
 
 %install
 # run level script
