@@ -384,6 +384,7 @@ die("will not proxy to myself\n") if $signhost eq '127.0.0.1' && $port eq $proxy
 
 my $signaddr = inet_aton($signhost);
 die("$signhost: unknown host\n") unless $signaddr;
+@pinentrymode = ( '--pinentry-mode=loopback' ) if have_pinentry_mode();
 
 my @argv;
 
@@ -418,7 +419,6 @@ $SIG{'PIPE'} = 'IGNORE';
 $| = 1;
 printlog("$myname started");
 
-@pinentrymode = ( '--pinentry-mode=loopback' ) if have_pinentry_mode();
 socket(MS , PF_INET, SOCK_STREAM, IPPROTO_TCP) || die "socket: $!\n";
 setsockopt(MS, SOL_SOCKET, SO_REUSEADDR, pack("l",1));
 setsockopt(MS, SOL_SOCKET, SO_KEEPALIVE, pack("l",1));
@@ -629,7 +629,7 @@ sub prepare_tmp_gnupghome {
   return ($tdir, "$tdir/gnupg");
 }
 
-sub have_pinenty_mode {
+sub have_pinentry_mode {
   my ($status) = rungpg('/dev/null', undef, $gpg, '--pinentry-mode=loopback', '--version');
   return !$status;
 }
