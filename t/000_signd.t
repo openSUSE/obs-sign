@@ -3,13 +3,14 @@
 use strict;
 use warnings;
 use bytes;
-use Test::More tests => 14;
+use Test::More tests => 16;
 use File::Temp qw/tempdir/;
 use File::Path qw/remove_tree make_path/;
 use Digest::SHA;
 use FindBin;
 
 my $user     = 'defaultkey@localobs';
+my $usersec  = 'defaultkeysec@localobs';
 my $prj_user = 'signd@localhost';
 my $comment  = "just for testing";
 my $tmp_dir  = "$FindBin::Bin/tmp";
@@ -26,6 +27,7 @@ $ENV{GNUPGHOME} = "$tmp_dir/gnupg";
 make_path($ENV{GNUPGHOME});
 chmod 0700, $ENV{GNUPGHOME};
 system("gpg -q --import $fixtures_dir/secret-key.asc");
+system("echo xxx | gpg -q --batch --pinentry-mode=loopback --passphrase-fd=0 --import $fixtures_dir/secret-key-passphrase.asc");
 
 my $sign_conf = "$tmp_dir/sign.conf";
 $ENV{SIGN_CONF} = $sign_conf;
@@ -38,6 +40,7 @@ phrases: $tmp_dir/gnupg/phrases
 
 make_path("$tmp_dir/gnupg/phrases");
 spew("$tmp_dir/gnupg/phrases/$user", '');
+spew("$tmp_dir/gnupg/phrases/$usersec", 'xxx');
 
 ###############################################################################
 ### if ($cmd eq 'ping') {
@@ -149,6 +152,14 @@ my @sign = decode_reply($sign_result);
 spew("$tmpdir/sign", $payload);
 spew("$tmpdir/sign.sig", $sign[0]);
 my $verify_sign = `gpg --verify $tmpdir/sign.sig 2>&1`;
+like($verify_sign, qr/Good signature from/, "Checking for 'Good signature'");
+
+$sign_result = `./signd -t sign $usersec $arg`;
+is($?, 0, "Checking cmd 'sign' return code");
+@sign = decode_reply($sign_result);
+spew("$tmpdir/sign", $payload);
+spew("$tmpdir/sign.sig", $sign[0]);
+$verify_sign = `gpg --verify $tmpdir/sign.sig 2>&1`;
 like($verify_sign, qr/Good signature from/, "Checking for 'Good signature'");
 
 ###############################################################################
