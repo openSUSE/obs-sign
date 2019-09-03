@@ -1347,158 +1347,97 @@ main(int argc, char **argv)
     }
   while (argc > 1)
     {
-      if (!strcmp(argv[1], "--help"))
+      const char *opt = argv[1];
+      if (opt[0] != '-')
+	break;
+      argc--;
+      argv++;
+      if (!strcmp(opt, "--help"))
         {
           usage();
           exit(0);
         }
-      else if (argc > 2 && !strcmp(argv[1], "-u"))
+      else if (argc > 1 && !strcmp(opt, "-u"))
 	{
 	  free(user);
-	  user = strdup(argv[2]);
-	  argc -= 2;
-	  argv += 2;
+	  user = strdup(argv[1]);
+	  argc--;
+	  argv++;
 	}
-      else if (argc > 2 && !strcmp(argv[1], "-h"))
+      else if (argc > 1 && !strcmp(opt, "-h"))
 	{
-	  if (!strcasecmp(argv[2], "sha1"))
+	  if (!strcasecmp(argv[1], "sha1"))
 	    hashalgo = HASH_SHA1;
-	  else if (!strcasecmp(argv[2], "sha256"))
+	  else if (!strcasecmp(argv[1], "sha256"))
 	    hashalgo = HASH_SHA256;
 	  else
 	    {
-	      fprintf(stderr, "sign: unknown hash algorithm '%s'\n", argv[2]);
+	      fprintf(stderr, "sign: unknown hash algorithm '%s'\n", argv[1]);
 	      exit(1);
 	    }
-	  argc -= 2;
-	  argv += 2;
+	  argc--;
+	  argv++;
 	}
-      else if (argc > 1 && !strcmp(argv[1], "-c"))
+      else if (!strcmp(opt, "-c"))
+	mode = MODE_CLEARSIGN;
+      else if (!strcmp(opt, "-d"))
+	mode = MODE_DETACHEDSIGN;
+      else if (!strcmp(opt, "-D"))
+	mode = MODE_RAWDETACHEDSIGN;
+      else if (!strcmp(opt, "-O"))
+	mode = MODE_RAWOPENSSLSIGN;
+      else if (!strcmp(opt, "-r"))
+	mode = MODE_RPMSIGN;
+      else if (!strcmp(opt, "-a"))
+	mode = MODE_APPIMAGESIGN;
+      else if (!strcmp(opt, "-v"))
+	verbose++;
+      else if (!strcmp(opt, "--noheaderonly"))
+	noheaderonly = 1;
+      else if (!strcmp(opt, "-k"))
+	mode = MODE_KEYID;
+      else if (!strcmp(opt, "-p"))
+	mode = MODE_PUBKEY;
+      else if (!strcmp(opt, "-g"))
+	mode = MODE_KEYGEN;
+      else if (!strcmp(opt, "-x"))
+	mode = MODE_KEYEXTEND;
+      else if (!strcmp(opt, "-C"))
+	mode = MODE_CREATECERT;
+      else if (argc > 1 && !strcmp(opt, "-S"))
 	{
-	  mode = MODE_CLEARSIGN;
+	  chksumfile = argv[1];
 	  argc--;
 	  argv++;
 	}
-      else if (argc > 1 && !strcmp(argv[1], "-d"))
+      else if (argc > 1 && !strcmp(opt, "-T"))
 	{
-	  mode = MODE_DETACHEDSIGN;
+	  timearg = argv[1];
 	  argc--;
 	  argv++;
-	}
-      else if (argc > 1 && !strcmp(argv[1], "-D"))
-	{
-	  mode = MODE_RAWDETACHEDSIGN;
-	  argc--;
-	  argv++;
-	}
-      else if (argc > 1 && !strcmp(argv[1], "-O"))
-	{
-	  mode = MODE_RAWOPENSSLSIGN;
-	  argc--;
-	  argv++;
-	}
-      else if (argc > 1 && !strcmp(argv[1], "-r"))
-	{
-	  mode = MODE_RPMSIGN;
-	  argc--;
-	  argv++;
-	}
-      else if (argc > 1 && !strcmp(argv[1], "-a"))
-	{
-	  mode = MODE_APPIMAGESIGN;
-	  argc--;
-	  argv++;
-	}
-      else if (argc > 1 && !strcmp(argv[1], "-v"))
-	{
-	  verbose++;
-	  argc--;
-	  argv++;
-	}
-      else if (argc > 1 && !strcmp(argv[1], "--noheaderonly"))
-        {
-	  noheaderonly = 1;
-	  argc--;
-	  argv++;
-        }
-      else if (argc > 1 && !strcmp(argv[1], "-k"))
-        {
-	  mode = MODE_KEYID;
-	  argc--;
-	  argv++;
-        }
-      else if (argc > 1 && !strcmp(argv[1], "-p"))
-        {
-	  mode = MODE_PUBKEY;
-	  argc--;
-	  argv++;
-        }
-      else if (argc > 1 && !strcmp(argv[1], "-g"))
-        {
-	  mode = MODE_KEYGEN;
-	  argc--;
-	  argv++;
-        }
-      else if (argc > 1 && !strcmp(argv[1], "-x"))
-        {
-	  mode = MODE_KEYEXTEND;
-	  argc--;
-	  argv++;
-        }
-      else if (argc > 1 && !strcmp(argv[1], "-C"))
-        {
-	  mode = MODE_CREATECERT;
-	  argc--;
-	  argv++;
-	}
-      else if (argc > 2 && !strcmp(argv[1], "-S"))
-	{
-	  chksumfile = argv[2];
-	  argc -= 2;
-	  argv += 2;
-	}
-      else if (argc > 2 && !strcmp(argv[1], "-T"))
-	{
-	  timearg = argv[2];
-	  argc -= 2;
-	  argv += 2;
 	  if (!*timearg || ((*timearg < '0' || *timearg > '9') && strcmp(timearg, "mtime") && strcmp(timearg, "buildtime")))
 	    {
 	      fprintf(stderr, "illegal time argument: %s\n", timearg);
 	      exit(1);
 	    }
 	}
-      else if (argc > 2 && !strcmp(argv[1], "-P"))
+      else if (argc > 1 && !strcmp(opt, "-P"))
         {
-	  privkey = argv[2];
-	  argc -= 2;
-	  argv += 2;
-        }
-      else if (argc > 1 && !strcmp(argv[1], "--pkcs1pss"))
-        {
-	  pkcs1pss = 1;
+	  privkey = argv[1];
 	  argc--;
 	  argv++;
         }
-      else if (argc > 1 && !strcmp(argv[1], "-4"))
-        {
-	  dov4sig = 1;
-	  argc--;
-	  argv++;
-        }
-      else if (argc > 1 && !strcmp(argv[1], "--"))
-        {
-	  argc--;
-	  argv++;
-	  break;
-        }
-      else if (argc > 1 && argv[1][0] == '-')
+      else if (!strcmp(opt, "--pkcs1pss"))
+	pkcs1pss = 1;
+      else if (!strcmp(opt, "-4"))
+	dov4sig = 1;
+      else if (!strcmp(opt, "--"))
+	break;
+      else
 	{
 	  usage();
 	  exit(1);
 	}
-      else
-        break;
     }
   if (mode == MODE_CREATECERT)
     hashalgo = HASH_SHA256;	/* always sign certs with sha256 */
