@@ -935,7 +935,7 @@ initrandom()
 void
 createcert(char *pubkey)
 {
-  struct certbuf cb;
+  struct x509 cb;
   FILE *fp;
   char buf[8192];
   unsigned char rbuf[8192];
@@ -1103,8 +1103,8 @@ createcert(char *pubkey)
   certsizelimit(email, 128);
 
   /* create tbscert */
-  memset(&cb, 0, sizeof(cb));
-  certbuf_tbscert(&cb, name, email, beg, exp, mpin, mpinl, mpie, mpiel);
+  x509_init(&cb);
+  x509_tbscert(&cb, name, email, beg, exp, mpin, mpinl, mpie, mpiel);
   free(name);
   free(pubk);
 
@@ -1138,14 +1138,14 @@ createcert(char *pubkey)
   rawssl = getrawopensslsig(sig, sigl, &rawssllen);
 
   /* finish cert */
-  certbuf_finishcert(&cb, rawssl, rawssllen);
+  x509_finishcert(&cb, rawssl, rawssllen);
   free(rawssl);
 
   /* print as PEM */
   printf("-----BEGIN CERTIFICATE-----\n");
   printr64(stdout, cb.buf, cb.len);
   printf("-----END CERTIFICATE-----\n");
-  free(cb.buf);
+  x509_free(&cb);
 }
 
 void

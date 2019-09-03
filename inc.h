@@ -81,14 +81,16 @@ int findsigmpioffset(byte *sig, int sigl);
 int findsigpubalgo(byte *pk, int pkl);
 
 /* x509.c */
-struct certbuf {
+struct x509 {
   byte *buf;
   int len; 
   int alen;	/* allocated length */
 };
 
-void certbuf_tbscert(struct certbuf *cb, const char *cn, const char *email, time_t start, time_t end, byte *p, int pl, byte *e, int el);
-void certbuf_finishcert(struct certbuf *cb, byte *sig, int sigl);
+static inline void x509_init(struct x509 *cb) { memset(cb, 0, sizeof(*cb)); }
+static inline void x509_free(struct x509 *cb) { free(cb->buf); }
+void x509_tbscert(struct x509 *cb, const char *cn, const char *email, time_t start, time_t end, byte *p, int pl, byte *e, int el);
+void x509_finishcert(struct x509 *cb, byte *sig, int sigl);
 byte *getrawopensslsig(byte *sig, int sigl, int *lenp);
 void certsizelimit(char *s, int l);
 

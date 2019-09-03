@@ -37,7 +37,7 @@ static byte key_usage[] = { 0x10, 0x30, 0x0e, 0x06, 0x03, 0x55, 0x1d, 0x0f, 0x01
 static byte ext_key_usage[] = { 0x15, 0x30, 0x13, 0x06, 0x03, 0x55, 0x1d, 0x25, 0x04, 0x0c, 0x30, 0x0a, 0x06, 0x08, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x03 };
 
 static void
-certbuf_room(struct certbuf *cb, int l)
+x509_room(struct x509 *cb, int l)
 {
   if (l < 0 || l > 100000 || cb->len > 100000)
     abort();
@@ -50,16 +50,16 @@ certbuf_room(struct certbuf *cb, int l)
         cb->buf = malloc(cb->alen);
       if (!cb->buf)
 	{
-	  fprintf(stderr, "out of certbuf memory\n");
+	  fprintf(stderr, "out of x509 memory\n");
 	  exit(1);
 	}
     }
 }
 
 static void
-certbuf_add(struct certbuf *cb, byte *blob, int blobl)
+x509_add(struct x509 *cb, byte *blob, int blobl)
 {
-  certbuf_room(cb, blobl);
+  x509_room(cb, blobl);
   if (blob)
     memmove(cb->buf + cb->len, blob, blobl);
   else
@@ -68,11 +68,11 @@ certbuf_add(struct certbuf *cb, byte *blob, int blobl)
 }
 
 static void
-certbuf_insert(struct certbuf *cb, int offset, byte *blob, int blobl)
+x509_insert(struct x509 *cb, int offset, byte *blob, int blobl)
 {
   if (offset < 0 || offset > cb->len)
     abort();
-  certbuf_room(cb, blobl);
+  x509_room(cb, blobl);
   if (offset < cb->len)
     memmove(cb->buf + offset + blobl, cb->buf + offset, cb->len - offset);
   if (blob)
@@ -83,13 +83,13 @@ certbuf_insert(struct certbuf *cb, int offset, byte *blob, int blobl)
 }
 
 static void
-certbuf_tag(struct certbuf *cb, int offset, int tag)
+x509_tag(struct x509 *cb, int offset, int tag)
 {
   int ll, l = cb->len - offset;
   if (l < 0 || l >= 0x1000000)
     abort();
   ll = l < 0x80 ? 0 : l < 0x100 ? 1 : l < 0x10000 ? 2 : 3;
-  certbuf_insert(cb, offset, 0, 2 + ll);
+  x509_insert(cb, offset, 0, 2 + ll);
   if (ll)
     cb->buf[offset + 1] = 0x80 + ll;
   if (ll > 2)
@@ -101,7 +101,7 @@ certbuf_tag(struct certbuf *cb, int offset, int tag)
 }
 
 static void
-certbuf_time(struct certbuf *cb, time_t t)
+x509_time(struct x509 *cb, time_t t)
 {
   int offset = cb->len;
   struct tm *tm = gmtime(&t);
@@ -109,68 +109,68 @@ certbuf_time(struct certbuf *cb, time_t t)
   sprintf(tbuf, "%04d%02d%02d%02d%02d%02dZ", tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday, tm->tm_hour, tm->tm_min, tm->tm_sec);
   if (tm->tm_year >= 50 && tm->tm_year < 150)
     {
-      certbuf_add(cb, (byte *)tbuf + 2, strlen(tbuf + 2));
-      certbuf_tag(cb, offset, 0x17);
+      x509_add(cb, (byte *)tbuf + 2, strlen(tbuf + 2));
+      x509_tag(cb, offset, 0x17);
     }
   else
     {
-      certbuf_add(cb, (byte *)tbuf, strlen(tbuf));
-      certbuf_tag(cb, offset, 0x18);
+      x509_add(cb, (byte *)tbuf, strlen(tbuf));
+      x509_tag(cb, offset, 0x18);
     }
 }
 
 static void
-certbuf_random_serial(struct certbuf *cb)
+x509_random_serial(struct x509 *cb)
 {
   int offset = cb->len;
   int i;
-  certbuf_add(cb, 0, 9);
+  x509_add(cb, 0, 9);
   for (i = 1; i < 9; i++)
     cb->buf[offset + i] = (byte)random();
   cb->buf[offset] = 0;
   cb->buf[offset + 1] |= 0x80;
-  certbuf_tag(cb, offset, 0x02);
+  x509_tag(cb, offset, 0x02);
 }
 
 static void
-certbuf_dn(struct certbuf *cb, const char *cn, const char *email)
+x509_dn(struct x509 *cb, const char *cn, const char *email)
 {
   int offset = cb->len;
   if (cn && *cn)
     {
       int offset2 = cb->len;
-      certbuf_add(cb, (byte *)cn, strlen(cn));
-      certbuf_tag(cb, offset2, 0x0c);
-      certbuf_insert(cb, offset2, oid_common_name + 1, oid_common_name[0]);
-      certbuf_tag(cb, offset2, 0x30);
-      certbuf_tag(cb, offset2, 0x31);
+      x509_add(cb, (byte *)cn, strlen(cn));
+      x509_tag(cb, offset2, 0x0c);
+      x509_insert(cb, offset2, oid_common_name + 1, oid_common_name[0]);
+      x509_tag(cb, offset2, 0x30);
+      x509_tag(cb, offset2, 0x31);
     }
   if (email && *email)
     {
       int offset2 = cb->len;
-      certbuf_add(cb, (byte *)email, strlen(email));
+      x509_add(cb, (byte *)email, strlen(email));
       for (; *email; email++)
 	if (*(unsigned char *)email >= 128)
 	  break;
-      certbuf_tag(cb, offset2, *email ? 0x0c: 0x16);
-      certbuf_insert(cb, offset2, oid_email_address + 1, oid_email_address[0]);
-      certbuf_tag(cb, offset2, 0x30);
-      certbuf_tag(cb, offset2, 0x31);
+      x509_tag(cb, offset2, *email ? 0x0c: 0x16);
+      x509_insert(cb, offset2, oid_email_address + 1, oid_email_address[0]);
+      x509_tag(cb, offset2, 0x30);
+      x509_tag(cb, offset2, 0x31);
     }
-  certbuf_tag(cb, offset, 0x30);
+  x509_tag(cb, offset, 0x30);
 }
 
 static void
-certbuf_validity(struct certbuf *cb, time_t start, time_t end)
+x509_validity(struct x509 *cb, time_t start, time_t end)
 {
   int offset = cb->len;
-  certbuf_time(cb, start);
-  certbuf_time(cb, end);
-  certbuf_tag(cb, offset, 0x30);
+  x509_time(cb, start);
+  x509_time(cb, end);
+  x509_tag(cb, offset, 0x30);
 }
 
 static void
-certbuf_mpiint(struct certbuf *cb, byte *p, int pl)
+x509_mpiint(struct x509 *cb, byte *p, int pl)
 {
   int offset = cb->len;
   while (pl && !*p)
@@ -179,24 +179,24 @@ certbuf_mpiint(struct certbuf *cb, byte *p, int pl)
       pl--;
     }
   if (!pl || p[0] >= 128)
-    certbuf_add(cb, 0, 1);
+    x509_add(cb, 0, 1);
   if (pl)
-    certbuf_add(cb, p, pl);
-  certbuf_tag(cb, offset, 0x02);
+    x509_add(cb, p, pl);
+  x509_tag(cb, offset, 0x02);
 }
 
 static void
-certbuf_pubkey(struct certbuf *cb, byte *p, int pl, byte *e, int el, byte *keyid)
+x509_pubkey(struct x509 *cb, byte *p, int pl, byte *e, int el, byte *keyid)
 {
   int offset = cb->len;
   int offset2;
-  certbuf_add(cb, oid_rsa_encryption + 1, oid_rsa_encryption[0]);
-  certbuf_tag(cb, cb->len, 0x05);
-  certbuf_tag(cb, offset, 0x30);
+  x509_add(cb, oid_rsa_encryption + 1, oid_rsa_encryption[0]);
+  x509_tag(cb, cb->len, 0x05);
+  x509_tag(cb, offset, 0x30);
   offset2 = cb->len;
-  certbuf_mpiint(cb, p, pl);
-  certbuf_mpiint(cb, e, el);
-  certbuf_tag(cb, offset2, 0x30);
+  x509_mpiint(cb, p, pl);
+  x509_mpiint(cb, e, el);
+  x509_tag(cb, offset2, 0x30);
   if (keyid)
     {
       SHA1_CONTEXT ctx;
@@ -205,53 +205,53 @@ certbuf_pubkey(struct certbuf *cb, byte *p, int pl, byte *e, int el, byte *keyid
       sha1_final(&ctx);
       memcpy(keyid, sha1_read(&ctx), 20);
     }
-  certbuf_insert(cb, offset2, 0, 1);
-  certbuf_tag(cb, offset2, 0x03);
-  certbuf_tag(cb, offset, 0x30);
+  x509_insert(cb, offset2, 0, 1);
+  x509_tag(cb, offset2, 0x03);
+  x509_tag(cb, offset, 0x30);
 }
 
 static void
-certbuf_extensions(struct certbuf *cb, byte *keyid)
+x509_extensions(struct x509 *cb, byte *keyid)
 {
   int offset = cb->len;
   /* basic contraints */
-  certbuf_add(cb, basic_constraints + 1, basic_constraints[0]);
+  x509_add(cb, basic_constraints + 1, basic_constraints[0]);
   if (keyid)
     {
-      certbuf_add(cb, subject_key_identifier + 1, subject_key_identifier[0]);
+      x509_add(cb, subject_key_identifier + 1, subject_key_identifier[0]);
       memcpy(cb->buf + cb->len - 20, keyid, 20);
-      certbuf_add(cb, authority_key_identifier + 1, authority_key_identifier[0]);
+      x509_add(cb, authority_key_identifier + 1, authority_key_identifier[0]);
       memcpy(cb->buf + cb->len - 20, keyid, 20);
     }
-  certbuf_add(cb, key_usage + 1, key_usage[0]);
-  certbuf_add(cb, ext_key_usage + 1, ext_key_usage[0]);
-  certbuf_tag(cb, offset, 0x30);
-  certbuf_tag(cb, offset, 0xa3);	/* CONT | CONS | 3 */
+  x509_add(cb, key_usage + 1, key_usage[0]);
+  x509_add(cb, ext_key_usage + 1, ext_key_usage[0]);
+  x509_tag(cb, offset, 0x30);
+  x509_tag(cb, offset, 0xa3);	/* CONT | CONS | 3 */
 }
 
 void
-certbuf_tbscert(struct certbuf *cb, const char *cn, const char *email, time_t start, time_t end, byte *p, int pl, byte *e, int el)
+x509_tbscert(struct x509 *cb, const char *cn, const char *email, time_t start, time_t end, byte *p, int pl, byte *e, int el)
 {
   byte keyid[20];
-  certbuf_add(cb, cert_version_3 + 1, cert_version_3[0]);
-  certbuf_random_serial(cb);
-  certbuf_add(cb, sig_algo_rsa_sha256 + 1, sig_algo_rsa_sha256[0]);
-  certbuf_dn(cb, cn, email);
-  certbuf_validity(cb, start, end);
-  certbuf_dn(cb, cn, email);
-  certbuf_pubkey(cb, p, pl, e, el, keyid);
-  certbuf_extensions(cb, keyid);
-  certbuf_tag(cb, 0, 0x30);
+  x509_add(cb, cert_version_3 + 1, cert_version_3[0]);
+  x509_random_serial(cb);
+  x509_add(cb, sig_algo_rsa_sha256 + 1, sig_algo_rsa_sha256[0]);
+  x509_dn(cb, cn, email);
+  x509_validity(cb, start, end);
+  x509_dn(cb, cn, email);
+  x509_pubkey(cb, p, pl, e, el, keyid);
+  x509_extensions(cb, keyid);
+  x509_tag(cb, 0, 0x30);
 }
 
 void
-certbuf_finishcert(struct certbuf *cb, byte *sig, int sigl)
+x509_finishcert(struct x509 *cb, byte *sig, int sigl)
 {
-  certbuf_add(cb, sig_algo_rsa_sha256 + 1, sig_algo_rsa_sha256[0]);
-  certbuf_add(cb, 0, 1);
-  certbuf_add(cb, sig, sigl);
-  certbuf_tag(cb, cb->len - (sigl + 1), 0x03);
-  certbuf_tag(cb, 0, 0x30);
+  x509_add(cb, sig_algo_rsa_sha256 + 1, sig_algo_rsa_sha256[0]);
+  x509_add(cb, 0, 1);
+  x509_add(cb, sig, sigl);
+  x509_tag(cb, cb->len - (sigl + 1), 0x03);
+  x509_tag(cb, 0, 0x30);
 }
 
 byte *
