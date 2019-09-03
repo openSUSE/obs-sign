@@ -182,6 +182,29 @@ digest2arg(byte *bp, byte *dig, byte *sigtrail)
 }
 
 static int
+slurp(char *filename, char *buf, int bufl)
+{
+  int l, ll;
+  FILE *fp;
+  if ((fp = fopen(filename, "r")) == 0)
+    {
+      perror(filename);
+      exit(1);
+    }
+  l = 0;
+  while (l < bufl && (ll = fread(buf + l, 1, bufl - l, fp)) > 0)
+    l += ll;
+  fclose(fp);
+  if (l == bufl)
+    {
+      fprintf(stderr, "%s: too big, max size: %d\n", filename, bufl - 1);
+      exit(1);
+    }
+  buf[l] = 0;	/* convenience */
+  return l;
+}
+
+static int
 sign(char *filename, int isfilter, int mode)
 {
   u32 signtime;
@@ -659,11 +682,10 @@ keygen(const char *type, const char *expire, const char *name, const char *email
 void
 keyextend(char *expire, char *pubkey)
 {
-  FILE *fp;
   char buf[8192];
   unsigned char rbuf[8192];
   unsigned char *pubk, *p, *pp;
-  int i, l, ll, pubkl, tag, pl;
+  int i, l, pubkl, tag, pl;
   unsigned char b[6];
   unsigned char *newpubk, *selfsigpkg;
   byte *issuer, *sigissuer;
@@ -702,20 +724,7 @@ keyextend(char *expire, char *pubkey)
       fprintf(stderr, "bad expire argument\n");
       exit(1);
     }
-  if ((fp = fopen(pubkey, "r")) == 0)
-    {
-      perror(pubkey);
-      exit(1);
-    }
-  l = 0;
-  while (l < 8192 && (ll = fread(buf + l, 1, 8192 - l, fp)) > 0)
-    l += ll;
-  fclose(fp);
-  if (l == 8192)
-    {
-      fprintf(stderr, "pubkey too big\n");
-      exit(1);
-    }
+  slurp(pubkey, buf, sizeof(buf));
   pubk = unarmor_pubkey(buf, &pubkl);
   if (!pubk)
     {
@@ -936,14 +945,13 @@ void
 createcert(char *pubkey)
 {
   struct x509 cb;
-  FILE *fp;
   char buf[8192];
   unsigned char rbuf[8192];
   char hashhex[1024];
   unsigned char *pubk;
   int pubkl;
   unsigned char *p, *pp;
-  int i, l, ll, tag, pl;
+  int i, l, tag, pl;
   time_t pkcreat, now, beg, exp;
   unsigned char *ex;
   unsigned char *userid;
@@ -969,20 +977,7 @@ createcert(char *pubkey)
     }
   if (privkey)
     readprivkey();
-  if ((fp = fopen(pubkey, "r")) == 0)
-    {
-      perror(pubkey);
-      exit(1);
-    }
-  l = 0;
-  while (l < 8192 && (ll = fread(buf + l, 1, 8192 - l, fp)) > 0)
-    l += ll;
-  fclose(fp);
-  if (l == 8192)
-    {
-      fprintf(stderr, "pubkey too big\n");
-      exit(1);
-    }
+  slurp(pubkey, buf, sizeof(buf));
   pubk = unarmor_pubkey(buf, &pubkl);
   if (!pubk)
     {
