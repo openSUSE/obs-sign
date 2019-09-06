@@ -267,7 +267,7 @@ zip_seekdata(struct zip *zip, int fd, unsigned char *entry)
   unsigned char lfh[30];
   unsigned int size;
 
-  if (pos >= zip->cd_offset)
+  if (pos >= zip->cd_offset - zip->appendedsize)
     zipdie("zip_seekdata: illegal file header position");
   doseek(fd, pos);
   doread(fd, lfh, 30);
@@ -300,11 +300,9 @@ static unsigned char *
 dummydeflate(unsigned char *in, int inlen, int *outlenp)
 {
   unsigned char *out, *p;
-  int outlen;
   if (inlen > 100000)
     zipdie("dummydeflate: file too big");
-  outlen = inlen + ((inlen + 65535) / 65535) * 5;
-  out = p = malloc(outlen ? outlen : 1);
+  out = p = malloc(inlen ? inlen + ((inlen + 65535) / 65535) * 5 : 1);
   while (inlen > 0)
     {
       int chunk = inlen > 65535 ? 65535 : inlen;
@@ -318,7 +316,7 @@ dummydeflate(unsigned char *in, int inlen, int *outlenp)
       memcpy(p, in, chunk);
       p += chunk;
     }
-  *outlenp = outlen;
+  *outlenp = p - out;
   return out;
 }
 
@@ -379,7 +377,7 @@ zip_appendfile(struct zip *zip, char *fn, unsigned char *file, unsigned long lon
     zipdie("zip_appendfile: file name too long");
   if (comp != 0 && comp != 8)
     zipdie("zip_appendfile: unsupported compression");
-  if (filelen > 0xfffffffe)
+  if (filelen > 0xfffffffe || zip->cd_offset > 0xfffffffe)
     zipdie("zip_appendfile: zip64 not supported");
   crc32 = crc32buf(file, filelen);
   if (comp == 8)
