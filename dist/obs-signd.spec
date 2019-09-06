@@ -55,7 +55,7 @@ to avoid the need to host the private key on the same server.
 %setup -n obs-sign-%version
 
 %build
-make CFLAGS="$RPM_OPT_FLAGS -fpie" LDFLAGS="-pie"
+make CFLAGS="$RPM_OPT_FLAGS -fpie -D_FILE_OFFSET_BITS=64" LDFLAGS="-pie"
 
 %check
 make test
