@@ -285,12 +285,11 @@ x509_tbscert(struct x509 *cb, const char *cn, const char *email, time_t start, t
 void
 x509_finishcert(struct x509 *cb, byte *sig, int sigl)
 {
-  int offset = cb->len;
   x509_add_const(cb, sig_algo_rsa_sha256);
   x509_add(cb, 0, 1);
   x509_add(cb, sig, sigl);
   x509_tag(cb, cb->len - (sigl + 1), 0x03);
-  x509_tag(cb, offset, 0x30);
+  x509_tag(cb, 0, 0x30);
 }
 
 byte *
