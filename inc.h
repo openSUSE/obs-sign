@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <sys/types.h>
+#include <unistd.h>
 
 typedef unsigned int u32;
 typedef unsigned char byte;
@@ -90,11 +91,44 @@ struct x509 {
 };
 
 static inline void x509_init(struct x509 *cb) { memset(cb, 0, sizeof(*cb)); }
-static inline void x509_free(struct x509 *cb) { free(cb->buf); }
+static inline void x509_free(struct x509 *cb) { if (cb->buf) free(cb->buf); }
+void x509_insert(struct x509 *cb, int offset, const byte *blob, int blobl);
 void x509_tbscert(struct x509 *cb, const char *cn, const char *email, time_t start, time_t end, byte *p, int pl, byte *e, int el);
 void x509_finishcert(struct x509 *cb, byte *sig, int sigl);
 byte *getrawopensslsig(byte *sig, int sigl, int *lenp);
 void certsizelimit(char *s, int l);
+
+int x509_addpem(struct x509 *cb, char *buf, char *type);
+void x509_spccontent(struct x509 *cb, unsigned char *digest, int digestlen);
+void x509_signedattrs(struct x509 *cb, unsigned char *digest, int digestlen, time_t signtime);
+void x509_pkcs7(struct x509 *cb, struct x509 *content, struct x509 *signedattrs, unsigned char *sig, int siglen, struct x509 *cert, struct x509 *othercerts);
+
+
+/* zip.c */
+struct zip {
+  unsigned char *eocd;
+  int eocd_size;
+  unsigned long long size;
+  unsigned long long cd_offset;
+  unsigned long long cd_size;
+  unsigned char *cd;
+  unsigned long long num;
+  unsigned char *appended;
+  unsigned long long appendedsize;
+};
+
+void zip_read(struct zip *zip, int fd);
+void zip_free(struct zip *zip);
+unsigned char *zip_iterentry(struct zip *zip, unsigned char **iterp);
+unsigned char *zip_findentry(struct zip *zip, char *fn);
+
+char *zip_entry_name(unsigned char *entry, int *namel);
+unsigned long long zip_entry_fhpos(unsigned char *entry);
+unsigned int zip_entry_datetime(unsigned char *entry);
+
+unsigned long long zip_seekdata(struct zip *zip, int fd, unsigned char *entry);
+void zip_appendfile(struct zip *zip, char *fn, unsigned char *file, unsigned long long filelen, int comp, unsigned int datetime);
+void zip_write(struct zip *zip, int zipfd, int fd);
 
 /* rpm.c */
 struct rpmdata {
@@ -122,10 +156,24 @@ struct rpmdata {
 int rpm_insertsig(struct rpmdata *rd, int hdronly, byte *newsig, int newsiglen);
 int rpm_read(struct rpmdata *rd, int fd, char *filename, HASH_CONTEXT *ctx, HASH_CONTEXT *hctx, int getbuildtime);
 int rpm_write(struct rpmdata *rd, int foutfd, int fd, int chksumfilefd);
+void rpm_free(struct rpmdata *rd);
 void rpm_writechecksums(struct rpmdata *rd, int chksumfilefd);
 
 /* appimage.c */
 void appimage_write_signature(char *filename, byte *signature, int length);
+
+/* appx.c */
+struct appxdata {
+  int fd;
+  struct x509 cb_content;
+  struct x509 cb_signedattrs;
+  struct zip zip;
+  unsigned int datetime;
+};
+
+int appx_read(struct appxdata *appxdata, int fd, char *filename, time_t t);
+void appx_write(struct appxdata *appxdata, int outfd, int fd, struct x509 *cert, unsigned char *sig, int siglen, struct x509 *othercerts);
+void appx_free(struct appxdata *appxdata);
 
 /* sock.c */
 void opensocket(void);
@@ -135,4 +183,3 @@ int doreq(int argc, const char **argv, byte *buf, int bufl, int nret);
 
 /* clearsign.c */
 int clearsign(int fd, char *filename, char *outfilename, HASH_CONTEXT *ctx, const char *hname, int isfilter, int force, FILE **foutp);
-

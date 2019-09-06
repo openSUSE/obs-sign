@@ -57,6 +57,8 @@ static char *chksumfile;
 static int chksumfilefd = -1;
 static int dov4sig;
 static int pubalgoprobe = -1;
+static struct x509 cert;
+static struct x509 othercerts;
 
 #define MODE_UNSET        0
 #define MODE_RPMSIGN      1
@@ -70,10 +72,11 @@ static int pubalgoprobe = -1;
 #define MODE_RAWOPENSSLSIGN 9
 #define MODE_CREATECERT   10
 #define MODE_APPIMAGESIGN 11
+#define MODE_APPXSIGN	  12
 
 static const char *const modes[] = {
   "?", "rpm sign", "clear sign", "detached sign", "keyid", "pubkey", "keygen", "keyextend",
-  "raw detached sign" "raw openssl sign" "cert create", "appimage sign"
+  "raw detached sign" "raw openssl sign" "cert create", "appimage sign", "appx sign"
 };
 
 static void
@@ -209,6 +212,7 @@ sign(char *filename, int isfilter, int mode)
 {
   u32 signtime;
   struct rpmdata rpmrd;
+  struct appxdata appxdata;
   byte buf[8192];
   int l, fd;
   byte sigtrail[5], *p, *ph = 0;
@@ -234,9 +238,11 @@ sign(char *filename, int isfilter, int mode)
       l = strlen(filename);
       if (l > 4 && (!strcmp(filename + l - 4, ".rpm") || !strcmp(filename + l - 4, ".spm")))
 	mode = MODE_RPMSIGN;
-      else if (l > 9 && (!strcmp(filename + l - 9, ".AppImage"))) {
+      else if (l > 9 && (!strcmp(filename + l - 9, ".AppImage")))
         mode = MODE_APPIMAGESIGN;
-      } else
+      else if (l > 5 && (!strcmp(filename + l - 5, ".appx")))
+        mode = MODE_APPXSIGN;
+      else
         mode = MODE_CLEARSIGN;
     }
 
@@ -321,6 +327,26 @@ sign(char *filename, int isfilter, int mode)
       /* sign empty string */
       opensocket();
     }
+  else if (mode == MODE_APPXSIGN)
+    {
+      if (!cert.len)
+	{
+	  fprintf(stderr, "need a cert for appx signing\n");
+	  exit(1);
+	}
+      if (appx_read(&appxdata, fd, filename, signtime) == 0)
+	{
+	  fprintf(isfilter ? stderr : stdout, "%s: already signed\n", filename);
+	  close(fd);
+	  if (outfilename)
+	    free(outfilename);
+	  if (isfilter)
+	    exit(1);
+	  return 1;
+	}
+      opensocket();
+      hash_write(&ctx, appxdata.cb_signedattrs.buf, appxdata.cb_signedattrs.len);
+    }
   else if (mode == MODE_APPIMAGESIGN)
     {
       unsigned char appimagedigest[64]; /*  sha256 sum */
@@ -368,10 +394,10 @@ sign(char *filename, int isfilter, int mode)
       else
         fprintf(isfilter ? stderr : stdout, "%s %s\n", modes[mode],  filename);
     }
-  if (mode == MODE_RAWOPENSSLSIGN)
+  if (mode == MODE_RAWOPENSSLSIGN || mode == MODE_APPXSIGN)
     {
       sigtrail[0] = pkcs1pss ? 0xbc : 0x00;
-      sigtrail[1] = sigtrail[2] = sigtrail[3] = sigtrail[4] = 0;
+      sigtrail[1] = sigtrail[2] = sigtrail[3] = sigtrail[4] = 0;	/* time does not matter */
     }
   else
     {
@@ -572,11 +598,26 @@ sign(char *filename, int isfilter, int mode)
 	    unlink(outfilename);
 	  exit(1);
 	}
-      free(rpmrd.rpmsig);
-      rpmrd.rpmsig = 0;
+      rpm_free(&rpmrd);
     }
   else if (mode == MODE_APPIMAGESIGN)
     appimage_write_signature(filename, buf + 6, outl);
+  else if (mode == MODE_APPXSIGN)
+    {
+      int rawssllen = 0;
+      int sigl;
+      byte *sig = pkg2sig(buf + 6, outl, &sigl);
+      byte *rawssl = getrawopensslsig(sig, sigl, &rawssllen);
+      if (!rawssl)
+	{
+	  if (!isfilter)
+	    unlink(outfilename);
+	  exit(1);
+	}
+      appx_write(&appxdata, isfilter ? 1 : fileno(fout), fd, &cert, rawssl, rawssllen, &othercerts);
+      appx_free(&appxdata);
+      free(rawssl);
+    }
   else
     fwrite(buf + 6, 1, outl, fout);
 
@@ -603,6 +644,7 @@ sign(char *filename, int isfilter, int mode)
   /* append to checksums file if needed */
   if (mode == MODE_RPMSIGN && chksumfilefd >= 0)
     rpm_writechecksums(&rpmrd, chksumfilefd);
+
   return 0;
 }
 
@@ -1279,6 +1321,34 @@ read_sign_conf(const char *conf)
   fclose(cfp);
 }
 
+void
+readcert(struct x509 *cert, char *certfile)
+{
+  char buf[32768];
+
+  slurp(certfile, buf, sizeof(buf));
+  if (!x509_addpem(cert, buf, "CERTIFICATE"))
+    {
+      fprintf(stderr, "%s: not a certificate\n", certfile);
+      exit(1);
+    }
+}
+
+void
+readothercerts(struct x509 *othercerts, char *certfile)
+{
+  char buf[65536];
+  int l = slurp(certfile, buf, sizeof(buf));
+  if (slurp(certfile, buf, sizeof(buf)) == 0)
+    return;
+  if (*buf != 0x30)
+    {
+      fprintf(stderr, "%s: not DER encoded certificates\n", certfile);
+      exit(1);
+    }
+  x509_insert(othercerts, 0, (unsigned char *)buf, l);
+}
+
 void usage()
 {
     fprintf(stderr, "usage:  sign [-v] [options]\n\n"
@@ -1311,6 +1381,8 @@ main(int argc, char **argv)
   uid = getuid();
   user = strdup("");
   host = strdup("127.0.0.1");
+  x509_init(&cert);
+  x509_init(&othercerts);
 
   if (argc > 2 && !strcmp(argv[1], "--test-sign"))
     {
@@ -1426,6 +1498,20 @@ main(int argc, char **argv)
 	pkcs1pss = 1;
       else if (!strcmp(opt, "-4"))
 	dov4sig = 1;
+      else if (argc > 1 && !strcmp(opt, "--cert"))
+	{
+	  readcert(&cert, argv[1]);
+	  argc--;
+	  argv++;
+	}
+      else if (argc > 1 && !strcmp(opt, "--othercerts"))
+	{
+	  readothercerts(&othercerts, argv[1]);
+	  argc--;
+	  argv++;
+	}
+      else if (!strcmp(opt, "--appx"))
+	mode = MODE_APPXSIGN;
       else if (!strcmp(opt, "--"))
 	break;
       else
@@ -1436,6 +1522,8 @@ main(int argc, char **argv)
     }
   if (mode == MODE_CREATECERT)
     hashalgo = HASH_SHA256;	/* always sign certs with sha256 */
+  if (mode == MODE_APPXSIGN)
+    hashalgo = HASH_SHA256;	/* always sign appx with sha256 */
   if (hashalgo == HASH_SHA1)
     algouser = user;
   else
@@ -1539,6 +1627,8 @@ main(int argc, char **argv)
 	  exit(1);
 	}
     }
+  x509_free(&cert);
+  x509_free(&othercerts);
   exit(0);
 }
 

@@ -600,6 +600,14 @@ rpm_write(struct rpmdata *rd, int foutfd, int fd, int chksumfilefd)
 }
 
 void
+rpm_free(struct rpmdata *rd)
+{
+  if (rd->rpmsig)
+    free(rd->rpmsig);
+  rd->rpmsig = 0;
+}
+
+void
 rpm_writechecksums(struct rpmdata *rd, int chksumfilefd)
 {
   char buf[16*2 + 5+16*2 + 6+20*2 + 8+32*2 + 1], *bp;

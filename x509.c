@@ -23,24 +23,41 @@
 
 #include "inc.h"
 
-static byte cert_version_3[] = { 0x05, 0xa0, 0x03, 0x02, 0x01, 0x02 };
-static byte oid_common_name[] = { 0x05, 0x06, 0x03, 0x55, 0x04, 0x03 };
-static byte oid_email_address[] = { 0x0b, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x01 };
-static byte oid_rsa_encryption[] = { 0x0b, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01 };
+static const byte cert_version_3[] = { 0x05, 0xa0, 0x03, 0x02, 0x01, 0x02 };
+static const byte oid_common_name[] = { 0x05, 0x06, 0x03, 0x55, 0x04, 0x03 };
+static const byte oid_email_address[] = { 0x0b, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x01 };
+static const byte oid_rsa_encryption[] = { 0x0b, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01 };
 
-static byte sig_algo_rsa_sha256[] = { 0x0f, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05, 0x00 };
+static const byte sig_algo_rsa_sha256[] = { 0x0f, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05, 0x00 };
+static const byte enc_algo_rsa[] = { 0x0f, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00 };
+static const byte digest_algo_sha256[] = { 0x0f, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00 };
 
-static byte subject_key_identifier[] = { 0x1f, 0x30, 0x1d, 0x06, 0x03, 0x55, 0x1d, 0x0e, 0x04, 0x16, 0x04, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-static byte authority_key_identifier[] = { 0x21, 0x30, 0x1f, 0x06, 0x03, 0x55, 0x1d, 0x23, 0x04, 0x18, 0x30, 0x16, 0x80, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-static byte basic_constraints[] = { 0x0e, 0x30, 0x0c, 0x06, 0x03, 0x55, 0x1d, 0x13, 0x01, 0x01, 0xff, 0x04, 0x02, 0x30, 0x00 };
-static byte key_usage[] = { 0x10, 0x30, 0x0e, 0x06, 0x03, 0x55, 0x1d, 0x0f, 0x01, 0x01, 0xff, 0x04, 0x04, 0x03, 0x02, 0x02, 0x84 };
-static byte ext_key_usage[] = { 0x15, 0x30, 0x13, 0x06, 0x03, 0x55, 0x1d, 0x25, 0x04, 0x0c, 0x30, 0x0a, 0x06, 0x08, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x03 };
+static const byte subject_key_identifier[] = { 0x1f, 0x30, 0x1d, 0x06, 0x03, 0x55, 0x1d, 0x0e, 0x04, 0x16, 0x04, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+static const byte authority_key_identifier[] = { 0x21, 0x30, 0x1f, 0x06, 0x03, 0x55, 0x1d, 0x23, 0x04, 0x18, 0x30, 0x16, 0x80, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+static const byte basic_constraints[] = { 0x0e, 0x30, 0x0c, 0x06, 0x03, 0x55, 0x1d, 0x13, 0x01, 0x01, 0xff, 0x04, 0x02, 0x30, 0x00 };
+static const byte key_usage[] = { 0x10, 0x30, 0x0e, 0x06, 0x03, 0x55, 0x1d, 0x0f, 0x01, 0x01, 0xff, 0x04, 0x04, 0x03, 0x02, 0x02, 0x84 };
+static const byte ext_key_usage[] = { 0x15, 0x30, 0x13, 0x06, 0x03, 0x55, 0x1d, 0x25, 0x04, 0x0c, 0x30, 0x0a, 0x06, 0x08, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x03 };
+
+static const byte oid_contenttype[] = { 0x0b, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x03 };
+static const byte oid_messagedigest[] = { 0x0b, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x04 };
+static const byte oid_signingtime[] = { 0x0b, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x05 };
+static const byte oid_spc_indirect_data[] = { 0x0c, 0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x01, 0x04 };
+
+static const byte oid_spc_spopusinfo[] = { 0x0c, 0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x01, 0x0c };
+static const byte oid_spc_statementtype[] = { 0x0c, 0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x01, 0x0b };
+static const byte oid_ms_codesigning[] = { 0x0c, 0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x01, 0x15 };
+static const byte oid_pkcs7_signed_data[] = { 0x0b, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x02 };
+
+static const byte int_1[] = { 0x03, 0x02, 0x01, 0x01 };
 
 static void
 x509_room(struct x509 *cb, int l)
 {
   if (l < 0 || l > 100000 || cb->len > 100000)
-    abort();
+    {
+      fprintf(stderr, "x509_room: illegal request\n");
+      exit(1);
+    }
   if (cb->len + l > cb->alen)
     {
       cb->alen = cb->len + l + 256;
@@ -57,7 +74,7 @@ x509_room(struct x509 *cb, int l)
 }
 
 static void
-x509_add(struct x509 *cb, byte *blob, int blobl)
+x509_add(struct x509 *cb, const byte *blob, int blobl)
 {
   x509_room(cb, blobl);
   if (blob)
@@ -67,8 +84,8 @@ x509_add(struct x509 *cb, byte *blob, int blobl)
   cb->len += blobl;
 }
 
-static void
-x509_insert(struct x509 *cb, int offset, byte *blob, int blobl)
+void
+x509_insert(struct x509 *cb, int offset, const byte *blob, int blobl)
 {
   if (offset < 0 || offset > cb->len)
     abort();
@@ -80,6 +97,19 @@ x509_insert(struct x509 *cb, int offset, byte *blob, int blobl)
   else
     memset(cb->buf + offset, 0, blobl);
   cb->len += blobl;
+}
+
+/* convenience */
+static inline void
+x509_add_const(struct x509 *cb, const byte *c)
+{
+  x509_add(cb, c + 1, c[0]);
+}
+
+static inline void
+x509_insert_const(struct x509 *cb, int offset, const byte *c)
+{
+  x509_insert(cb, offset, c + 1, c[0]);
 }
 
 static void
@@ -98,6 +128,14 @@ x509_tag(struct x509 *cb, int offset, int tag)
     cb->buf[offset + ll] = l >> 8;
   cb->buf[offset + ll + 1] = l;
   cb->buf[offset] = tag;
+}
+
+static void
+x509_tag_impl(struct x509 *cb, int offset, int tag)
+{
+  if (cb->len <= offset)
+    return;
+  cb->buf[offset] = tag | (cb->buf[offset] & 0x20);	/* keep CONS */
 }
 
 static void
@@ -141,7 +179,7 @@ x509_dn(struct x509 *cb, const char *cn, const char *email)
       int offset2 = cb->len;
       x509_add(cb, (byte *)cn, strlen(cn));
       x509_tag(cb, offset2, 0x0c);
-      x509_insert(cb, offset2, oid_common_name + 1, oid_common_name[0]);
+      x509_insert_const(cb, offset2, oid_common_name);
       x509_tag(cb, offset2, 0x30);
       x509_tag(cb, offset2, 0x31);
     }
@@ -153,7 +191,7 @@ x509_dn(struct x509 *cb, const char *cn, const char *email)
 	if (*(unsigned char *)email >= 128)
 	  break;
       x509_tag(cb, offset2, *email ? 0x0c: 0x16);
-      x509_insert(cb, offset2, oid_email_address + 1, oid_email_address[0]);
+      x509_insert_const(cb, offset2, oid_email_address);
       x509_tag(cb, offset2, 0x30);
       x509_tag(cb, offset2, 0x31);
     }
@@ -188,9 +226,8 @@ x509_mpiint(struct x509 *cb, byte *p, int pl)
 static void
 x509_pubkey(struct x509 *cb, byte *p, int pl, byte *e, int el, byte *keyid)
 {
-  int offset = cb->len;
-  int offset2;
-  x509_add(cb, oid_rsa_encryption + 1, oid_rsa_encryption[0]);
+  int offset = cb->len, offset2;
+  x509_add_const(cb, oid_rsa_encryption);
   x509_tag(cb, cb->len, 0x05);
   x509_tag(cb, offset, 0x30);
   offset2 = cb->len;
@@ -215,16 +252,16 @@ x509_extensions(struct x509 *cb, byte *keyid)
 {
   int offset = cb->len;
   /* basic contraints */
-  x509_add(cb, basic_constraints + 1, basic_constraints[0]);
+  x509_add_const(cb, basic_constraints);
   if (keyid)
     {
-      x509_add(cb, subject_key_identifier + 1, subject_key_identifier[0]);
+      x509_add_const(cb, subject_key_identifier);
       memcpy(cb->buf + cb->len - 20, keyid, 20);
-      x509_add(cb, authority_key_identifier + 1, authority_key_identifier[0]);
+      x509_add_const(cb, authority_key_identifier);
       memcpy(cb->buf + cb->len - 20, keyid, 20);
     }
   x509_add(cb, key_usage + 1, key_usage[0]);
-  x509_add(cb, ext_key_usage + 1, ext_key_usage[0]);
+  x509_add_const(cb, ext_key_usage);
   x509_tag(cb, offset, 0x30);
   x509_tag(cb, offset, 0xa3);	/* CONT | CONS | 3 */
 }
@@ -232,8 +269,9 @@ x509_extensions(struct x509 *cb, byte *keyid)
 void
 x509_tbscert(struct x509 *cb, const char *cn, const char *email, time_t start, time_t end, byte *p, int pl, byte *e, int el)
 {
+  int offset = cb->len;
   byte keyid[20];
-  x509_add(cb, cert_version_3 + 1, cert_version_3[0]);
+  x509_add_const(cb, cert_version_3);
   x509_random_serial(cb);
   x509_add(cb, sig_algo_rsa_sha256 + 1, sig_algo_rsa_sha256[0]);
   x509_dn(cb, cn, email);
@@ -241,17 +279,18 @@ x509_tbscert(struct x509 *cb, const char *cn, const char *email, time_t start, t
   x509_dn(cb, cn, email);
   x509_pubkey(cb, p, pl, e, el, keyid);
   x509_extensions(cb, keyid);
-  x509_tag(cb, 0, 0x30);
+  x509_tag(cb, offset, 0x30);
 }
 
 void
 x509_finishcert(struct x509 *cb, byte *sig, int sigl)
 {
-  x509_add(cb, sig_algo_rsa_sha256 + 1, sig_algo_rsa_sha256[0]);
+  int offset = cb->len;
+  x509_add_const(cb, sig_algo_rsa_sha256);
   x509_add(cb, 0, 1);
   x509_add(cb, sig, sigl);
   x509_tag(cb, cb->len - (sigl + 1), 0x03);
-  x509_tag(cb, 0, 0x30);
+  x509_tag(cb, offset, 0x30);
 }
 
 byte *
@@ -297,4 +336,266 @@ certsizelimit(char *s, int l)
     if ((*s & 0xc0) != 0x80)
       break;
   strcpy(s, "...");
+}
+
+int
+x509_addpem(struct x509 *cb, char *buf, char *type)
+{
+  int offset = cb->len;
+  size_t typel = strlen(type);
+  unsigned char *bp;
+
+  while (*buf == ' ' || *buf == '\t' || *buf == '\n' || *buf == '\r')
+    buf++;
+  if (strncmp(buf, "-----BEGIN ", 11) != 0 || strncmp(buf + 11, type, typel) != 0 || strncmp(buf + 11 + typel, "-----\n", 6) != 0)
+    return 0;
+  buf += 11 + 6 + typel;
+  x509_room(cb, strlen(buf) * 3 / 4 + 16);
+  bp = cb->buf + offset;
+  buf = r64dec(buf, &bp);
+  if (!buf)
+    return 0;
+  while (*buf == ' ' || *buf == '\t' || *buf == '\n' || *buf == '\r')
+    buf++;
+  if (strncmp(buf, "-----END ", 9) != 0 || strncmp(buf + 9, type, typel) != 0 || strncmp(buf + 9 + typel, "-----\n", 6) != 0)
+    return 0;
+  cb->len = bp - cb->buf;
+  return 1;
+}
+
+static int
+x509_unpack(unsigned char *bp, int l, unsigned char **dpp, int *dlp, int *clp, int expected)
+{
+  unsigned char *bporig = bp;
+  int tag = 0, tl = 0;
+  if (l >= 2)
+    {
+      tag = bp[0];
+      tl = bp[1];
+      bp += 2;
+      l -= 2;
+      if (tl >= 128)
+	{
+	  int ll = 0;
+	  tl -= 128;
+	  if (tl < 1 || tl > 4)
+	    {
+	      fprintf(stderr, "x509_unpack: unsupported len %d\n", tl);
+	      exit(1);
+	    }
+	  if (l < tl)
+	    {
+	      fprintf(stderr, "x509_unpack: EOF in len\n");
+	      exit(1);
+	    }
+	  for (; tl > 0; tl--, l--)
+	    ll = ll * 8 + *bp++;
+	  tl = ll;
+	}
+    }
+  if (tl < 0 || tl > l)
+    {
+      fprintf(stderr, "x509_unpack: unexpected EOF\n");
+      exit(1);
+    }
+  *dpp = bp;
+  *dlp = tl;
+  if (clp)
+    *clp = bp - bporig + tl;
+  if (expected && tag != expected)
+    {
+      fprintf(stderr, "x509_unpack: unexpeced tag %x, expected %x\n", tag, expected);
+      exit(1);
+    }
+  return tag;
+}
+
+static int
+x509_unpack_tag(unsigned char *bp, int l)
+{
+  return l < 2 ? 0 : bp[0];
+}
+
+static void
+x509_skip(unsigned char **bpp, int *lp, int expected)
+{
+  unsigned char *dp;
+  int dl, cl;
+  x509_unpack(*bpp, *lp, &dp, &dl, &cl, expected);
+  *bpp = dp + dl;
+  *lp -= cl;
+}
+
+/* pkcs7 stuff
+ *
+ * general info: rfc2315
+ * spc info: http://download.microsoft.com/download/9/c/5/9c5b2167-8017-4bae-9fde-d599bac8184a/authenticode_pe.docx
+ * 
+ */
+
+void
+x509_spccontent(struct x509 *cb, unsigned char *digest, int digestlen)
+{
+  static byte spcinfodata[] = {
+    0x30, 0x35, 0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x01, 0x1e, 0x30, 0x27,
+    0x02, 0x04, 0x01, 0x01, 0x00, 0x00, 0x04, 0x10, 0x4b, 0xdf, 0xc5, 0x0a, 0x07, 0xce, 0xe2, 0x4d,
+    0xb7, 0x6e, 0x23, 0xc8, 0x39, 0xa0, 0x9f, 0xd1, 0x02, 0x01, 0x00, 0x02, 0x01, 0x00, 0x02, 0x01,
+    0x00, 0x02, 0x01, 0x00, 0x02, 0x01, 0x00
+  };
+  int offset = cb->len;
+
+  x509_add(cb, digest, digestlen);
+  x509_tag(cb, offset, 0x04);
+  x509_insert_const(cb, offset, digest_algo_sha256);
+  x509_tag(cb, offset, 0x30);
+  x509_insert(cb, offset, spcinfodata, sizeof(spcinfodata));
+}
+
+static void
+x509_issuerandserial(struct x509 *cb, unsigned char *cert, int certlen)
+{
+  int offset = cb->len;
+  unsigned char *dp;
+  int dl, cl;
+  unsigned char *serial;
+  int seriallen;
+
+  x509_unpack(cert, certlen, &cert, &certlen, 0, 0x30);
+  x509_unpack(cert, certlen, &cert, &certlen, 0, 0x30);
+  if (x509_unpack_tag(cert, certlen) == 0xa0)
+    x509_skip(&cert, &certlen, 0xa0);	/* skip version */
+  x509_unpack(cert, certlen, &dp, &dl, &cl, 0x02);
+  serial = cert;
+  seriallen = cl;
+  cert = dp + dl;
+  certlen -= cl;
+  x509_skip(&cert, &certlen, 0x30);	/* skip signature algorithm */
+  x509_unpack(cert, certlen, &dp, &dl, &cl, 0x30);
+  x509_add(cb, cert, cl);
+  x509_add(cb, serial, seriallen);
+  x509_tag(cb, offset, 0x30);
+}
+
+void
+x509_signedattrs(struct x509 *cb, unsigned char *digest, int digestlen, time_t signtime)
+{
+  int offset = cb->len, offset2;
+
+  /* opusinfo attribute */
+  offset2 = cb->len;
+  x509_tag(cb, offset2, 0x30);
+  x509_tag(cb, offset2, 0x31);
+  x509_insert_const(cb, offset2, oid_spc_spopusinfo);
+  x509_tag(cb, offset2, 0x30);
+  /* contenttype attribute */
+  offset2 = cb->len;
+  x509_add_const(cb, oid_spc_indirect_data);
+  x509_tag(cb, offset2, 0x31);
+  x509_insert_const(cb, offset2, oid_contenttype);
+  x509_tag(cb, offset2, 0x30);
+  /* signingtime attribute */
+  if (signtime)
+    {
+      offset2 = cb->len;
+      x509_time(cb, signtime);
+      x509_tag(cb, offset2, 0x31);
+      x509_insert_const(cb, offset2, oid_signingtime);
+      x509_tag(cb, offset2, 0x30);
+    }
+  /* statementtype attribute */
+  offset2 = cb->len;
+  x509_add_const(cb, oid_ms_codesigning);
+  x509_tag(cb, offset2, 0x30);
+  x509_tag(cb, offset2, 0x31);
+  x509_insert_const(cb, offset2, oid_spc_statementtype);
+  x509_tag(cb, offset2, 0x30);
+  /* message digest attribute */
+  offset2 = cb->len;
+  x509_add(cb, digest, digestlen);
+  x509_tag(cb, offset2, 0x04);
+  x509_tag(cb, offset2, 0x31);
+  x509_insert_const(cb, offset2, oid_messagedigest);
+  x509_tag(cb, offset2, 0x30);
+  /* return a set */
+  x509_tag(cb, offset, 0x31);
+}
+
+static void
+x509_signerinfo(struct x509 *cb, struct x509 *signedattrs, struct x509 *cert, unsigned char *sig, int siglen)
+{
+  int offset = cb->len, offset2;
+  x509_add_const(cb, int_1);	/* version 1 */
+  /* issuer and serial number */
+  x509_issuerandserial(cb, cert->buf, cert->len);
+  x509_add_const(cb, digest_algo_sha256);
+  offset2 = cb->len;
+  x509_add(cb, signedattrs->buf, signedattrs->len);
+  x509_tag_impl(cb, offset2, 0xa0);	/* CONT | CONS | 0 */
+  x509_add_const(cb, enc_algo_rsa);
+  offset2 = cb->len;
+  x509_add(cb, sig, siglen);
+  x509_tag(cb, offset2, 0x04);
+  x509_tag(cb, offset, 0x30);
+}
+
+static int
+x509_identicalcert(struct x509 *cert, unsigned char *cert2, int cert2len)
+{
+  int offset, r;
+  struct x509 cb;
+  x509_init(&cb);
+  x509_issuerandserial(&cb, cert->buf, cert->len);
+  offset = cb.len;
+  x509_issuerandserial(&cb, cert2, cert2len);
+  r = cb.len == 2 * offset && memcmp(cb.buf, cb.buf + offset, offset) == 0;
+  x509_free(&cb);
+  return r;
+}
+
+static void
+x509_add_othercerts(struct x509 *cb, struct x509 *cert, struct x509 *othercerts)
+{
+  unsigned char *bp = othercerts->buf;
+  int l = othercerts->len;
+  while (l > 0)
+    {
+      unsigned char *dp;
+      int dl, cl;
+      x509_unpack(bp, l, &dp, &dl, &cl, 0x30);
+      if (!x509_identicalcert(cert, bp, cl))
+	x509_add(cb, bp, cl);
+      bp += cl;
+      l -= cl;
+    }
+}
+
+void
+x509_pkcs7(struct x509 *cb, struct x509 *content, struct x509 *signedattrs, unsigned char *sig, int siglen, struct x509 *cert, struct x509 *othercerts)
+{
+  int offset = cb->len, offset2;
+  x509_add_const(cb, digest_algo_sha256);
+  x509_tag(cb, offset, 0x31);
+  x509_insert_const(cb, offset, int_1);
+  /* contentinfo */
+  offset2 = cb->len;
+  x509_add(cb, content->buf, content->len);
+  x509_tag(cb, offset2, 0x30);
+  x509_tag(cb, offset2, 0xa0);	/* CONT | CONS | 0 */
+  x509_insert_const(cb, offset2, oid_spc_indirect_data);
+  x509_tag(cb, offset2, 0x30);
+  /* certs */
+  offset2 = cb->len;
+  x509_add(cb, cert->buf, cert->len);
+  if (othercerts)
+    x509_add_othercerts(cb, cert, othercerts);
+  x509_tag(cb, offset2, 0xa0);	/* CONT | CONS | 0 */
+  /* signerinfos */
+  offset2 = cb->len;
+  x509_signerinfo(cb, signedattrs, cert, sig, siglen);
+  x509_tag(cb, offset2, 0x31);
+  /* finish */
+  x509_tag(cb, offset, 0x30);
+  x509_tag(cb, offset, 0xa0);	/* CONT | CONS | 0 */
+  x509_insert_const(cb, offset, oid_pkcs7_signed_data);
+  x509_tag(cb, offset, 0x30);
 }
