@@ -66,7 +66,7 @@ r64dec1(char *p, unsigned int *vp, int *eofp)
         x = 62;
       else if (x == '/')
         x = 63;
-      else if (x == '=')
+      else if (x == '=' || x == '-')
         {
           x = 0;
           if (i == 0)
