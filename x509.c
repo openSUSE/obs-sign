@@ -388,7 +388,7 @@ x509_unpack(unsigned char *bp, int l, unsigned char **dpp, int *dlp, int *clp, i
 	      exit(1);
 	    }
 	  for (; tl > 0; tl--, l--)
-	    ll = ll * 8 + *bp++;
+	    ll = (ll << 8) + *bp++;
 	  tl = ll;
 	}
     }
