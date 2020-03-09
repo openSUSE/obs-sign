@@ -21,7 +21,7 @@ Summary:        The sign daemon
 License:        GPL-2.0-only
 Group:          Productivity/Networking/Web/Utilities
 
-Version:        2.5.3
+Version:        2.5.5
 Release:        0
 
 Url:            http://en.opensuse.org/Build_Service
@@ -29,7 +29,7 @@ Source:         obs-sign-%version.tar.xz
 Source1:        obs-signd-rpmlintrc
 Requires:       gpg2_signd_support
 %if 0%{?suse_version}
-PreReq:         %fillup_prereq %insserv_prereq permissions
+PreReq:         %fillup_prereq permissions
 %endif
 BuildRoot:      %{_tmppath}/%{name}-%{version}-build
 
@@ -62,9 +62,9 @@ make test
 
 %install
 # run level script
-mkdir -p %{buildroot}/etc/init.d/ %{buildroot}/usr/sbin
-install -m 0755 dist/obssignd %{buildroot}/etc/init.d/
-ln -sf /etc/init.d/obssignd %{buildroot}/usr/sbin/rcobssignd
+mkdir -p %{buildroot}%{_unitdir}
+install -m 0755 dist/signd.service %{buildroot}%{_unitdir}/obssignd.service
+ln -sf /usr/sbin/service %{buildroot}%{_sbindir}/rcobssignd
 
 # man pages
 install -d -m 0755 %{buildroot}%{_mandir}/man{5,8}
@@ -91,17 +91,22 @@ install -m 0644 dist/sysconfig.signd $FILLUP_DIR/
 %pre
 /usr/sbin/groupadd -r obsrun 2> /dev/null || :
 /usr/sbin/useradd -r -o -s /bin/false -c "User for build service backend" -d /usr/lib/obs -g obsrun obsrun 2> /dev/null || :
+%service_add_pre obssignd.service
 
 %preun
-%stop_on_removal obssignd
+%service_del_preun obssignd.service
 
 %post
+%service_add_post obssignd.service
 %if 0%{?suse_version} > 1220
 %set_permissions /etc/permissions.d/sign
 %else
 %run_permissions
 %endif
-%fillup_and_insserv
+%fillup_only
+
+%postun
+%service_del_postun obssignd.service
 
 %files
 %defattr(-,root,root)
@@ -109,7 +114,7 @@ install -m 0644 dist/sysconfig.signd $FILLUP_DIR/
 %verify(not mode) %attr(4750,root,obsrun) /usr/bin/sign
 %attr(0755,root,root) /usr/sbin/signd
 %attr(0755,root,root) /usr/sbin/rcobssignd
-%attr(0755,root,root) /etc/init.d/obssignd
+%attr(0644,root,root) %{_unitdir}/obssignd.service
 %{_fillupdir}/sysconfig.signd
 /etc/permissions.d/sign
 %doc %{_mandir}/man*/*
