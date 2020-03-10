@@ -64,6 +64,7 @@ make test
 # run level script
 mkdir -p %{buildroot}%{_unitdir}
 install -m 0755 dist/signd.service %{buildroot}%{_unitdir}/obssignd.service
+install -d -m 0755 %{buildroot}%{_sbindir}
 ln -sf /usr/sbin/service %{buildroot}%{_sbindir}/rcobssignd
 
 # man pages
