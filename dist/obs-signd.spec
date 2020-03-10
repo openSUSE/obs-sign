@@ -31,7 +31,6 @@ Requires:       gpg2_signd_support
 %if 0%{?suse_version}
 PreReq:         %fillup_prereq permissions
 %endif
-BuildRoot:      %{_tmppath}/%{name}-%{version}-build
 
 %if ! %{defined _fillupdir}
   %define _fillupdir /var/adm/fillup-templates
