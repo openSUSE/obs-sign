@@ -104,7 +104,7 @@ install -m 0644 dist/sysconfig.signd $FILLUP_DIR/
 %else
 %run_permissions
 %endif
-%fillup_only
+%fillup_only -n signd
 
 %postun
 %service_del_postun obssignd.service
