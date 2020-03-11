@@ -1,10 +1,9 @@
 ## Path:        Applications/OBS
 ## Description: Define gpgp home directory for signing daemon
 ## Type:        string
-## Default:     ""
+## Default:     "/srv/obs/gnupg"
 ## Config:      OBS
 #
 # An empty setting will lead to a check for /obs/gnupg or /srv/obs/gnupg
 #
-OBS_SIGND_GNUPG_HOME=""
-
+GNUPGHOME="/srv/obs/gnupg"
