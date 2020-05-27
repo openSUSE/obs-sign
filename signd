@@ -42,6 +42,7 @@ my $tmpdir = '/var/run/signd';
 my $patchclasstime;
 my $conf = '/etc/sign.conf';
 my $allow_unprivileged_ports = 0;
+my $logfile;
 my @pinentrymode;
 
 # request data
@@ -376,6 +377,10 @@ while(<F>) {
   if ($s[0] eq 'allow-unprivileged-ports:') {
     $allow_unprivileged_ports = ($s[1] =~ /^true$/i) ? 1 : 0;
   }
+  if ($s[0] eq 'logfile:') {
+    $logfile = $s[1];
+    next;
+  }
 }
 
 my $myname = $phrases ? 'signd' : 'signproxy';
@@ -417,6 +422,10 @@ if (($ARGV[0] || '') eq '-f') {
 POSIX::setsid();
 $SIG{'PIPE'} = 'IGNORE'; 
 $| = 1;
+if ($logfile) {
+  open(STDOUT, '>>', $logfile) || die("Could not open $logfile: $!\n");
+  open(STDERR, ">&STDOUT");
+}
 printlog("$myname started");
 
 socket(MS , PF_INET, SOCK_STREAM, IPPROTO_TCP) || die "socket: $!\n";
