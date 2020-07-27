@@ -861,6 +861,11 @@ keyextend(char *expire, char *pubkey)
       fprintf(stderr, "self-sig does not expire\n");
       exit(1);
     }
+  if (now < pkcreat)
+    {
+      fprintf(stderr, "pubkey was created in the future\n");
+      exit(1);
+    }
   now = (now - pkcreat) + expdays * (24 * 3600);
   ex[0] = now >> 24;
   ex[1] = now >> 16;
