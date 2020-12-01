@@ -42,6 +42,7 @@ BuildRequires:  gpg2
 %else
 BuildRequires:  gpg
 %endif
+BuildRequires:  make
 BuildRequires:  openssl
 
 %description
