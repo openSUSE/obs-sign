@@ -28,6 +28,7 @@
 #define RPMSIGTAG_DSA   267		/* header only sig */
 #define RPMSIGTAG_RSA   268		/* header only sig */
 #define RPMSIGTAG_SHA1  269		/* header only hash */
+#define RPMSIGTAG_LONGSIZE 270
 #define RPMSIGTAG_SIZE 1000
 #define RPMSIGTAG_PGP  1002
 #define RPMSIGTAG_MD5  1004
@@ -422,7 +423,8 @@ rpm_readheaderpayload(struct rpmdata *rd, int fd, char *filename, HASH_CONTEXT *
   byte buf[8192];
   byte btbuf[4];
   MD5_CTX md5ctx;
-  u32 lensig, lenhdr;
+  u32 lenhdr;
+  unsigned long long lensig;
   int l, i;
   int buildtimeoff = 0;
 
@@ -494,7 +496,7 @@ rpm_readheaderpayload(struct rpmdata *rd, int fd, char *filename, HASH_CONTEXT *
     }
   if (rd->hdrin_size && lensig != rd->hdrin_size)
     {
-      fprintf(stderr, "%s: SIZE checksum error %u %u\n", filename, rd->hdrin_size, lensig);
+      fprintf(stderr, "%s: SIZE checksum error %llu %llu\n", filename, rd->hdrin_size, lensig);
       exit(1);
     }
   if (rd->hdrin_md5 && memcmp(rd->hdrin_md5, rd->rpmmd5sum, 16))

@@ -140,7 +140,7 @@ struct rpmdata {
   byte *rpmsig;         /* signature data (with room for two new signatures) */
 
   u32 rpmdataoff;
-  u32 hdrin_size;
+  unsigned long long hdrin_size;
   byte *hdrin_md5;      /* points into rpmsig */
   int gotsha1;          /* did we see a RPMSIGTAG_SHA1 tag? */
 
