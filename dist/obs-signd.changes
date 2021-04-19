@@ -1,4 +1,12 @@
 -------------------------------------------------------------------
+Mon Apr 19 11:44:05 CEST 2021 - mls@suse.de
+
+- update to version 2.5.7
+  * fix signing of rpms with a size greater than 4GByte
+  * keyextend: make sure that the pubkey does not come from the
+    future
+
+-------------------------------------------------------------------
 Wed Mar 11 17:31:56 CET 2020 - ro@suse.de
 
 - update to version 2.5.6
