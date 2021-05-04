@@ -410,7 +410,7 @@ rpm_readsigheader(struct rpmdata *rd, int fd, const char *filename)
 	      exit(1);
 	    }
 	  p = rd->rpmsig + rd->rpmsigcnt * 16 + (rsp[8] << 24 | rsp[9] << 16 | rsp[10] << 8 | rsp[11]);
-	  rd->hdrin_size = p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3];
+	  rd->hdrin_size = (u32)(p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]);
 	}
       rsp += 16;
     }
