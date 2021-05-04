@@ -1,4 +1,10 @@
 -------------------------------------------------------------------
+Tue May  4 13:38:16 CEST 2021 - mls@suse.de
+
+- update to version 2.5.8
+  * fix unsigned char -> signed int promotion
+
+-------------------------------------------------------------------
 Mon Apr 19 11:44:05 CEST 2021 - mls@suse.de
 
 - update to version 2.5.7
