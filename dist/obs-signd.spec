@@ -31,7 +31,6 @@ Requires:       gpg2_signd_support
 %if 0%{?suse_version}
 PreReq:         %fillup_prereq permissions
 %endif
-BuildRoot:      %{_tmppath}/%{name}-%{version}-build
 
 %if ! %{defined _fillupdir}
   %define _fillupdir /var/adm/fillup-templates
@@ -43,6 +42,7 @@ BuildRequires:  gpg2
 %else
 BuildRequires:  gpg
 %endif
+BuildRequires:  make
 BuildRequires:  openssl
 
 %description
@@ -110,7 +110,6 @@ install -m 0644 dist/sysconfig.signd $FILLUP_DIR/
 %service_del_postun obssignd.service
 
 %files
-%defattr(-,root,root)
 %config(noreplace) /etc/sign.conf
 %verify(not mode) %attr(4750,root,obsrun) /usr/bin/sign
 %attr(0755,root,root) /usr/sbin/signd
