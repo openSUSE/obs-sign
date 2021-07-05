@@ -28,6 +28,7 @@ Url:            http://en.opensuse.org/Build_Service
 Source:         obs-sign-%version.tar.xz
 Source1:        obs-signd-rpmlintrc
 Requires:       gpg2_signd_support
+Requires:       user(obsrun)
 %if 0%{?suse_version}
 PreReq:         %fillup_prereq permissions
 %endif
@@ -90,8 +91,6 @@ install -d -m 755 $FILLUP_DIR
 install -m 0644 dist/sysconfig.signd $FILLUP_DIR/
 
 %pre
-/usr/sbin/groupadd -r obsrun 2> /dev/null || :
-/usr/sbin/useradd -r -o -s /bin/false -c "User for build service backend" -d /usr/lib/obs -g obsrun obsrun 2> /dev/null || :
 %service_add_pre obssignd.service
 
 %preun
