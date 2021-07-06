@@ -632,7 +632,7 @@ sub rungpg_fatal {
 
 sub prepare_tmp_gnupghome {
   my ($tmpdir) = @_;
-  my $tdir = tempdir('XXXXXXXX', DIR => $tmpdir);
+  my $tdir = tempdir('XXXXXXXX', DIR => $tmpdir, CLEANUP => 1);
   chmod 0700, $tdir;
   mkdir("$tdir/gnupg", 0700) || die "Could not create $tdir/gnupg: $!\n";
   return ($tdir, "$tdir/gnupg");
