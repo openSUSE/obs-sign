@@ -1,6 +1,6 @@
 [Unit]
 Description=GPG Sign Daemon
-After=syslog.target
+After=syslog.target obsapisetup.service
 
 [Service]
 Type=forking

@@ -1,4 +1,18 @@
 -------------------------------------------------------------------
+Mon Jul 26 13:17:04 UTC 2021 - Frank Schreiner <frank@fs.samaxi.de>
+
+- update to version 2.5.10
+  * optional systemd dependency to start after obsapisetup.service 
+
+-------------------------------------------------------------------
+Mon Jul 26 13:14:37 UTC 2021 - Frank Schreiner <frank@fs.samaxi.de>
+
+- update to version 2.5.9
+  * Cleanup for tempdirs
+  * Require user(obsrun) in spec file
+  * fix references to var/run to silence systemd complaints
+
+-------------------------------------------------------------------
 Tue May  4 13:38:16 CEST 2021 - mls@suse.de
 
 - update to version 2.5.8
