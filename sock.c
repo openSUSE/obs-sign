@@ -37,6 +37,38 @@ extern char *test_sign;
 extern char *host;
 extern int port;
 extern uid_t uid;
+extern int allow_unprivileged_ports;
+
+/* Best effort bindresvport().  We still try, but we don't enforce binding to
+ * a privileged source port (works only if 'allow-unprivileged-ports' is 'true'
+ * both on the client and server side. */
+static void
+do_bindresvport(void)
+{
+  if (uid)
+    {
+      if (seteuid(0))
+	{
+	  if (allow_unprivileged_ports)
+	    /* go with an unprivileged src port */
+	    return;
+	  dodie_errno("seteuid (for bindresvport)");
+	}
+    }
+
+  while (bindresvport(sock, NULL) != 0)
+    {
+      if (errno != EADDRINUSE)
+	dodie_errno("bindresvport");
+      sleep(1);
+    }
+
+  if (uid)
+    {
+      if (seteuid(uid))
+	dodie_errno("seteuid");
+    }
+}
 
 void
 opensocket(void)
@@ -67,22 +99,9 @@ opensocket(void)
     }
   if ((sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0)
     dodie_errno("socket");
-  if (uid)
-    {
-      if (seteuid(0))
-        dodie_errno("seteuid");
-    }
-  while (bindresvport(sock, NULL) != 0)
-    {
-      if (errno != EADDRINUSE)
-        dodie_errno("bindresvport");
-      sleep(1);
-    }
-  if (uid)
-    {
-      if (seteuid(uid))
-        dodie_errno("seteuid");
-    }
+
+  do_bindresvport();
+
   if (connect(sock, (struct sockaddr *)&svt, sizeof(svt)))
     dodie_errno(host);
   optval = 1;

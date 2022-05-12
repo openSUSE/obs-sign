@@ -38,6 +38,7 @@
 char *host;
 int port = MYPORT;
 char *test_sign;
+int allow_unprivileged_ports = 0;
 static char *user;
 static char *algouser;
 static int allowuser;
@@ -1209,6 +1210,11 @@ read_sign_conf(const char *conf)
 	    hashalgo = HASH_SHA512;
 	  else
 	    dodie("sign.conf: unsupported hash argument");
+	}
+      if (!strcmp(buf, "allow-unprivileged-ports"))
+	{
+	  if (!strcmp(bp, "true"))
+	    allow_unprivileged_ports = 1;
 	}
       if (uid && !allowuser && !strcmp(buf, "allowuser"))
 	{
