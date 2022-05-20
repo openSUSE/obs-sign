@@ -3,10 +3,9 @@ Description=GPG Sign Daemon
 After=syslog.target obsapisetup.service
 
 [Service]
-Type=forking
 PIDFile=/run/signd.pid
 EnvironmentFile=-/etc/sysconfig/signd
-ExecStart=/usr/sbin/signd -f
+ExecStart=/usr/sbin/signd
 Restart=on-abort
 
 [Install]
