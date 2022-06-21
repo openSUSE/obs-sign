@@ -3,11 +3,18 @@
 use strict;
 use warnings;
 use bytes;
-use Test::More tests => 16;
+use Test::More tests => 18;
 use File::Temp qw/tempdir/;
 use File::Path qw/remove_tree make_path/;
 use Digest::SHA;
 use FindBin;
+
+my $have_gcrypt;
+eval {
+  require Crypt::GCrypt;
+  die unless defined &Crypt::GCrypt::pk_sign;
+  $have_gcrypt = 1;
+};
 
 my $user     = 'defaultkey@localobs';
 my $usersec  = 'defaultkeysec@localobs';
@@ -35,6 +42,7 @@ if (system("gpg --pinentry-mode=loopback --version >/dev/null 2>&1 </dev/null") 
 
 my $sign_conf = "$tmp_dir/sign.conf";
 $ENV{SIGN_CONF} = $sign_conf;
+$ENV{SIGN_GCRYPT} = 'disable';
 spew("$sign_conf", "user: $user
 server: 127.0.0.1
 tmpdir: $var_dir
@@ -108,10 +116,11 @@ my $arg = Digest::SHA::sha1_hex("$payload$trailer").'@'.unpack("H*", $trailer);
 
 ###############################################################################
 ### if ($cmd eq 'privsign') {
+$ENV{SIGN_GCRYPT} = 'disable';
 $cmd = "./signd -t privsign $user $keys[1] $arg";
 my $privsign_result = `$cmd`;
 
-is($?, 0, "Checking cmd 'privsign' return code");
+is($?, 0, "Checking cmd 'privsign' return code [gpg]");
 my @privsign = decode_reply($privsign_result);
 spew("$tmpdir/privsign", $payload);
 spew("$tmpdir/privsign.sig", $privsign[0]);
@@ -120,9 +129,32 @@ my $verify_privsign = `gpg --allow-non-selfsigned-uid --verify $tmpdir/privsign.
 like(
   $verify_privsign,
   qr/Good signature from/,
-  "Checking cmd 'privsign' for 'Good signature'"
+  "Checking cmd 'privsign' for 'Good signature' [gpg]"
 );
 $ENV{GNUPGHOME} = "$tmp_dir/gnupg";
+
+SKIP: {
+  skip('Crypt::GCrypt not available', 2) unless $have_gcrypt;
+  
+  $ENV{SIGN_GCRYPT} = 'force';
+  $cmd = "./signd -t privsign $user $keys[1] $arg";
+  my $privsign_result = `$cmd`;
+  $ENV{SIGN_GCRYPT} = 'disable';
+
+  is($?, 0, "Checking cmd 'privsign' return code [gcrypt]");
+  my @privsign = decode_reply($privsign_result);
+  spew("$tmpdir/privsign", $payload);
+  spew("$tmpdir/privsign.sig", $privsign[0]);
+  $ENV{GNUPGHOME} = $tmpgnupghome;
+  my $verify_privsign = `gpg --allow-non-selfsigned-uid --verify $tmpdir/privsign.sig 2>&1`;
+  like(
+    $verify_privsign,
+    qr/Good signature from/,
+    "Checking cmd 'privsign' for 'Good signature' [gcrypt]"
+  );
+  $ENV{GNUPGHOME} = "$tmp_dir/gnupg";
+}
+
 
 my $expired_key = slurp("$FindBin::Bin/fixtures/secret-key-expired-encrypted");
 chomp($expired_key);
@@ -191,6 +223,7 @@ sub spew {
 
 sub decode_reply {
   my ($reply, $oldproto)  = @_;
+  return () unless defined($reply) && $reply ne '';
   my @out_parts;
   my ($status, $l_out, $l_err) = unpack('nnn', $reply);
   my $out = substr($reply, 6, $l_out);

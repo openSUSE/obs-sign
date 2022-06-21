@@ -28,6 +28,14 @@ use Encode;
 use bytes;
 use File::Temp qw/tempdir/;
 use File::Path qw/remove_tree/;
+use Digest::SHA;
+
+my $have_gcrypt;
+eval {
+  require Crypt::GCrypt;
+  die unless defined &Crypt::GCrypt::pk_sign;
+  $have_gcrypt = 1;
+};
 
 my @allows;
 my %map;
@@ -131,7 +139,7 @@ sub encodetag {
 }
 
 sub priv2pub {
-  my ($privkey) = @_;
+  my ($privkey, $infos) = @_;
   my $pubkey = '';
 
   while ($privkey ne '') {
@@ -161,25 +169,43 @@ sub priv2pub {
     } else {
       die("unknown public key version $pkver\n");
     }
+    my $info = $infos ? {} : undef;
+    push @$infos, $info if $info;
+    $info->{'algo'} = $pkalgo;
     my $mpinum;
-    if ($pkalgo == 1) {
-      # RSA
+    my $smpinum;
+    if ($pkalgo == 1) {				# RSA
       $mpinum = 2;
-    } elsif ($pkalgo == 17) {
+      $smpinum = 4;
+    } elsif ($pkalgo == 17) {			# DSA
       $mpinum = 4;
-    } elsif ($pkalgo == 16) {
+      $smpinum = 1;
+    } elsif ($pkalgo == 16 || $pkalgo == 20) {	# Elgamal
       $mpinum = 3;
-    } elsif ($pkalgo == 20) {
-      $mpinum = 3;
+      $smpinum = 1;
     } else {
       die("unknown public key algorithm $pkalgo\n");
     }
     while ($mpinum > 0) {
-      #print "MPI\n";
-      my $ml = unpack('n', substr($pack, $mpioff));
+      my $ml = unpack('n', substr($pack, $mpioff, 2));
       $ml = (($ml + 7) >> 3) + 2;
+      push @{$info->{'mpis'}}, substr($pack, $mpioff + 2, $ml - 2) if $info;
       $mpioff += $ml;
       $mpinum--;
+    }
+    if ($info) {
+      my $s2k = unpack('C', substr($pack, $mpioff, 1));
+      if ($s2k == 0) {
+        my $smpioff = $mpioff + 1;
+        while ($smpinum > 0) {
+          my $ml = unpack('n', substr($pack, $smpioff, 2));
+          $ml = (($ml + 7) >> 3) + 2;
+          push @{$info->{'smpis'}}, substr($pack, $smpioff + 2, $ml - 2);
+          $smpioff += $ml;
+          $smpinum--;
+	}
+      }
+      $info->{'fingerprint'} = Digest::SHA::sha1_hex(pack('Cn', 0x99, $mpioff).substr($pack, 0, $mpioff));
     }
     $pack = substr($pack, 0, $mpioff);
     $pubkey .= encodetag($ptag, $pack);
@@ -299,6 +325,37 @@ sub patchclasstime {
   return $sig;
 }
 
+sub sign_with_gcrypt {
+  my ($info, $hash, $hashalgo) = @_;
+  die("sign_with_gcrypt: missing fingerprint\n") unless $info->{'fingerprint'};
+  my $issuer = substr($info->{'fingerprint'}, -16);
+  die("bad hash $hash\n") unless $hash =~ /^((?:[0-9a-fA-F][0-9a-fA-F])+)\@(0[01][0-9a-fA-F]{8})$/;
+  my $extra = $2;
+  $hash = pack('H*', $1);
+  $hashalgo = lc($hashalgo);
+  my $pgphashalgo;
+  $pgphashalgo = 2 if $hashalgo eq 'sha1';
+  $pgphashalgo = 8 if $hashalgo eq 'sha256';
+  $pgphashalgo = 10 if $hashalgo eq 'sha512';
+  die("sign_with_gcrypt: bad hashalgo $hashalgo\n") unless $pgphashalgo;
+  die("sign_with_gcrypt: only RSA supported\n") unless $info->{'algo'} == 1;
+  die("sign_with_gcrypt: missing MPIs\n") unless @{$info->{'mpis'} || []} == 2 && @{$info->{'smpis'} || []} == 4;
+  my $n = Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $info->{'mpis'}->[0]);
+  my $e = Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $info->{'mpis'}->[1]);
+  my $d = Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $info->{'smpis'}->[0]);
+  my $p = Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $info->{'smpis'}->[1]);
+  my $q = Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $info->{'smpis'}->[2]);
+  my $u = Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $info->{'smpis'}->[3]);
+  my $data = Crypt::GCrypt::Sexp->build("(data (flags pkcs1) (hash $hashalgo %b))", $hash);
+  my $skey = Crypt::GCrypt::Sexp->build("(private-key (rsa (n %M) (e %M) (d %M) (p %M) (q %M) (u %M)))", $n, $e, $d, $p, $q, $u);
+  my $res = Crypt::GCrypt::pk_sign($data, $skey);
+  my $sv = $res->nth_mpi(1, Crypt::GCrypt::MPI::FMT_USG(), 's');
+  die("could not extract sign result\n") unless $sv;
+  my $sigdata = $sv->print(Crypt::GCrypt::MPI::FMT_PGP());
+  my $v3sig = pack('CCH10H16CCa2', 3, 5, $extra, $issuer, $info->{'algo'}, $pgphashalgo, substr($hash, 0, 2)).$sigdata;
+  return encodetag(2, $v3sig);
+}
+
 sub swrite {
   my ($sock, $data) = @_;
   local *S = $sock;
@@ -319,10 +376,15 @@ sub checkbadchar {
   die("$what is not utf-8\n") if $@;
 }
 
-local *F;
 my $testmode = (($ARGV[0] || '') eq '-t') ? 1 : 0;
 $testmode = 2 if ($ARGV[0] || '') eq '--test-sign';
-$conf = $ENV{SIGN_CONF} if $testmode && $ENV{SIGN_CONF};
+if ($testmode) {
+  $conf = $ENV{SIGN_CONF} if $ENV{SIGN_CONF};
+  die("Crypt::GCrypt is not available\n") if ($ENV{SIGN_GCRYPT} || '') eq 'force' && !$have_gcrypt;
+  undef $have_gcrypt if ($ENV{SIGN_GCRYPT} || '') eq 'disable';
+}
+
+local *F;
 open(F, '<', $conf) || die("$conf: $!\n");
 while(<F>) {
   chomp;
@@ -816,6 +878,32 @@ sub cmd_privsign {
   close(F) || die("encoded privkey close error\n");
   $privkey = rungpg_fatal("$phrases/$user", ["$tmpdir/privkey.$$"], $gpg, '--batch', '--decrypt', '--no-verbose', '-q', '--no-secmem-warning', @pinentrymode, '--passphrase-fd=0', "$tmpdir/privkey.$$");
   unlink("$tmpdir/privkey.$$");
+  my @infos;
+  my $pubkey = priv2pub($privkey, $have_gcrypt ? \@infos : undef);
+  if ($have_gcrypt && @infos == 1 && $infos[0]->{'algo'} == 1 && $infos[0]->{'smpis'}) {
+    my $info = $infos[0];
+    my $status = 0;
+    my $err = '';
+    my @out;
+    while (@args) {
+      my $lout = '';
+      my $classtime;
+      if ($patchclasstime && ($args[0] =~ /\@([0-9a-fA-F]{10})$/s)) {
+	$classtime = $1;
+	$args[0] = substr($args[0], 0, -10)."0000000000";
+      }
+      eval { $lout = sign_with_gcrypt($info, $args[0], $hashalgo) };
+      if ($@) {
+        $err .= $@;
+	$status = 1;
+      }
+      $lout = patchclasstime($lout, $classtime) if $classtime && !$status;
+      shift @args;
+      push @out, $lout;
+      last if $status;
+    }
+    return ($status, $err, @out);
+  }
   # create import data: pubkey pkg, user pkg, privkey pkg, user pkg
   $privkey = priv2pub($privkey).encodetag(13, 'privsign').striptofirst($privkey).encodetag(13, 'privsign');
   open(F, ">$tmpdir/privkey.$$") || die("$tmpdir/privkey.$$: $!\n");
@@ -828,7 +916,6 @@ sub cmd_privsign {
   unlink("$tmpdir/privkey.$$");
   my $status = 0;
   my $err = '';
-  my $out = '';
   my @out;
   while (@args) {
     my ($lout, $lerr);
@@ -845,6 +932,7 @@ sub cmd_privsign {
     last if $status;
   }
   remove_tree($tdir);
+  $ENV{GNUPGHOME} = $oldgpghome;
   return ($status, $err, @out);
 }
 
