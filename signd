@@ -340,12 +340,7 @@ sub sign_with_gcrypt {
   die("sign_with_gcrypt: bad hashalgo $hashalgo\n") unless $pgphashalgo;
   die("sign_with_gcrypt: only RSA supported\n") unless $info->{'algo'} == 1;
   die("sign_with_gcrypt: missing MPIs\n") unless @{$info->{'mpis'} || []} == 2 && @{$info->{'smpis'} || []} == 4;
-  my $n = Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $info->{'mpis'}->[0]);
-  my $e = Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $info->{'mpis'}->[1]);
-  my $d = Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $info->{'smpis'}->[0]);
-  my $p = Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $info->{'smpis'}->[1]);
-  my $q = Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $info->{'smpis'}->[2]);
-  my $u = Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $info->{'smpis'}->[3]);
+  my ($n, $e, $d, $p, $q, $u) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$info->{'mpis'}}, @{$info->{'smpis'}};
   my $data = Crypt::GCrypt::Sexp->build("(data (flags pkcs1) (hash $hashalgo %b))", $hash);
   my $skey = Crypt::GCrypt::Sexp->build("(private-key (rsa (n %M) (e %M) (d %M) (p %M) (q %M) (u %M)))", $n, $e, $d, $p, $q, $u);
   my $res = Crypt::GCrypt::pk_sign($data, $skey);
