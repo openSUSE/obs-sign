@@ -569,16 +569,11 @@ sub readreq {
   return @argv;
 }
 
-# proxy a request to another sign server
-sub doproxy {
-  my ($cmd, $user, $hashalgo, @args) = @_;
-  unshift @args, $cmd, $user;
-  $args[1] = "$hashalgo:$user" if $hashalgo ne 'SHA1';
-
-  #forward to next server
-  socket(CS , PF_INET, SOCK_STREAM, IPPROTO_TCP) || die("socket: $!\n");
+sub bindreservedport {
+  my ($sock) = @_;
+  local *S = $sock;
   my %blacklist;
-  # bindresvport
+  local *BL;
   if (open(BL, "</etc/bindresvport.blacklist")) {
     while(<BL>) {
       chomp;
@@ -587,15 +582,25 @@ sub doproxy {
     }
     close BL;
   }
-  my $po;
   while (1) {
+    my $po;
     for ($po = 600; $po < 1024; $po++) {
       next if $blacklist{$po};
-      last if bind(CS, sockaddr_in($po, INADDR_ANY));
+      return if bind(S, sockaddr_in($po, INADDR_ANY));
     }
-    last if $po < 1024;
     sleep(3);
   }
+}
+
+# proxy a request to another sign server
+sub doproxy {
+  my ($cmd, $user, $hashalgo, @args) = @_;
+  unshift @args, $cmd, $user;
+  $args[1] = "$hashalgo:$user" if $hashalgo ne 'SHA1';
+
+  #forward to next server
+  socket(CS , PF_INET, SOCK_STREAM, IPPROTO_TCP) || die("socket: $!\n");
+  bindreservedport(*CS);
   my $pack;
   if ($args[0] eq 'sign' && $oldproto) {
     my $arg = $args[2];
