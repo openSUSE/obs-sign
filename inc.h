@@ -5,10 +5,12 @@
 #include <unistd.h>
 
 typedef unsigned int u32;
+typedef unsigned long long u64;
 typedef unsigned char byte;
 
 #define HASH_SHA1       0
 #define HASH_SHA256     1
+#define HASH_SHA512     2
 
 #define PUB_DSA         0
 #define PUB_RSA         1
@@ -31,6 +33,13 @@ typedef struct {
     int  count;
 } SHA256_CONTEXT;
 
+typedef struct {
+    u64  h0,h1,h2,h3,h4,h5,h6,h7;
+    u64  nblocks;
+    byte buf[128];
+    int  count;
+} SHA512_CONTEXT;
+
 typedef struct MD5Context {
         u32 buf[4];
         u32 bits[2];
@@ -40,6 +49,7 @@ typedef struct MD5Context {
 typedef union {
   SHA1_CONTEXT sha1;
   SHA256_CONTEXT sha256;
+  SHA512_CONTEXT sha512;
 } HASH_CONTEXT;
 
 void sha1_init(SHA1_CONTEXT *hd);
@@ -51,6 +61,11 @@ void sha256_init(SHA256_CONTEXT *hd);
 void sha256_write(SHA256_CONTEXT *hd, const byte *inbuf, size_t inlen);
 void sha256_final(SHA256_CONTEXT *hd);
 byte *sha256_read(SHA256_CONTEXT *hd);
+
+void sha512_init(SHA512_CONTEXT *hd);
+void sha512_write(SHA512_CONTEXT *hd, const byte *inbuf, size_t inlen);
+void sha512_final(SHA512_CONTEXT *hd);
+byte *sha512_read(SHA512_CONTEXT *hd);
 
 void md5_init(struct MD5Context *ctx);
 void md5_write(struct MD5Context *ctx, byte const *buf, u32 len);

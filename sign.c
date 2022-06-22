@@ -44,8 +44,8 @@ static int allowuser;
 static int verbose;
 uid_t uid;
 
-static const char *const hashname[] = {"SHA1", "SHA256"};
-static const int  hashlen[] = {20, 32};
+static const char *const hashname[] = {"SHA1", "SHA256", "SHA512"};
+static const int  hashlen[] = {20, 32, 64};
 
 int hashalgo = HASH_SHA1;
 static const char *timearg;
@@ -73,10 +73,11 @@ static struct x509 othercerts;
 #define MODE_CREATECERT   10
 #define MODE_APPIMAGESIGN 11
 #define MODE_APPXSIGN	  12
+#define MODE_HASHFILE	  13
 
 static const char *const modes[] = {
   "?", "rpm sign", "clear sign", "detached sign", "keyid", "pubkey", "keygen", "keyextend",
-  "raw detached sign" "raw openssl sign" "cert create", "appimage sign", "appx sign"
+  "raw detached sign" "raw openssl sign" "cert create", "appimage sign", "appx sign", "hashfile"
 };
 
 static void
@@ -1354,6 +1355,34 @@ readothercerts(struct x509 *othercerts, char *certfile)
   x509_insert(othercerts, 0, (unsigned char *)buf, l);
 }
 
+void
+hashfile(char *filename, int isfilter)
+{
+  int l, i, fd;
+  char hashhex[1024];
+  byte *p;
+  unsigned char buf[4096];
+
+  HASH_CONTEXT ctx;
+  if (isfilter)
+    fd = 0;
+  else if ((fd = open(filename, O_RDONLY)) == -1)
+    {
+      perror(filename);
+      exit(1);
+    }
+  hash_init(&ctx);
+  while ((l = read(fd, buf, sizeof(buf))) > 0)
+    hash_write(&ctx, buf, l);
+  hash_final(&ctx);
+  p = hash_read(&ctx);
+  for (i = 0; i < hashlen[hashalgo]; i++)
+    sprintf(hashhex + i * 2, "%02x", p[i]);
+  printf("%s\n", hashhex);
+  if (!isfilter)
+    close(fd);
+}
+
 void usage()
 {
     fprintf(stderr, "usage:  sign [-v] [options]\n\n"
@@ -1442,6 +1471,8 @@ main(int argc, char **argv)
 	    hashalgo = HASH_SHA1;
 	  else if (!strcasecmp(argv[1], "sha256"))
 	    hashalgo = HASH_SHA256;
+	  else if (!strcasecmp(argv[1], "sha512"))
+	    hashalgo = HASH_SHA512;
 	  else
 	    {
 	      fprintf(stderr, "sign: unknown hash algorithm '%s'\n", argv[1]);
@@ -1476,6 +1507,8 @@ main(int argc, char **argv)
 	mode = MODE_KEYEXTEND;
       else if (!strcmp(opt, "-C"))
 	mode = MODE_CREATECERT;
+      else if (!strcmp(opt, "--hashfile"))
+	mode = MODE_HASHFILE;
       else if (argc > 1 && !strcmp(opt, "-S"))
 	{
 	  chksumfile = argv[1];
@@ -1586,11 +1619,24 @@ main(int argc, char **argv)
     {
       if (argc != 1)
 	{
-	  fprintf(stderr, "usage: sign [-c|-d|-r|-a] [-u user] <file>\n");
+	  fprintf(stderr, "usage: sign -k [-u user]\n");
 	  exit(1);
 	}
       dov4sig = 0;	/* no need for the extra work */
       sign("<stdin>", 1, mode);
+      exit(0);
+    }
+  if (mode == MODE_HASHFILE)
+    {
+      if (argc == 1)
+        hashfile("<stdin>", 1);
+      else if (argc == 2)
+        hashfile(argv[1], 0);
+      else
+	{
+	  fprintf(stderr, "usage: sign --hashfile [-h algo] [file]\n");
+	  exit(1);
+	}
       exit(0);
     }
   if (mode == MODE_RAWOPENSSLSIGN)

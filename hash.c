@@ -358,6 +358,8 @@ sha1_read( SHA1_CONTEXT *hd )
 }
 
 /*****************************************************************/
+/* sha256                                                        */
+/*****************************************************************/
 
 void
 sha256_init( SHA256_CONTEXT *hd )
@@ -451,9 +453,16 @@ sha256_transform( SHA256_CONTEXT *hd, const byte *data )
       c=b;
       b=a;
       a=t1+t2;
-      /* printf("t=%d a=%08lX b=%08lX c=%08lX d=%08lX e=%08lX f=%08lX g=%08lX h=
-%08lX\n",t,a,b,c,d,e,f,g,h); */
+      /* printf("t=%d a=%08lX b=%08lX c=%08lX d=%08lX e=%08lX f=%08lX g=%08lX h=%08lX\n",t,a,b,c,d,e,f,g,h); */
     }
+
+#undef ROTR
+#undef Ch
+#undef Maj
+#undef Sum0
+#undef Sum1
+#undef S0
+#undef S1
 
   /* update chaining vars */
   hd->h0 += a;
@@ -572,6 +581,268 @@ sha256_final(SHA256_CONTEXT *hd)
 
 byte *
 sha256_read( SHA256_CONTEXT *hd )
+{
+    return hd->buf;
+}
+
+/*****************************************************************/
+/* sha512                                                        */
+/*****************************************************************/
+
+void
+sha512_init( SHA512_CONTEXT *hd )
+{
+    hd->h0 = 0x6a09e667f3bcc908ULL;
+    hd->h1 = 0xbb67ae8584caa73bULL;
+    hd->h2 = 0x3c6ef372fe94f82bULL;
+    hd->h3 = 0xa54ff53a5f1d36f1ULL;
+    hd->h4 = 0x510e527fade682d1ULL;
+    hd->h5 = 0x9b05688c2b3e6c1fULL;
+    hd->h6 = 0x1f83d9abfb41bd6bULL;
+    hd->h7 = 0x5be0cd19137e2179ULL;
+
+    hd->nblocks = 0;
+    hd->count = 0;
+}
+
+/****************
+ * Transform the message w which consists of 16 64-bit words
+ */
+static void
+sha512_transform( SHA512_CONTEXT *hd, const byte *data )
+{
+  u64 a,b,c,d,e,f,g,h;
+  u64 w[80];
+  int t;
+  static const u64 k[]=
+    {
+      0x428a2f98d728ae22ULL, 0x7137449123ef65cdULL, 0xb5c0fbcfec4d3b2fULL,
+      0xe9b5dba58189dbbcULL, 0x3956c25bf348b538ULL, 0x59f111f1b605d019ULL,
+      0x923f82a4af194f9bULL, 0xab1c5ed5da6d8118ULL, 0xd807aa98a3030242ULL,
+      0x12835b0145706fbeULL, 0x243185be4ee4b28cULL, 0x550c7dc3d5ffb4e2ULL,
+      0x72be5d74f27b896fULL, 0x80deb1fe3b1696b1ULL, 0x9bdc06a725c71235ULL,
+      0xc19bf174cf692694ULL, 0xe49b69c19ef14ad2ULL, 0xefbe4786384f25e3ULL,
+      0x0fc19dc68b8cd5b5ULL, 0x240ca1cc77ac9c65ULL, 0x2de92c6f592b0275ULL,
+      0x4a7484aa6ea6e483ULL, 0x5cb0a9dcbd41fbd4ULL, 0x76f988da831153b5ULL,
+      0x983e5152ee66dfabULL, 0xa831c66d2db43210ULL, 0xb00327c898fb213fULL,
+      0xbf597fc7beef0ee4ULL, 0xc6e00bf33da88fc2ULL, 0xd5a79147930aa725ULL,
+      0x06ca6351e003826fULL, 0x142929670a0e6e70ULL, 0x27b70a8546d22ffcULL,
+      0x2e1b21385c26c926ULL, 0x4d2c6dfc5ac42aedULL, 0x53380d139d95b3dfULL,
+      0x650a73548baf63deULL, 0x766a0abb3c77b2a8ULL, 0x81c2c92e47edaee6ULL,
+      0x92722c851482353bULL, 0xa2bfe8a14cf10364ULL, 0xa81a664bbc423001ULL,
+      0xc24b8b70d0f89791ULL, 0xc76c51a30654be30ULL, 0xd192e819d6ef5218ULL,
+      0xd69906245565a910ULL, 0xf40e35855771202aULL, 0x106aa07032bbd1b8ULL,
+      0x19a4c116b8d2d0c8ULL, 0x1e376c085141ab53ULL, 0x2748774cdf8eeb99ULL,
+      0x34b0bcb5e19b48a8ULL, 0x391c0cb3c5c95a63ULL, 0x4ed8aa4ae3418acbULL,
+      0x5b9cca4f7763e373ULL, 0x682e6ff3d6b2b8a3ULL, 0x748f82ee5defb2fcULL,
+      0x78a5636f43172f60ULL, 0x84c87814a1f0ab72ULL, 0x8cc702081a6439ecULL,
+      0x90befffa23631e28ULL, 0xa4506cebde82bde9ULL, 0xbef9a3f7b2c67915ULL,
+      0xc67178f2e372532bULL, 0xca273eceea26619cULL, 0xd186b8c721c0c207ULL,
+      0xeada7dd6cde0eb1eULL, 0xf57d4f7fee6ed178ULL, 0x06f067aa72176fbaULL,
+      0x0a637dc5a2c898a6ULL, 0x113f9804bef90daeULL, 0x1b710b35131c471bULL,
+      0x28db77f523047d84ULL, 0x32caab7b40c72493ULL, 0x3c9ebe0a15c9bebcULL,
+      0x431d67c49c100d4cULL, 0x4cc5d4becb3e42b6ULL, 0x597f299cfc657e2aULL,
+      0x5fcb6fab3ad6faecULL, 0x6c44198c4a475817ULL
+    };
+
+  /* get values from the chaining vars */
+  a = hd->h0;
+  b = hd->h1;
+  c = hd->h2;
+  d = hd->h3;
+  e = hd->h4;
+  f = hd->h5;
+  g = hd->h6;
+  h = hd->h7;
+
+#ifdef BIG_ENDIAN_HOST
+  memcpy( w, data, 128 );
+#else
+  {
+    int i;
+    byte *p2;
+
+    for(i=0, p2=(byte*)w; i < 16; i++, p2 += 8 )
+      {
+        p2[7] = *data++;
+        p2[6] = *data++;
+        p2[5] = *data++;
+        p2[4] = *data++;
+        p2[3] = *data++;
+        p2[2] = *data++;
+        p2[1] = *data++;
+        p2[0] = *data++;
+      }
+  }
+#endif
+
+#define ROTR(x,n) (((x)>>(n)) | ((x)<<(64-(n))))
+#define Ch(x,y,z) (((x) & (y)) ^ ((~(x)) & (z)))
+#define Maj(x,y,z) (((x) & (y)) ^ ((x) & (z)) ^ ((y) & (z)))
+#define Sum0(x) (ROTR((x),28) ^ ROTR((x),34) ^ ROTR((x),39))
+#define Sum1(x) (ROTR((x),14) ^ ROTR((x),18) ^ ROTR((x),41))
+#define S0(x) (ROTR((x),1) ^ ROTR((x),8) ^ ((x)>>7))
+#define S1(x) (ROTR((x),19) ^ ROTR((x),61) ^ ((x)>>6))
+
+  for(t=16;t<80;t++)
+    w[t] = S1(w[t-2]) + w[t-7] + S0(w[t-15]) + w[t-16];
+
+  for(t=0;t<80;t++)
+    {
+      u64 t1,t2;
+
+      t1=h+Sum1(e)+Ch(e,f,g)+k[t]+w[t];
+      t2=Sum0(a)+Maj(a,b,c);
+      h=g;
+      g=f;
+      f=e;
+      e=d+t1;
+      d=c;
+      c=b;
+      b=a;
+      a=t1+t2;
+      /* printf("t=%d a=%016llX b=%016llX c=%016llX d=%016llX e=%016llX f=%016llX g=%016llX h=%016llX\n",t,a,b,c,d,e,f,g,h); */
+    }
+
+#undef ROTR
+#undef Ch
+#undef Maj
+#undef Sum0
+#undef Sum1
+#undef S0
+#undef S1
+
+  /* update chaining vars */
+  hd->h0 += a;
+  hd->h1 += b;
+  hd->h2 += c;
+  hd->h3 += d;
+  hd->h4 += e;
+  hd->h5 += f;
+  hd->h6 += g;
+  hd->h7 += h;
+}
+
+/* Update the message digest with the contents
+ * of INBUF with length INLEN.
+ */
+void
+sha512_write( SHA512_CONTEXT *hd, const byte *inbuf, size_t inlen)
+{
+    if( hd->count == 128 ) { /* flush the buffer */
+        sha512_transform( hd, hd->buf );
+        burn_stack (768);
+        hd->count = 0;
+        hd->nblocks++;
+    }
+    if( !inbuf )
+        return;
+    if( hd->count ) {
+        for( ; inlen && hd->count < 128; inlen-- )
+            hd->buf[hd->count++] = *inbuf++;
+        sha512_write( hd, NULL, 0 );
+        if( !inlen )
+            return;
+    }
+
+    while( inlen >= 128 ) {
+        sha512_transform( hd, inbuf );
+        hd->count = 0;
+        hd->nblocks++;
+        inlen -= 128;
+        inbuf += 128;
+    }
+    burn_stack (768);
+    for( ; inlen && hd->count < 128; inlen-- )
+        hd->buf[hd->count++] = *inbuf++;
+}
+/* The routine final terminates the computation and
+ * returns the digest.
+ * The handle is prepared for a new cycle, but adding bytes to the
+ * handle will the destroy the returned buffer.
+ * Returns: 64 bytes representing the digest.
+ */
+
+void
+sha512_final(SHA512_CONTEXT *hd)
+{
+    u64 t, msb, lsb;
+    byte *p;
+
+    sha512_write(hd, NULL, 0); /* flush */;
+
+    t = hd->nblocks;
+    /* multiply by 128 to make a byte count */
+    lsb = t << 7;
+    msb = t >> 57;
+    /* add the count */
+    t = lsb;
+    if( (lsb += hd->count) < t )
+        msb++;
+    /* multiply by 8 to make a bit count */
+    t = lsb;
+    lsb <<= 3;
+    msb <<= 3;
+    msb |= t >> 61;
+
+    if( hd->count < 112 ) { /* enough room */
+        hd->buf[hd->count++] = 0x80; /* pad */
+        while( hd->count < 112 )
+            hd->buf[hd->count++] = 0;  /* pad */
+    }
+    else { /* need one extra block */
+        hd->buf[hd->count++] = 0x80; /* pad character */
+        while( hd->count < 128 )
+            hd->buf[hd->count++] = 0;
+        sha512_write(hd, NULL, 0);  /* flush */;
+        memset(hd->buf, 0, 112 ); /* fill next block with zeroes */
+    }
+    /* append the 128 bit count */
+    hd->buf[112] = msb >> 56;
+    hd->buf[113] = msb >> 48;
+    hd->buf[114] = msb >> 40;
+    hd->buf[115] = msb >> 32;
+    hd->buf[116] = msb >> 24;
+    hd->buf[117] = msb >> 16;
+    hd->buf[118] = msb >> 8;
+    hd->buf[119] = msb;
+
+    hd->buf[120] = lsb >> 56;
+    hd->buf[121] = lsb >> 48;
+    hd->buf[122] = lsb >> 40;
+    hd->buf[123] = lsb >> 32;
+    hd->buf[124] = lsb >> 24;
+    hd->buf[125] = lsb >> 16;
+    hd->buf[126] = lsb >> 8;
+    hd->buf[127] = lsb;
+
+    sha512_transform( hd, hd->buf );
+    burn_stack (768);
+
+    p = hd->buf;
+#ifdef BIG_ENDIAN_HOST
+#define X(a) do { *(u64*)p = hd->h##a ; p += 8; } while (0)
+#else /* little endian */
+#define X(a) do { *p++ = hd->h##a >> 56; *p++ = hd->h##a >> 48;       \
+                  *p++ = hd->h##a >> 40; *p++ = hd->h##a >> 32;       \
+                  *p++ = hd->h##a >> 24; *p++ = hd->h##a >> 16;       \
+                  *p++ = hd->h##a >> 8;  *p++ = hd->h##a; } while (0)
+#endif
+    X (0);
+    X (1);
+    X (2);
+    X (3);
+    X (4);
+    X (5);
+    /* Note that these last two chunks are included even for SHA384.
+       We just ignore them. */
+    X (6);
+    X (7);
+#undef X
+}
+
+byte *
+sha512_read( SHA512_CONTEXT *hd )
 {
     return hd->buf;
 }
@@ -804,6 +1075,8 @@ void hash_init(HASH_CONTEXT *c)
     sha1_init(&c->sha1);
   else if (hashalgo == HASH_SHA256)
     sha256_init(&c->sha256);
+  else if (hashalgo == HASH_SHA512)
+    sha512_init(&c->sha512);
 }
 
 void hash_write(HASH_CONTEXT *c, const unsigned char *b, size_t l)
@@ -812,6 +1085,8 @@ void hash_write(HASH_CONTEXT *c, const unsigned char *b, size_t l)
     sha1_write(&c->sha1, b, l);
   else if (hashalgo == HASH_SHA256)
     sha256_write(&c->sha256, b, l);
+  else if (hashalgo == HASH_SHA512)
+    sha512_write(&c->sha512, b, l);
 }
 
 void hash_final(HASH_CONTEXT *c)
@@ -820,6 +1095,8 @@ void hash_final(HASH_CONTEXT *c)
     sha1_final(&c->sha1);
   else if (hashalgo == HASH_SHA256)
     sha256_final(&c->sha256);
+  else if (hashalgo == HASH_SHA512)
+    sha512_final(&c->sha512);
 }
 
 unsigned char *hash_read(HASH_CONTEXT *c)
@@ -828,6 +1105,8 @@ unsigned char *hash_read(HASH_CONTEXT *c)
     return sha1_read(&c->sha1);
   else if (hashalgo == HASH_SHA256)
     return sha256_read(&c->sha256);
+  else if (hashalgo == HASH_SHA512)
+    return sha512_read(&c->sha512);
   return 0;
 }
 
