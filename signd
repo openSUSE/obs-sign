@@ -36,6 +36,7 @@ eval {
   require Crypt::GCrypt::MPI;
   require Crypt::GCrypt;
   die unless defined &Crypt::GCrypt::pk_sign;
+  Crypt::GCrypt::gcrypt_version();	# initialize lib
   $have_gcrypt = 1;
 };
 
