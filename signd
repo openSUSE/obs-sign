@@ -32,6 +32,8 @@ use Digest::SHA;
 
 my $have_gcrypt;
 eval {
+  require Crypt::GCrypt::Sexp;
+  require Crypt::GCrypt::MPI;
   require Crypt::GCrypt;
   die unless defined &Crypt::GCrypt::pk_sign;
   $have_gcrypt = 1;
