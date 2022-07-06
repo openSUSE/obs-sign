@@ -155,8 +155,8 @@ unarmor_pubkey(char *pubkey, int *pktlp)
 
 /* v4 signature support */
 
-static const int  hashpgpalgo[] = {2, 8};
-static const int  pubpgpalgo[] = {17, 1};
+static const int  hashpgpalgo[] = {2, 8, 10};
+static const int  pubpgpalgo[] = {17, 1, 22};
 
 static unsigned char
 v4sig_skel[] = {
@@ -542,6 +542,8 @@ findsigpubalgo(byte *pk, int pkl)
     return PUB_RSA;
   if (algo == 17)
     return PUB_DSA;
+  if (algo == 22)
+    return PUB_EDDSA;
   return -1;
 }
 

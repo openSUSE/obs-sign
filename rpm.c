@@ -35,8 +35,8 @@
 #define RPMSIGTAG_GPG  1005
 
 /* RPM constants */
-static const int  pubtag[]  = { RPMSIGTAG_GPG, RPMSIGTAG_PGP };
-static const int  pubtagh[] = { RPMSIGTAG_DSA, RPMSIGTAG_RSA };	/* header only tags */
+static const int  pubtag[]  = { RPMSIGTAG_GPG, RPMSIGTAG_PGP, RPMSIGTAG_GPG };
+static const int  pubtagh[] = { RPMSIGTAG_DSA, RPMSIGTAG_RSA, RPMSIGTAG_DSA };	/* header only tags */
 
 static ssize_t
 xread(int fd, void *buf, size_t count)

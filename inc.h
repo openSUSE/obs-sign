@@ -14,6 +14,7 @@ typedef unsigned char byte;
 
 #define PUB_DSA         0
 #define PUB_RSA         1
+#define PUB_EDDSA       2
 
 /* sign.c */
 extern int hashalgo;
