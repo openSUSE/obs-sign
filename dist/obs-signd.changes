@@ -1,4 +1,11 @@
 -------------------------------------------------------------------
+Wed Jul  6 13:34:39 CEST 2022 - mls@suse.de
+
+- update to version 2.6.0
+  * support signature creation with libgcrypt
+  * support sha512
+
+-------------------------------------------------------------------
 Mon Jul 26 13:17:04 UTC 2021 - Frank Schreiner <frank@fs.samaxi.de>
 
 - update to version 2.5.10
