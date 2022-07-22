@@ -1426,6 +1426,17 @@ main(int argc, char **argv)
       conf = getenv("SIGN_CONF");
       allowuser = 1;
     }
+  if (argc > 2 && !strcmp(argv[1], "--config"))
+    {
+      if (uid && !test_sign)
+	{
+	  fprintf(stderr, "sign: only root may use --config\n");
+	  exit(1);
+	}
+      conf = argv[2];
+      argc -= 2;
+      argv += 2;
+    }
   read_sign_conf(conf ? conf : "/etc/sign.conf");
 
   if (uid)
