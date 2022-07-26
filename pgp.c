@@ -213,6 +213,14 @@ v3tov4(unsigned char *v4sigtrail, unsigned char *v3sig, int v3siglen, int tail, 
     o = 3;
   else if (v3sig[0] == 0x8a)
     o = 5;
+  else if (v3sig[0] == 0xc2 && (v3sig[1] < 224 || v3sig[1] == 255))
+    {
+      o = 2;
+      if (v3sig[1] >= 192 && v3sig[1] < 224)
+        o = 3;
+      if (v3sig[1] == 255)
+        o = 5;
+    }
   else
     {
       fprintf(stderr, "bad answer package: %02x\n", v3sig[0]);
