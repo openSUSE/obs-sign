@@ -176,7 +176,7 @@ sub priv2pub {
     }
     my $info = $infos ? {} : undef;
     push @$infos, $info if $info;
-    $info->{'algo'} = $pkalgo;
+    $info->{'algo'} = $pkalgo if $info;
     my $mpinum;
     my $smpinum;
     if ($pkalgo == 1) {				# RSA
@@ -188,6 +188,13 @@ sub priv2pub {
     } elsif ($pkalgo == 16 || $pkalgo == 20) {	# Elgamal
       $mpinum = 3;
       $smpinum = 1;
+    } elsif ($pkalgo == 22) {			# EdDSA
+      $mpinum = 1;
+      $smpinum = 1;
+      my $oidlen = unpack('C', substr($pack, $mpioff));
+      die("bad curve len") if $oidlen == 0 || $oidlen == 255;
+      $info->{'curve'} = substr($pack, $mpioff + 1, $oidlen) if $info;
+      $mpioff += $oidlen + 1;
     } else {
       die("unknown public key algorithm $pkalgo\n");
     }
@@ -234,11 +241,72 @@ sub packlen {
   }
 }
 
+sub packtag {
+  return chr($_[0]).packlen(length($_[1])).$_[1];
+}
+
 sub packmpi {
   my ($mpi) = @_; 
   $mpi = chr(0).$mpi;
   $mpi = substr($mpi, 1) while length($mpi) > 1 && ord($mpi) == 0 && (ord(substr($mpi, 1, 1)) & 0x80) == 0;
   return chr(2).packlen(length($mpi)).$mpi;
+}
+
+sub priv2openssl_ed25519 {
+  my ($q, $s) = @_;
+  die("bad ed25519 Q\n") unless length($q) == 33 && unpack('C', $q) == 0x40;
+  die("bad ed25519 S\n") unless length($s) <= 32;
+  $s = "\0$s" while length($s) < 32;
+  my $asn1 = '';
+  $asn1 .= packtag(0x02, "\x00");			# INTEGER 0
+  $asn1 .= packtag(0x30, "\x06\x03\x2b\x65\x70");	# SEQUENCE(OID 1.3.101.112)
+  $asn1 .= packtag(0x04, packtag(0x04, $s));		# OCTET_STRING(OCTET_STRING(key))
+  $asn1 = packtag(0x30, $asn1);
+  my $base64 = encode_base64($asn1, '');
+  my $pem = "-----BEGIN PRIVATE KEY-----\n";
+  $pem .= "$_\n" for $base64 =~ /(.{1,64})/g;
+  $pem .= "-----END PRIVATE KEY-----\n";
+  return $pem;
+}
+
+sub priv2openssl_rsa {
+  my (@s) = @_;
+  # calculate missing stuff:
+  #        modulus           INTEGER,  -- n
+  #        publicExponent    INTEGER,  -- e
+  #        privateExponent   INTEGER,  -- d    2
+  #        prime1            INTEGER,  -- p    4
+  #        prime2            INTEGER,  -- q    3
+  #        exponent1         INTEGER,  -- d mod (p-1)
+  #        exponent2         INTEGER,  -- d mod (q-1)
+  #        coefficient       INTEGER,  -- (inverse of q) mod p
+  my $d = Math::BigInt->new('0x' . unpack('H*', $s[2]));
+  my $p = Math::BigInt->new('0x' . unpack('H*', $s[4]));
+  my $q = Math::BigInt->new('0x' . unpack('H*', $s[3]));
+  my $ex1 = $d->copy()->bmod($p->copy()->bdec());
+  my $ex2 = $d->copy()->bmod($q->copy()->bdec());
+  $ex1 = pack('H*', substr($ex1->as_hex(), 2));
+  $ex2 = pack('H*', substr($ex2->as_hex(), 2));
+
+  # asn1 encode
+  my $asn1 = '';
+  $asn1 .= packmpi(chr(0));
+  $asn1 .= packmpi($s[0]);
+  $asn1 .= packmpi($s[1]);
+  $asn1 .= packmpi($s[2]);
+  $asn1 .= packmpi($s[4]);
+  $asn1 .= packmpi($s[3]);
+  $asn1 .= packmpi($ex1);
+  $asn1 .= packmpi($ex2);
+  $asn1 .= packmpi($s[5]);
+  $asn1 = packtag(0x30, $asn1);
+
+  # pem encode
+  my $base64 = encode_base64($asn1, '');
+  my $pem = "-----BEGIN RSA PRIVATE KEY-----\n";
+  $pem .= "$_\n" for $base64 =~ /(.{1,64})/g;
+  $pem .= "-----END RSA PRIVATE KEY-----\n";
+  return $pem;
 }
 
 sub priv2openssl {
@@ -263,11 +331,24 @@ sub priv2openssl {
     } else {
       die("unknown public key version $pkver\n");
     }
-    die("not an RSA private key\n") unless $pkalgo == 1;
     $pack = substr($pack, $mpioff);
+    my ($mpinum, $smpinum, $curve);
+    if ($pkalgo == 22) {
+      my $curvelen = unpack('C', $pack);
+      die("bad EdDSA curve len\n") if $curvelen == 0 || $curvelen == 255 || $curvelen + 1 > length($pack);
+      $curve = substr($pack, 1, $curvelen);
+      $pack = substr($pack, $curvelen + 1);
+      $mpinum = 1;
+      $smpinum = 1;
+    } elsif ($pkalgo == 1) {
+      $mpinum = 2;
+      $smpinum = 4;
+    } else {
+      die("not an RSA or EdDSA private key\n");
+    }
     my @s;
-    for my $i (0, 1, 2, 3, 4, 5) {
-      if ($i == 2) {
+    for my $i (0..($mpinum + $smpinum - 1)) {
+      if ($i == $mpinum) {
         my $encrypted = unpack('C', $pack);
         die("private key is encrypted\n") if $encrypted;
         $pack = substr($pack, 1);
@@ -278,44 +359,9 @@ sub priv2openssl {
       push @s, substr($pack, 2, $ml);
       $pack = substr($pack, 2 + $ml);
     }
-    close(F);
-    # calculate missing stuff
-    # 
-    #        modulus           INTEGER,  -- n
-    #        publicExponent    INTEGER,  -- e
-    #        privateExponent   INTEGER,  -- d    2
-    #        prime1            INTEGER,  -- p    4
-    #        prime2            INTEGER,  -- q    3
-    #        exponent1         INTEGER,  -- d mod (p-1)
-    #        exponent2         INTEGER,  -- d mod (q-1)
-    #        coefficient       INTEGER,  -- (inverse of q) mod p
-    my $d = Math::BigInt->new('0x' . unpack('H*', $s[2]));
-    my $p = Math::BigInt->new('0x' . unpack('H*', $s[4]));
-    my $q = Math::BigInt->new('0x' . unpack('H*', $s[3]));
-    my $ex1 = $d->copy()->bmod($p->copy()->bdec());
-    my $ex2 = $d->copy()->bmod($q->copy()->bdec());
-    $ex1 = pack('H*', substr($ex1->as_hex(), 2));
-    $ex2 = pack('H*', substr($ex2->as_hex(), 2));
-
-    # asn1 encode
-    my $asn1 = '';
-    $asn1 .= packmpi(chr(0));
-    $asn1 .= packmpi($s[0]);
-    $asn1 .= packmpi($s[1]);
-    $asn1 .= packmpi($s[2]);
-    $asn1 .= packmpi($s[4]);
-    $asn1 .= packmpi($s[3]);
-    $asn1 .= packmpi($ex1);
-    $asn1 .= packmpi($ex2);
-    $asn1 .= packmpi($s[5]);
-    $asn1 = chr(0x30).packlen(length($asn1)).$asn1;
-
-    # pem encode
-    my $base64 = encode_base64($asn1, '');
-    my $pem = "-----BEGIN RSA PRIVATE KEY-----\n";
-    $pem .= "$_\n" for $base64 =~ /(.{1,64})/g;
-    $pem .= "-----END RSA PRIVATE KEY-----\n";
-    return $pem;
+    return priv2openssl_ed25519(@s) if $pkalgo == 22 && $curve eq "\x2b\x06\x01\x04\x01\xda\x47\x0f\x01";
+    return priv2openssl_rsa(@s) if $pkalgo == 1;
+    die("unsupported pubkey algorithm/curve\n");
   }
   die("no private key found\n");
 }
@@ -750,16 +796,28 @@ sub cmd_keygen {
   my $email = $args[3];
   checkbadchar($real, 'real name');
   checkbadchar($email, 'email');
-  die("bad type: $type\n") unless $type =~ /^(dsa|rsa)\@(1024|2048|4096)$/s;
-  my $length = $2;
-  $type = $1;
+  my $length;
+  if ($type eq 'ed25519') {
+    $length = 'Ed25519';
+    $type = 'EDDSA';
+  } else {
+    die("bad type: $type\n") unless $type =~ /^(dsa|rsa)\@(1024|2048|4096)$/s;
+    $length = $2;
+    $type = $1;
+  }
 
   my $org_gnupghome = $ENV{GNUPGHOME};
   my $tdir;
   ($tdir, $ENV{GNUPGHOME}) = prepare_tmp_gnupghome($tmpdir);
 
   # write params file
-  my $batch = "Key-Type: $type\nKey-Length: $length\nKey-Usage: sign\nName-Real: $real\nName-Email: $email\nExpire-Date: ${expire}d\n%no-protection\n";
+  my $batch;
+  if ($type eq 'EDDSA') {
+    $batch = "Key-Type: $type\nKey-Curve: $length\n";
+  } else {
+    $batch = "Key-Type: $type\nKey-Length: $length\n";
+  }
+  $batch .= "Key-Usage: sign\nName-Real: $real\nName-Email: $email\nExpire-Date: ${expire}d\n%no-protection\n";
   local *F;
   open(F, ">$tdir/params") || die("$tdir/params: $!\n");
   (syswrite(F, $batch) || 0) == length($batch) || die("keygen parameter write error\n");
