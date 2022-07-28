@@ -1065,6 +1065,8 @@ if (exists $map{"$hashalgo:$user"}) {
   $user = $map{$user};
 }
 $user = $signuser if $user eq '' && $signuser ne '';
+die("illegal user $user\n") if $user ne '' && ($user =~ /[\000-\037\/]/s || $user =~ /^\./s);
+die("illegal hashalgo $hashalgo\n") if $hashalgo ne '' && $hashalgo =~ /[\000-\037]/s;
 
 if (!$phrases || ($cmd ne 'ping' && $user eq '') || ($cmd ne 'ping' && ! -e "$phrases/$user")) {
   die("unknown key: $user\n") if $signhost eq '127.0.0.1' && $port eq $proxyport;
