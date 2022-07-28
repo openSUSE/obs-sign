@@ -70,6 +70,17 @@ Log requests to the specified filename instead of stdout.
 .BR gnupghome: " dirname"
 Configures the directory for gpg to use by setting the GNUPGHOME
 environment variable.
+.TP 4
+.BR use_agent: " true|false"
+Make signd directly talk to the gpg-agent for signing instead of
+calling gpg. This is the default if the --files-are-digest option
+is not available in gpg.
+.TP 4
+.BR keycache: " dirname"
+Cache the result of finding the signing key for a username. This
+is only done if the gpg-agent is used for signing. The cache
+is automatically invalidated if there is a change in the gpg
+keyring.
 
 .SH FILES
 .I /etc/sign.conf

@@ -20,7 +20,7 @@
 
 use strict;
 use warnings;
-use Socket qw/IPPROTO_TCP PF_INET SOCK_STREAM SOL_SOCKET SO_REUSEADDR SO_KEEPALIVE INADDR_ANY inet_aton inet_ntoa sockaddr_in getnameinfo/;
+use Socket qw/IPPROTO_TCP PF_INET PF_UNIX SOCK_STREAM SOL_SOCKET SO_REUSEADDR SO_KEEPALIVE INADDR_ANY inet_aton inet_ntoa sockaddr_in sockaddr_un getnameinfo/;
 use POSIX;
 use Math::BigInt;
 use MIME::Base64;
@@ -54,7 +54,10 @@ my $patchclasstime;
 my $conf = '/etc/sign.conf';
 my $allow_unprivileged_ports = 0;
 my $logfile;
+my $use_agent;
+my $agentsocket;
 my @pinentrymode;
+my $keycache = '';
 
 # request data
 my $oldproto = 0;
@@ -141,6 +144,14 @@ sub encodetag {
   } else {
     return pack("CCN", $tag + 192, 255, $l).$pack;
   }
+}
+
+sub encodetag_oldformat {
+  my ($tag, $pack) = @_;
+  my $l = length($pack);
+  return pack("CC", $tag * 4 + 128, $l).$pack if $l < 256;
+  return pack("Cn", $tag * 4 + 129, $l).$pack if $l < 65536;
+  return pack("CN", $tag * 4 + 130, $l).$pack;
 }
 
 sub priv2pub {
@@ -376,30 +387,41 @@ sub patchclasstime {
   return $sig;
 }
 
+sub get_pgphashalgo {
+  my ($hashalgo) = @_;
+  $hashalgo = lc($hashalgo);
+  return 2 if $hashalgo eq 'sha1';
+  return 8 if $hashalgo eq 'sha256';
+  return 10 if $hashalgo eq 'sha512';
+  return undef;
+}
+
+sub wrap_into_gpgsig_v3 {
+  my ($extra, $fingerprint, $pgppubalgo, $pgphashalgo, $hash, $sigdata) = @_;
+  my $v3sig = pack('CCH10H16CCH4', 3, 5, $extra, substr($fingerprint, -16), $pgppubalgo, $pgphashalgo, substr($hash, 0, 4)).$sigdata;
+  return encodetag_oldformat(2, $v3sig);
+}
+
 sub sign_with_gcrypt {
   my ($info, $hash, $hashalgo) = @_;
   die("sign_with_gcrypt: missing fingerprint\n") unless $info->{'fingerprint'};
   my $issuer = substr($info->{'fingerprint'}, -16);
   die("bad hash $hash\n") unless $hash =~ /^((?:[0-9a-fA-F][0-9a-fA-F])+)\@(0[01][0-9a-fA-F]{8})$/;
   my $extra = $2;
-  $hash = pack('H*', $1);
+  $hash = $1;
   $hashalgo = lc($hashalgo);
-  my $pgphashalgo;
-  $pgphashalgo = 2 if $hashalgo eq 'sha1';
-  $pgphashalgo = 8 if $hashalgo eq 'sha256';
-  $pgphashalgo = 10 if $hashalgo eq 'sha512';
+  my $pgphashalgo = get_pgphashalgo($hashalgo);
   die("sign_with_gcrypt: bad hashalgo $hashalgo\n") unless $pgphashalgo;
   die("sign_with_gcrypt: only RSA supported\n") unless $info->{'algo'} == 1;
   die("sign_with_gcrypt: missing MPIs\n") unless @{$info->{'mpis'} || []} == 2 && @{$info->{'smpis'} || []} == 4;
   my ($n, $e, $d, $p, $q, $u) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$info->{'mpis'}}, @{$info->{'smpis'}};
-  my $data = Crypt::GCrypt::Sexp->build("(data (flags pkcs1) (hash $hashalgo %b))", $hash);
+  my $data = Crypt::GCrypt::Sexp->build("(data (flags pkcs1) (hash $hashalgo %b))", pack('H*', $hash));
   my $skey = Crypt::GCrypt::Sexp->build("(private-key (rsa (n %M) (e %M) (d %M) (p %M) (q %M) (u %M)))", $n, $e, $d, $p, $q, $u);
   my $res = Crypt::GCrypt::pk_sign($data, $skey);
   my $sv = $res->nth_mpi(1, Crypt::GCrypt::MPI::FMT_USG(), 's');
   die("could not extract sign result\n") unless $sv;
   my $sigdata = $sv->print(Crypt::GCrypt::MPI::FMT_PGP());
-  my $v3sig = pack('CCH10H16CCa2', 3, 5, $extra, $issuer, $info->{'algo'}, $pgphashalgo, substr($hash, 0, 2)).$sigdata;
-  return encodetag(2, $v3sig);
+  return wrap_into_gpgsig_v3($extra, $info->{'fingerprint'}, $info->{'algo'}, $pgphashalgo, $hash, $sigdata);
 }
 
 sub swrite {
@@ -425,10 +447,13 @@ sub checkbadchar {
 my $testmode = (($ARGV[0] || '') eq '-t') ? 1 : 0;
 $testmode = 2 if ($ARGV[0] || '') eq '--test-sign';
 if ($testmode) {
+  shift @ARGV;
   $conf = $ENV{SIGN_CONF} if $ENV{SIGN_CONF};
   die("Crypt::GCrypt is not available\n") if ($ENV{SIGN_GCRYPT} || '') eq 'force' && !$have_gcrypt;
   undef $have_gcrypt if ($ENV{SIGN_GCRYPT} || '') eq 'disable';
+  $use_agent = 1 if $ENV{SIGN_USE_AGENT};
 }
+(undef, $conf) = splice(@ARGV, 0, 2) if ($ARGV[0] || '') eq '--config';
 
 local *F;
 open(F, '<', $conf) || die("$conf: $!\n");
@@ -478,12 +503,20 @@ while(<F>) {
     $tmpdir = $s[1];
     next;
   }
+  if ($s[0] eq 'keycache:') {
+    $keycache = $s[1];
+    next;
+  }
   if ($s[0] eq 'patchclasstime:') {
-    $patchclasstime = $s[1];
+    $patchclasstime = ($s[1] eq '1' || $s[1] =~ /^true$/i) ? 1 : 0;
     next;
   }
   if ($s[0] eq 'allow-unprivileged-ports:') {
-    $allow_unprivileged_ports = ($s[1] =~ /^true$/i) ? 1 : 0;
+    $allow_unprivileged_ports = ($s[1] eq '1' || $s[1] =~ /^true$/i) ? 1 : 0;
+    next;
+  }
+  if ($s[0] eq 'use-agent:') {
+    $use_agent = ($s[1] eq '1' || $s[1] =~ /^true$/i) ? 1 : 0;
     next;
   }
   if ($s[0] eq 'logfile:') {
@@ -503,11 +536,13 @@ die("will not proxy to myself\n") if $signhost eq '127.0.0.1' && $port eq $proxy
 my $signaddr = inet_aton($signhost);
 die("$signhost: unknown host\n") unless $signaddr;
 @pinentrymode = ( '--pinentry-mode=loopback' ) if have_pinentry_mode();
+$use_agent = 1 unless have_files_are_digests();
+find_agentsocket() if $use_agent && !$agentsocket && $phrases;
 
 my @argv;
 
 if ($testmode) {
-  die("test mode need phrases\n") unless $phrases;
+  die("test mode needs phrases\n") unless $phrases;
   # test mode
   $| = 1;
   if ($testmode == 2) {
@@ -515,7 +550,6 @@ if ($testmode) {
     @argv = readreq();
   } else {
     @argv = @ARGV;
-    shift @argv;
   }
   *CLNT = *STDOUT;
   goto testit;
@@ -749,6 +783,87 @@ sub rungpg_fatal {
   return $out;
 }
 
+sub find_key {
+  my ($user, $purpose) = @_;
+  $purpose ||= 's';
+  $purpose = qr/$purpose/;
+  my $lines = rungpg_fatal('/dev/null', undef, $gpg, '--locate-key', '--with-fingerprint', '--with-fingerprint', '--with-keygrip', '--with-colons', '--', $user);
+  my $fpr;
+  my $grp;
+  my $keyid;
+  $keyid = lc(substr($user, -16)) if $user =~ /^[0-9a-fA-f]{8,}$/;
+  my $key;
+  for my $line (split("\n", $lines)) {
+    next unless $line =~ /^(?:pub|sub|fpr|grp)/;
+    my @s = split(':', $line);
+    if ($s[0] eq 'pub' || $s[0] eq 'sub') {
+      undef $key;
+      next unless $s[11] =~ /$purpose/;
+      next if $keyid && $s[4] !~ /\Q$keyid\E$/i;
+      $key = $line;
+      undef $fpr;
+      undef $grp;
+    } elsif ($s[0] eq 'fpr') {
+      $fpr = $s[9] if $key;
+    } elsif ($s[0] eq 'grp') {
+      $grp = $s[9] if $key;
+    }
+  }
+  return (undef, undef) unless $grp && $fpr;
+  return (uc($fpr), uc($grp));
+}
+
+sub read_keycache {
+  my ($user) = @_;
+  my ($fd, $fpr, $grp, $rid);
+  if (open($fd, '<', "$keycache/$user")) {
+    while(<$fd>) {
+      chomp; 
+      $fpr = $1 if /^fpr:(\S+)/;
+      $grp = $1 if /^grp:(\S+)/;
+      $rid = $1 if /^rid:(\S+)/;
+    }
+    close($fd);
+  }
+  return ($fpr, $grp, $rid) if $fpr && $grp && $rid;
+  return (undef, undef, undef);
+}
+
+sub write_keycache {
+  my ($user, $fpr, $grp, $rid) = @_;
+  mkdir($keycache, 0700) unless -d $keycache;
+  my $fd;
+  if (open($fd, '>', "$keycache/.$user.$$")) {
+    if (print $fd "fpr:$fpr\ngrp:$grp\nrid:$rid\n") {
+      close($fd) && rename("$keycache/.$user.$$", "$keycache/$user");
+    } else {
+      close($fd);
+    }
+    unlink("$keycache/.$user.$$");
+  }
+}
+
+sub find_key_keycache {
+  my ($user, $purpose) = @_;
+  $purpose ||= 's';
+  return find_key($user, $purpose) if !$keycache;
+  my $gnupghome = $ENV{GNUPGHOME};
+  if (!$gnupghome) {
+    my $home = $ENV{HOME} || (getpwuid($<))[7];
+    $gnupghome = "$home/.gnupg" if $home;
+  }
+  return find_key($user, $purpose) unless $gnupghome;
+  my @s = stat("$gnupghome/pubring.kbx");
+  @s = stat("$gnupghome/pubring.gpg") unless @s;
+  return find_key($user, $purpose) unless @s;
+  my $srid = "$s[9]/$s[7]/$s[1]";
+  my ($fpr, $grp, $rid) = read_keycache("$purpose-$user");
+  return ($fpr, $grp) if $fpr && $grp && $rid && $rid eq $srid;
+  ($fpr, $grp) =  find_key($user, $purpose);
+  write_keycache("$purpose-$user", $fpr, $grp, $srid) if $fpr && $grp;
+  return ($fpr, $grp);
+}
+
 sub prepare_tmp_gnupghome {
   my ($tmpdir) = @_;
   my $tdir = tempdir('XXXXXXXX', DIR => $tmpdir, CLEANUP => 1);
@@ -759,6 +874,11 @@ sub prepare_tmp_gnupghome {
 
 sub have_pinentry_mode {
   my ($status) = rungpg('/dev/null', undef, $gpg, '--pinentry-mode=loopback', '--version');
+  return !$status;
+}
+
+sub have_files_are_digests {
+  my ($status) = rungpg('/dev/null', undef, $gpg, '--files-are-digests', '--version');
   return !$status;
 }
 
@@ -935,18 +1055,205 @@ sub cmd_pubkey {
   return (0, '', $pubkey);
 }
 
+my $agent_sock;
+
+sub find_agentsocket {
+  undef $agentsocket;
+  for (split("\n", `gpgconf --list-dirs`)) {
+    $agentsocket = $1 if /^agent-socket:(.*)/;
+  }
+}
+
+sub open_agent {
+  find_agentsocket() unless $agentsocket;
+  die("could not determine agent socket\n") unless $agentsocket;
+  socket($agent_sock, PF_UNIX, SOCK_STREAM, 0) || die("socket: $!\n");
+  if (!connect($agent_sock, sockaddr_un($agentsocket))) {
+    rungpg_fatal("/dev/null", undef, 'gpg-connect-agent', '/bye');
+    connect($agent_sock, sockaddr_un($agentsocket)) || die("connect: $!\n");
+  }
+  agent_rpc();	# read greeting
+}
+
+sub close_agent {
+  close($agent_sock) if defined $agent_sock;
+  undef $agent_sock;
+}
+
+sub switch_agent {
+  close_agent();
+  undef $agentsocket;
+}
+
+sub agent_rpc {
+  my ($cmd, $phrasefile) = @_;
+  open_agent() unless defined $agent_sock;
+  my $data = '';
+  my $error;
+  eval {
+    swrite($agent_sock, "$cmd\n") if defined $cmd;
+    my $res = '';
+    while (1) {
+      while ($res !~ /(.*?)\n/) {
+	my $r = sysread($agent_sock, $res, 4096, length($res));
+	die("read: $!\n") unless defined $r;
+	die("unexpected EOF\n") unless $r;
+      }
+      die unless $res =~ /(.*?)\n/;
+      my $line = $1;
+      $res = substr($res, length($line) + 1);
+      next if $line =~ /^#/;
+      next if $line =~ /^S/;
+      last if $line =~ /^OK/;
+      if ($line =~ /^ERR ?(.*)/) {
+	$error = $1;
+	last;
+      }
+      if ($line =~ /^D /) {
+	$line =~ s/%([a-fA-F0-9]{2})/chr(hex($1))/sge;
+	$data .= substr($line, 2);
+	next;
+      }
+      if ($line eq 'INQUIRE PASSPHRASE') {
+	die("unknown passphrase\n") unless defined $phrasefile;
+	my $fd;
+        open($fd, '<', $phrasefile) || die("$phrasefile: $!\n");
+        my $passphrase = <$fd>;
+        close $fd;
+	die("unknown passphrase\n") unless defined $passphrase;
+	chomp $passphrase;
+	$passphrase =~ s/([^a-zA-Z0-9])/sprintf("%%%02X",ord($1))/sge;
+	my $msg = "D $passphrase\nEND\n";
+	syswrite($agent_sock, $msg) == length($msg) || die("syswrite: $!\n");
+	next;
+      }
+      die("unsupported answer from gpg-agent\n");
+    }
+  };
+  if ($@) {
+    close_agent();
+    die($@);
+  }
+  die("gpg-agent: $error\n") if defined $error;
+  return $data;
+}
+
+sub parse_sexp {
+  my ($l) = @_;
+  my @l;
+  die("sexp does not start with '('\n") unless substr($l, 0, 1, '') eq '(';
+  while (substr($l, 0, 1) ne ')') {
+    if (substr($l, 0, 1) eq '(') {
+      push @l, parse_sexp($l);
+      $l = pop(@l);
+    } elsif ($l =~ /^(\d+):/) {
+      my $cnt = $1;
+      substr($l, 0, length($cnt) + 1, '');
+      push @l, substr($l, 0, $cnt, '');
+    } elsif ($l =~ /([0-9a-zA-Z\-\.\/_:*+=]+)/) {
+      push @l, substr($l, 0, length($1), '');
+    } else {
+      die("unterminated sexp\n") if $l eq '';
+      die("unsupported sexp: ".substr($l, 0, 1)."\n");
+    }
+  }
+  return \@l, substr($l, 1);
+}
+
+sub find_in_sexp {
+  my ($l, $lit) = @_;
+  return @$l if @$l && $l->[0] eq $lit;
+  for (@$l) {
+    next unless ref($_) eq 'ARRAY';
+    my @r = find_in_sexp($_, $lit);
+    return @r if @r;
+  }
+  return ();
+}
+
+sub find_in_sexp_gpgmpi {
+  my ($l, $lit) = @_;
+  my (undef, $d) = find_in_sexp($l, $lit);
+  die("could not find $lit\n") unless defined $d;
+  $d = substr($d, 1) while substr($d, 0, 1) eq "\0";
+  my $first = unpack('C', $d);
+  my $bits = 0;
+  while ($first && ($first & 0x80) == 0) {
+    $bits++;
+    $first *= 2;
+  }
+  return pack('n', 8 * length($d) - $bits).$d;
+}
+
+sub sign_with_agent {
+  my ($phrasefile, $user, $hashalgo, $hash) = @_;
+  die("bad hash $hash\n") unless $hash =~ /^((?:[0-9a-fA-F][0-9a-fA-F])+)\@(0[01][0-9a-fA-F]{8})$/;
+  my $extra = $2;
+  $hash = uc($1);
+  my $pgphashalgo = get_pgphashalgo($hashalgo);
+  die("sign_with_agent: bad hashalgo $hashalgo\n") unless $pgphashalgo;
+  my ($fingerprint, $keygrip) = find_key_keycache($user);
+  die("unknown pubkey for $user\n") unless $fingerprint;
+  agent_rpc("SIGKEY $keygrip");
+  agent_rpc("SETHASH $pgphashalgo $hash");
+  agent_rpc("OPTION pinentry-mode=loopback") if defined($phrasefile) && $phrasefile ne '/dev/null' && -s $phrasefile;
+  my $sig = agent_rpc("PKSIGN", $phrasefile);
+  ($sig) = parse_sexp($sig);
+  my (undef, $sigval) = find_in_sexp($sig, 'sig-val');
+  die("missing sig-val\n") unless $sigval;
+  my ($pgppubalgo, $sigdata);
+  my $algo = $sigval->[0];
+  if ($algo eq 'rsa') {
+    $pgppubalgo = 1;
+    $sigdata = find_in_sexp_gpgmpi($sigval, 's');
+  } elsif ($algo eq 'dsa') {
+    $pgppubalgo = 17;
+    $sigdata = find_in_sexp_gpgmpi($sigval, 'r').find_in_sexp_gpgmpi($sigval, 's');
+  } elsif ($algo eq 'eddsa') {
+    $pgppubalgo = 22;
+    $sigdata = find_in_sexp_gpgmpi($sigval, 'r').find_in_sexp_gpgmpi($sigval, 's');
+  }
+  die("unsupported pubkey algorithm $algo\n") unless defined $pgppubalgo;
+  return wrap_into_gpgsig_v3($extra, $fingerprint, $pgppubalgo, $pgphashalgo, $hash, $sigdata);
+}
+
+sub do_sign {
+  my ($phrasesfile, $user, $hashalgo, $hash, $isprivsign) = @_;
+  if ($use_agent) {
+    my $out;
+    eval { $out = sign_with_agent($phrasesfile, $user, $hashalgo, $hash) };
+    return 1, '', $@ if $@;
+    return (0, $out, '');
+  } else {
+    my @args;
+    if ($isprivsign) {
+      push @args, '--allow-non-selfsigned-uid';
+    } else {
+      push @args, '-u', $user;
+    }
+    return rungpg($phrasesfile, undef, $gpg, "--batch", "--force-v3-sigs", "--files-are-digests", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--ignore-time-conflict", @pinentrymode, "--passphrase-fd=0", @args, "-sbo", "-", $hash);
+  }
+}
+
+sub do_decode {
+  my ($phrasesfile, $user, $encodeddata) = @_;
+  my $file = "$tmpdir/privkey.$$";
+  local *F;
+  open(F, '>', $file) || die("$file: $!\n");
+  (syswrite(F, $encodeddata) || 0) == length($encodeddata) || die("encoded data write error\n");
+  close(F) || die("encoded data close error\n");
+  my $decoded = rungpg_fatal($phrasesfile, [ $file ], $gpg, '--batch', '--decrypt', '--no-verbose', '-q', '--no-secmem-warning', @pinentrymode, '--passphrase-fd=0', $file);
+  unlink($file);
+  return $decoded;
+}
+
 sub cmd_privsign {
   my ($cmd, $user, $hashalgo, @args) = @_;
   die("privsign: at least three arguments expected\n") if @args < 2;
   die("bad private key\n") if $args[0] !~ /^(?:[0-9a-fA-F][0-9a-fA-F])+$/s;
   my $privkey = pack('H*', $args[0]);
   shift @args;
-  local *F;
-  open(F, ">$tmpdir/privkey.$$") || die("$tmpdir/privkey.$$: $!\n");
-  (syswrite(F, $privkey) || 0) == length($privkey) || die("encoded privkey write error\n");
-  close(F) || die("encoded privkey close error\n");
-  $privkey = rungpg_fatal("$phrases/$user", ["$tmpdir/privkey.$$"], $gpg, '--batch', '--decrypt', '--no-verbose', '-q', '--no-secmem-warning', @pinentrymode, '--passphrase-fd=0', "$tmpdir/privkey.$$");
-  unlink("$tmpdir/privkey.$$");
+  $privkey = do_decode("$phrases/$user", $user, $privkey);
   my @infos;
   my $pubkey = priv2pub($privkey, $have_gcrypt ? \@infos : undef);
   if ($have_gcrypt && @infos == 1 && $infos[0]->{'algo'} == 1 && $infos[0]->{'smpis'}) {
@@ -981,6 +1288,7 @@ sub cmd_privsign {
   my $tdir;
   my $oldgpghome = $ENV{GNUPGHOME};
   ($tdir, $ENV{GNUPGHOME}) = prepare_tmp_gnupghome($tmpdir);
+  switch_agent();
   rungpg_fatal("$phrases/$user", ["$tmpdir/privkey.$$"], $gpg, '--batch', '--no-verbose', '-q', '--no-secmem-warning', '--allow-non-selfsigned-uid', @pinentrymode, '--passphrase-fd=0', '--import', "$tmpdir/privkey.$$");
   unlink("$tmpdir/privkey.$$");
   my $status = 0;
@@ -993,7 +1301,7 @@ sub cmd_privsign {
       $classtime = $1;
       $args[0] = substr($args[0], 0, -10)."0000000000";
     }
-    ($status, $lout, $lerr) = rungpg('/dev/null', undef, $gpg, "--batch", "--force-v3-sigs", "--files-are-digests", "--allow-non-selfsigned-uid", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--ignore-time-conflict", @pinentrymode, "--passphrase-fd=0", "-sbo", "-", $args[0]);
+    ($status, $lout, $lerr) = do_sign('/dev/null', 'privsign', $hashalgo, $args[0], 1);
     $lout = patchclasstime($lout, $classtime) if $classtime && !$status;
     shift @args;
     push @out, $lout;
@@ -1002,6 +1310,7 @@ sub cmd_privsign {
   }
   remove_tree($tdir);
   $ENV{GNUPGHOME} = $oldgpghome;
+  switch_agent();
   return ($status, $err, @out);
 }
 
@@ -1020,7 +1329,7 @@ sub cmd_sign {
       $classtime = $1;
       $args[0] = substr($args[0], 0, -10)."0000000000";
     }
-    ($status, $lout, $lerr) = rungpg("$phrases/$user", undef, $gpg, "--batch", "--force-v3-sigs", "--files-are-digests", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--ignore-time-conflict", @pinentrymode, "--passphrase-fd=0", "-u", $user, "-sbo", "-", $args[0]);
+    ($status, $lout, $lerr) = do_sign("$phrases/$user", $user, $hashalgo, $args[0]);
     $lout = patchclasstime($lout, $classtime) if $classtime && !$status;
     shift @args;
     push @out, $lout;
