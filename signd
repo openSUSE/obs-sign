@@ -639,13 +639,14 @@ sub readreq {
     die("packet too small\n") unless $userlen >= 2 + $narg * 2;
     my @argl = unpack('n' x $narg, substr($pack, 6));
     @argv = unpack('a'.join('a', @argl), substr($pack, 6 + $narg * 2));
-  } else {
+  } elsif ($arg == 0 && $userlen == 0) {
+    # old protocol ping request
     $oldproto = 1;
-    if ($userlen == 0 && $arg == 0) {
-      @argv = ('ping', '');
-    } else {
-      @argv = ('sign', substr($pack, 4, $userlen), substr($pack, 4 + $userlen, $arg));
-    }
+    @argv = ('ping', '');
+  } else {
+    # old protocol sign/pubkey request
+    $oldproto = 1;
+    @argv = ('sign', substr($pack, 4, $userlen), substr($pack, 4 + $userlen, $arg));
     # the old protocol has the hashalgo attached to the arg instead of the user
     if ($argv[-1] =~ /^(.*?):(.*$)/) {
       $argv[1] = "$1:$argv[1]";
@@ -1361,9 +1362,10 @@ my %cmds = (
   'sign' => \&cmd_sign,
 );
 
+# extract command/user/hashalgo
 my $hashalgo = 'SHA1';
-my $cmd = shift(@argv);
-my $user = shift(@argv) || '';
+my ($cmd, $user) = splice(@argv, 0, 2);
+$user = '' unless defined $user;
 if ($user =~ /^(.*?):(.*)$/) {
   $hashalgo = $1;
   $user = $2;
@@ -1377,12 +1379,14 @@ $user = $signuser if $user eq '' && $signuser ne '';
 die("illegal user $user\n") if $user ne '' && ($user =~ /[\000-\037\/]/s || $user =~ /^\./s);
 die("illegal hashalgo $hashalgo\n") if $hashalgo ne '' && $hashalgo =~ /[\000-\037]/s;
 
+# proxy unknown users
 if (!$phrases || ($cmd ne 'ping' && $user eq '') || ($user ne '' && ! -e "$phrases/$user")) {
   die("unknown key: $user\n") if $signhost eq '127.0.0.1' && $port eq $proxyport;
   doproxy($cmd, $user, $hashalgo, @argv);
   exit(0);
 }
 
+# run the command and reply
 my $handler = $cmds{$cmd};
 die("unknown command: $cmd\n") unless $handler;
 if (! -d $tmpdir) {
