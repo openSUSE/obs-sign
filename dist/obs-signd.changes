@@ -1,4 +1,11 @@
 -------------------------------------------------------------------
+Fri Jul 29 12:58:47 CEST 2022 - mls@suse.de
+
+- update to version 2.6.1
+  * support directly talking to the gpg agent
+  * support ed25519 keygen
+
+-------------------------------------------------------------------
 Wed Jul  6 13:34:39 CEST 2022 - mls@suse.de
 
 - update to version 2.6.0
