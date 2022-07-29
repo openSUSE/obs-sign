@@ -919,9 +919,9 @@ sub cmd_keygen {
   checkbadchar($real, 'real name');
   checkbadchar($email, 'email');
   my $length;
-  if ($type eq 'ed25519') {
-    $length = 'Ed25519';
-    $type = 'EDDSA';
+  if ($type eq 'ed25519' || $type eq 'eddsa@ed25519') {
+    $type = 'eddsa';
+    $length = 'ed25519';
   } else {
     die("bad type: $type\n") unless $type =~ /^(dsa|rsa)\@(1024|2048|4096)$/s;
     $length = $2;
@@ -934,7 +934,7 @@ sub cmd_keygen {
 
   # write params file
   my $batch;
-  if ($type eq 'EDDSA') {
+  if ($type eq 'eddsa') {
     $batch = "Key-Type: $type\nKey-Curve: $length\n";
   } else {
     $batch = "Key-Type: $type\nKey-Length: $length\n";
