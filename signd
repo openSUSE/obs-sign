@@ -798,6 +798,7 @@ sub find_key {
     next unless $line =~ /^(?:pub|sub|fpr|grp)/;
     my @s = split(':', $line);
     if ($s[0] eq 'pub' || $s[0] eq 'sub') {
+      last if $s[0] eq 'pub' && $fpr && $grp;	# first matching pubkey wins
       undef $key;
       next unless $s[11] =~ /$purpose/;
       next if $keyid && $s[4] !~ /\Q$keyid\E$/i;
