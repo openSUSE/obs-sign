@@ -1186,13 +1186,13 @@ sub find_in_sexp_gpgmpi {
 }
 
 sub sign_with_agent {
-  my ($phrasefile, $user, $hashalgo, $hash) = @_;
+  my ($phrasefile, $user, $hashalgo, $hash, $isprivsign) = @_;
   die("bad hash $hash\n") unless $hash =~ /^((?:[0-9a-fA-F][0-9a-fA-F])+)\@(0[01][0-9a-fA-F]{8})$/;
   my $extra = $2;
   $hash = uc($1);
   my $pgphashalgo = get_pgphashalgo($hashalgo);
   die("sign_with_agent: bad hashalgo $hashalgo\n") unless $pgphashalgo;
-  my ($fingerprint, $keygrip) = find_key_keycache($user);
+  my ($fingerprint, $keygrip) = $isprivsign ? find_key($user) : find_key_keycache($user);
   die("unknown pubkey for $user\n") unless $fingerprint;
   agent_rpc("SIGKEY $keygrip");
   agent_rpc("SETHASH $pgphashalgo $hash");
@@ -1221,7 +1221,7 @@ sub do_sign {
   my ($phrasesfile, $user, $hashalgo, $hash, $isprivsign) = @_;
   if ($use_agent) {
     my $out;
-    eval { $out = sign_with_agent($phrasesfile, $user, $hashalgo, $hash) };
+    eval { $out = sign_with_agent($phrasesfile, $user, $hashalgo, $hash, $isprivsign) };
     return 1, '', $@ if $@;
     return (0, $out, '');
   } else {
