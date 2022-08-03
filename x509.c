@@ -295,13 +295,24 @@ x509_finishcert(struct x509 *cb, byte *sig, int sigl)
 byte *
 getrawopensslsig(byte *sig, int sigl, int *lenp)
 {
-  int pkalg, off, bytes, nbytes;
-  byte *ret;
+  int pkalg, off, bytes, bytes2, nbytes;
+  int neededpkalg;
 
   pkalg = sig[0] == 3 ? sig[15] : sig[2];
-  if (pkalg != 1)
+  neededpkalg = 1;
+  if (assertpubalgo == PUB_DSA)
+    neededpkalg = 17;
+  else if (assertpubalgo == PUB_EDDSA)
     {
-      fprintf(stderr, "Need RSA key for openssl sign\n");
+      fprintf(stderr, "EDDSA openssl signing is not supported\n");
+      return 0;
+    }
+  if (pkalg != neededpkalg)
+    {
+      if (neededpkalg == 1)
+        fprintf(stderr, "Not a RSA key\n");
+      else
+        fprintf(stderr, "pubkey algorithm mismatch: %d != %d\n", pkalg, neededpkalg);
       return 0;
     }
   off = findsigmpioffset(sig, sigl);
@@ -310,19 +321,44 @@ getrawopensslsig(byte *sig, int sigl, int *lenp)
       fprintf(stderr, "truncated sig\n");
       return 0;
     }
-  bytes = ((sig[off] << 8) + sig[off + 1] + 7) >> 3;
-  if (sigl < off + 2 + bytes)
+   bytes = ((sig[off] << 8) + sig[off + 1] + 7) >> 3;
+   if (sigl < off + 2 + bytes)
     {
       fprintf(stderr, "truncated sig\n");
       return 0;
     }
-  /* zero pad to multiple of 16 */
-  ret = malloc(bytes + 15);
-  memset(ret, 0, 15);
-  nbytes = (bytes + 15) & ~15;
-  memcpy(ret + nbytes - bytes, sig + off + 2, bytes);
-  *lenp = nbytes;
-  return ret;
+  if (pkalg == 1)
+    {
+      /* zero pad to multiple of 16 */
+      byte *ret = malloc(bytes + 15);
+      memset(ret, 0, 15);
+      nbytes = (bytes + 15) & ~15;
+      memcpy(ret + nbytes - bytes, sig + off + 2, bytes);
+      *lenp = nbytes;
+      return ret;
+    }
+  else if (pkalg == 17)
+    {
+      struct x509 cb;
+      if (sigl < off + 2 + bytes + 2)
+        {
+	  fprintf(stderr, "truncated sig\n");
+	  return 0;
+        }
+       bytes2 = ((sig[off + 2 + bytes] << 8) + sig[off + 2 + bytes + 1] + 7) >> 3;
+       if (sigl < off + 2 + bytes + 2 + bytes2)
+	{
+	  fprintf(stderr, "truncated sig\n");
+	  return 0;
+	}
+      x509_init(&cb);
+      x509_mpiint(&cb, sig + off + 2, bytes);
+      x509_mpiint(&cb, sig + off + 2 + bytes + 2, bytes2);
+      x509_tag(&cb, 0, 0x30);
+      *lenp = cb.len;
+      return cb.buf;
+    }
+  return 0;
 }
 
 void
