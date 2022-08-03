@@ -48,6 +48,7 @@ static const char *const hashname[] = {"SHA1", "SHA256", "SHA512"};
 static const int  hashlen[] = {20, 32, 64};
 
 int hashalgo = HASH_SHA1;
+int assertpubalgo = -1;
 static const char *timearg;
 static char *privkey;
 static int privkey_read;
@@ -1487,6 +1488,22 @@ main(int argc, char **argv)
 	  else
 	    {
 	      fprintf(stderr, "sign: unknown hash algorithm '%s'\n", argv[1]);
+	      exit(1);
+	    }
+	  argc--;
+	  argv++;
+	}
+      else if (argc > 1 && !strcmp(opt, "-A"))
+	{
+	  if (!strcasecmp(argv[1], "dsa"))
+	    assertpubalgo = PUB_DSA;
+	  else if (!strcasecmp(argv[1], "rsa"))
+	    assertpubalgo = PUB_RSA;
+	  else if (!strcasecmp(argv[1], "eddsa"))
+	    assertpubalgo = PUB_EDDSA;
+	  else
+	    {
+	      fprintf(stderr, "sign: unknown pubkey algorithm '%s'\n", argv[1]);
 	      exit(1);
 	    }
 	  argc--;

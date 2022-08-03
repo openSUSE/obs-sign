@@ -18,6 +18,7 @@ typedef unsigned char byte;
 
 /* sign.c */
 extern int hashalgo;
+extern int assertpubalgo;
 
 /* hash.c */
 typedef struct {
