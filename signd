@@ -280,6 +280,20 @@ sub priv2openssl_ed25519 {
   return $pem;
 }
 
+sub priv2openssl_dsa {
+  my ($p, $q, $g, $y, $x) = @_;
+  my $asn1 = packtag(0x30, packmpi($p).packmpi($q).packmpi($g));
+  $asn1 = packtag(0x30, "\x06\x07\x2a\x86\x48\xce\x38\x04\x01".$asn1);	# OID 1.2.840.10040.4.1
+  $asn1 = packtag(0x02, "\x00").$asn1;			# INTEGER 0
+  $asn1 .= packtag(0x04, packmpi($x));			# OCTET_STRING(INTEGER Y)
+  $asn1 = packtag(0x30, $asn1);
+  my $base64 = encode_base64($asn1, '');
+  my $pem = "-----BEGIN PRIVATE KEY-----\n";
+  $pem .= "$_\n" for $base64 =~ /(.{1,64})/g;
+  $pem .= "-----END PRIVATE KEY-----\n";
+  return $pem;
+}
+
 sub priv2openssl_rsa {
   my (@s) = @_;
   # calculate missing stuff:
@@ -354,6 +368,9 @@ sub priv2openssl {
     } elsif ($pkalgo == 1) {
       $mpinum = 2;
       $smpinum = 4;
+    } elsif ($pkalgo == 17) {
+      $mpinum = 4;
+      $smpinum = 1;
     } else {
       die("not an RSA or EdDSA private key\n");
     }
@@ -372,6 +389,7 @@ sub priv2openssl {
     }
     return priv2openssl_ed25519(@s) if $pkalgo == 22 && $curve eq "\x2b\x06\x01\x04\x01\xda\x47\x0f\x01";
     return priv2openssl_rsa(@s) if $pkalgo == 1;
+    return priv2openssl_dsa(@s) if $pkalgo == 17;
     die("unsupported pubkey algorithm/curve\n");
   }
   die("no private key found\n");
@@ -412,15 +430,28 @@ sub sign_with_gcrypt {
   $hashalgo = lc($hashalgo);
   my $pgphashalgo = get_pgphashalgo($hashalgo);
   die("sign_with_gcrypt: bad hashalgo $hashalgo\n") unless $pgphashalgo;
-  die("sign_with_gcrypt: only RSA supported\n") unless $info->{'algo'} == 1;
-  die("sign_with_gcrypt: missing MPIs\n") unless @{$info->{'mpis'} || []} == 2 && @{$info->{'smpis'} || []} == 4;
-  my ($n, $e, $d, $p, $q, $u) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$info->{'mpis'}}, @{$info->{'smpis'}};
-  my $data = Crypt::GCrypt::Sexp->build("(data (flags pkcs1) (hash $hashalgo %b))", pack('H*', $hash));
-  my $skey = Crypt::GCrypt::Sexp->build("(private-key (rsa (n %M) (e %M) (d %M) (p %M) (q %M) (u %M)))", $n, $e, $d, $p, $q, $u);
-  my $res = Crypt::GCrypt::pk_sign($data, $skey);
-  my $sv = $res->nth_mpi(1, Crypt::GCrypt::MPI::FMT_USG(), 's');
-  die("could not extract sign result\n") unless $sv;
-  my $sigdata = $sv->print(Crypt::GCrypt::MPI::FMT_PGP());
+  my $sigdata;
+  if ($info->{'algo'} == 1) {
+    die("sign_with_gcrypt: missing MPIs\n") unless @{$info->{'mpis'} || []} == 2 && @{$info->{'smpis'} || []} == 4;
+    my ($n, $e, $d, $p, $q, $u) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$info->{'mpis'}}, @{$info->{'smpis'}};
+    my $data = Crypt::GCrypt::Sexp->build("(data (flags pkcs1) (hash $hashalgo %b))", pack('H*', $hash));
+    my $skey = Crypt::GCrypt::Sexp->build("(private-key (rsa (n %M) (e %M) (d %M) (p %M) (q %M) (u %M)))", $n, $e, $d, $p, $q, $u);
+    my $res = Crypt::GCrypt::pk_sign($data, $skey);
+    my $sv = $res->nth_mpi(1, Crypt::GCrypt::MPI::FMT_USG(), 's');
+    die("could not extract sign result\n") unless $sv;
+    $sigdata = $sv->print(Crypt::GCrypt::MPI::FMT_PGP());
+  } elsif ($info->{'algo'} == 17) {
+    die("sign_with_gcrypt: missing MPIs\n") unless @{$info->{'mpis'} || []} == 4 && @{$info->{'smpis'} || []} == 1;
+    my ($p, $q, $g, $y, $x) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$info->{'mpis'}}, @{$info->{'smpis'}};
+    my $data = Crypt::GCrypt::Sexp->build("(data (flags raw) (value %b))", pack('H*', $hash));
+    my $skey = Crypt::GCrypt::Sexp->build("(private-key (dsa (p %M) (q %M) (g %M) (y %M) (x %M)))", $p, $q, $g, $y, $x);
+    my $res = Crypt::GCrypt::pk_sign($data, $skey);
+    my $rv = $res->nth_mpi(1, Crypt::GCrypt::MPI::FMT_USG(), 'r');
+    my $sv = $res->nth_mpi(1, Crypt::GCrypt::MPI::FMT_USG(), 's');
+    $sigdata = $rv->print(Crypt::GCrypt::MPI::FMT_PGP()).$sv->print(Crypt::GCrypt::MPI::FMT_PGP());
+  } else {
+    die("sign_with_gcrypt: unsupported pubkey algorithm $info->{'algo'}\n");
+  }
   return wrap_into_gpgsig_v3($extra, $info->{'fingerprint'}, $info->{'algo'}, $pgphashalgo, $hash, $sigdata);
 }
 
@@ -1002,7 +1033,7 @@ sub cmd_keygen {
 
 sub cmd_certgen {
   my ($cmd, $user, $hashalgo, @args) = @_;
-  die("keygen: at least five arguments expected\n") if @args < 4;
+  die("certgen: at least five arguments expected\n") if @args < 4;
   die("bad private key\n") if $args[0] !~ /^(?:[0-9a-fA-F][0-9a-fA-F])+$/s;
   my $privkey = pack('H*', $args[0]);
   my $expire = $args[1];
@@ -1258,7 +1289,7 @@ sub cmd_privsign {
   $privkey = do_decode("$phrases/$user", $user, $privkey);
   my @infos;
   my $pubkey = priv2pub($privkey, $have_gcrypt ? \@infos : undef);
-  if ($have_gcrypt && @infos == 1 && $infos[0]->{'algo'} == 1 && $infos[0]->{'smpis'}) {
+  if ($have_gcrypt && @infos == 1 && ($infos[0]->{'algo'} == 1 || $infos[0]->{'algo'} == 17) && $infos[0]->{'smpis'}) {
     my $info = $infos[0];
     my $status = 0;
     my $err = '';
