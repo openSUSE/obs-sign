@@ -1102,6 +1102,8 @@ createcert(char *pubkey)
     setmpis(pp + 6, pl - 6, 2, mpi, mpil, 0);
   else if (pubalgo == PUB_DSA)
     setmpis(pp + 6, pl - 6, 4, mpi, mpil, 0);
+  else if (pubalgo == PUB_EDDSA)
+    setmpis(pp + 6, pl - 6, 2, mpi, mpil, 1);
   pp = nextpkg(&tag, &pl, &p, &l);
   if (tag != 13)
     {

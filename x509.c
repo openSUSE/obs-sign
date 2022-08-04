@@ -29,6 +29,7 @@ static const byte oid_email_address[] = { 0x0b, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x
 
 static const byte oid_rsa_encryption[] = { 0x0b, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01 };
 static const byte oid_dsa_encryption[] = { 0x09, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x38, 0x04, 0x01 };
+static const byte oid_ed25519[] = { 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70 };
 
 static const byte sig_algo_rsa_sha256[] = { 0x0f, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05, 0x00 };
 static const byte sig_algo_dsa_sha256[] = { 0x0d, 0x30, 0x0b, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x02 };
@@ -53,6 +54,8 @@ static const byte oid_ms_codesigning[] = { 0x0c, 0x06, 0x0a, 0x2b, 0x06, 0x01, 0
 static const byte oid_pkcs7_signed_data[] = { 0x0b, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x02 };
 
 static const byte int_1[] = { 0x03, 0x02, 0x01, 0x01 };
+
+static const byte gpg_ed25519[] = { 0x09, 0x2b, 0x06, 0x01, 0x04, 0x01, 0xda, 0x47, 0x0f, 0x01, 0x18 };
 
 static void
 x509_room(struct x509 *cb, int l)
@@ -245,6 +248,16 @@ x509_pubkey(struct x509 *cb, int pubalgo, byte **mpi, int *mpil, byte *keyid)
       x509_mpiint(cb, mpi[2], mpil[2]);
       x509_tag(cb, offset2, 0x30);
     }
+  else if (pubalgo == PUB_EDDSA)
+    {
+      if (mpil[0] == gpg_ed25519[0] && !memcmp(mpi[0], gpg_ed25519 + 1, mpil[0]))
+	x509_add_const(cb, oid_ed25519);
+      else
+	{
+	  fprintf(stderr, "x509_pubkey: unsupported EdDSA curve\n");
+	  exit(1);
+	}
+    }
   else
     {
       fprintf(stderr, "x509_pubkey: unsupported pubkey algorithm %d\n", pubalgo);
@@ -258,8 +271,17 @@ x509_pubkey(struct x509 *cb, int pubalgo, byte **mpi, int *mpil, byte *keyid)
       x509_mpiint(cb, mpi[1], mpil[1]);
       x509_tag(cb, offset2, 0x30);
     }
-  else
+  else if (pubalgo == PUB_DSA)
     x509_mpiint(cb, mpi[3], mpil[3]);
+  else if (pubalgo == PUB_EDDSA)
+    {
+      if (mpil[1] < 2 || mpi[1][0] != 0x40)
+	{
+	  fprintf(stderr, "x509_pubkey: bad EdDSA point\n");
+	  exit(1);
+	}
+      x509_add(cb, mpi[1] + 1, mpil[1] - 1);
+    }
   if (keyid)
     {
       SHA1_CONTEXT ctx;
