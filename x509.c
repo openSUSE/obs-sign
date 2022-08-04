@@ -26,9 +26,13 @@
 static const byte cert_version_3[] = { 0x05, 0xa0, 0x03, 0x02, 0x01, 0x02 };
 static const byte oid_common_name[] = { 0x05, 0x06, 0x03, 0x55, 0x04, 0x03 };
 static const byte oid_email_address[] = { 0x0b, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x01 };
+
 static const byte oid_rsa_encryption[] = { 0x0b, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01 };
+static const byte oid_dsa_encryption[] = { 0x09, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x38, 0x04, 0x01 };
 
 static const byte sig_algo_rsa_sha256[] = { 0x0f, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05, 0x00 };
+static const byte sig_algo_dsa_sha256[] = { 0x0d, 0x30, 0x0b, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x02 };
+
 static const byte enc_algo_rsa[] = { 0x0f, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00 };
 static const byte digest_algo_sha256[] = { 0x0f, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00 };
 
@@ -224,16 +228,38 @@ x509_mpiint(struct x509 *cb, byte *p, int pl)
 }
 
 static void
-x509_pubkey(struct x509 *cb, byte *p, int pl, byte *e, int el, byte *keyid)
+x509_pubkey(struct x509 *cb, int pubalgo, byte **mpi, int *mpil, byte *keyid)
 {
   int offset = cb->len, offset2;
-  x509_add_const(cb, oid_rsa_encryption);
-  x509_tag(cb, cb->len, 0x05);
+  if (pubalgo == PUB_RSA)
+    {
+      x509_add_const(cb, oid_rsa_encryption);
+      x509_tag(cb, cb->len, 0x05);	/* NULL */
+    }
+  else if (pubalgo == PUB_DSA)
+    {
+      x509_add_const(cb, oid_dsa_encryption);
+      offset2 = cb->len;
+      x509_mpiint(cb, mpi[0], mpil[0]);
+      x509_mpiint(cb, mpi[1], mpil[1]);
+      x509_mpiint(cb, mpi[2], mpil[2]);
+      x509_tag(cb, offset2, 0x30);
+    }
+  else
+    {
+      fprintf(stderr, "x509_pubkey: unsupported pubkey algorithm %d\n", pubalgo);
+      exit(1);
+    }
   x509_tag(cb, offset, 0x30);
   offset2 = cb->len;
-  x509_mpiint(cb, p, pl);
-  x509_mpiint(cb, e, el);
-  x509_tag(cb, offset2, 0x30);
+  if (pubalgo == PUB_RSA)
+    {
+      x509_mpiint(cb, mpi[0], mpil[0]);
+      x509_mpiint(cb, mpi[1], mpil[1]);
+      x509_tag(cb, offset2, 0x30);
+    }
+  else
+    x509_mpiint(cb, mpi[3], mpil[3]);
   if (keyid)
     {
       SHA1_CONTEXT ctx;
@@ -266,26 +292,40 @@ x509_extensions(struct x509 *cb, byte *keyid)
   x509_tag(cb, offset, 0xa3);	/* CONT | CONS | 3 */
 }
 
+static void
+x509_add_sigalgo(struct x509 *cb, int pubalgo)
+{
+  if (pubalgo == PUB_RSA && hashalgo == HASH_SHA256)
+    x509_add_const(cb, sig_algo_rsa_sha256);
+  else if (pubalgo == PUB_DSA && hashalgo == HASH_SHA256)
+    x509_add_const(cb, sig_algo_dsa_sha256);
+  else
+    {
+      fprintf(stderr, "unsupported pubalgo/hashalgo combination: %d/%d\n", pubalgo, hashalgo);
+      exit(1);
+    }
+}
+
 void
-x509_tbscert(struct x509 *cb, const char *cn, const char *email, time_t start, time_t end, byte *p, int pl, byte *e, int el)
+x509_tbscert(struct x509 *cb, const char *cn, const char *email, time_t start, time_t end, int pubalgo, byte **mpi, int *mpil)
 {
   int offset = cb->len;
   byte keyid[20];
   x509_add_const(cb, cert_version_3);
   x509_random_serial(cb);
-  x509_add(cb, sig_algo_rsa_sha256 + 1, sig_algo_rsa_sha256[0]);
+  x509_add_sigalgo(cb, pubalgo);
   x509_dn(cb, cn, email);
   x509_validity(cb, start, end);
   x509_dn(cb, cn, email);
-  x509_pubkey(cb, p, pl, e, el, keyid);
+  x509_pubkey(cb, pubalgo, mpi, mpil, keyid);
   x509_extensions(cb, keyid);
   x509_tag(cb, offset, 0x30);
 }
 
 void
-x509_finishcert(struct x509 *cb, byte *sig, int sigl)
+x509_finishcert(struct x509 *cb, int pubalgo, byte *sig, int sigl)
 {
-  x509_add_const(cb, sig_algo_rsa_sha256);
+  x509_add_sigalgo(cb, pubalgo);
   x509_add(cb, 0, 1);
   x509_add(cb, sig, sigl);
   x509_tag(cb, cb->len - (sigl + 1), 0x03);
@@ -295,68 +335,44 @@ x509_finishcert(struct x509 *cb, byte *sig, int sigl)
 byte *
 getrawopensslsig(byte *sig, int sigl, int *lenp)
 {
-  int pkalg, off, bytes, bytes2, nbytes;
-  int neededpkalg;
+  int pkalg, off, nbytes;
+  byte *mpi[2];
+  int mpil[2];
 
   pkalg = sig[0] == 3 ? sig[15] : sig[2];
-  neededpkalg = 1;
-  if (assertpubalgo == PUB_DSA)
-    neededpkalg = 17;
-  else if (assertpubalgo == PUB_EDDSA)
+  
+  if (assertpubalgo == -1 && pkalg != 1)
     {
-      fprintf(stderr, "EDDSA openssl signing is not supported\n");
-      return 0;
-    }
-  if (pkalg != neededpkalg)
-    {
-      if (neededpkalg == 1)
-        fprintf(stderr, "Not a RSA key\n");
-      else
-        fprintf(stderr, "pubkey algorithm mismatch: %d != %d\n", pkalg, neededpkalg);
+      fprintf(stderr, "Not a RSA key\n");
       return 0;
     }
   off = findsigmpioffset(sig, sigl);
-  if (sigl < off + 2)
-    {
-      fprintf(stderr, "truncated sig\n");
-      return 0;
-    }
-   bytes = ((sig[off] << 8) + sig[off + 1] + 7) >> 3;
-   if (sigl < off + 2 + bytes)
-    {
-      fprintf(stderr, "truncated sig\n");
-      return 0;
-    }
   if (pkalg == 1)
     {
+      setmpis(sig + off, sigl - off, 1, mpi, mpil, 0);
       /* zero pad to multiple of 16 */
-      byte *ret = malloc(bytes + 15);
+      byte *ret = malloc(mpil[0] + 15);
       memset(ret, 0, 15);
-      nbytes = (bytes + 15) & ~15;
-      memcpy(ret + nbytes - bytes, sig + off + 2, bytes);
+      nbytes = (mpil[0] + 15) & ~15;
+      memcpy(ret + nbytes - mpil[0], sig + off + 2, mpil[0]);
       *lenp = nbytes;
       return ret;
     }
   else if (pkalg == 17)
     {
       struct x509 cb;
-      if (sigl < off + 2 + bytes + 2)
-        {
-	  fprintf(stderr, "truncated sig\n");
-	  return 0;
-        }
-       bytes2 = ((sig[off + 2 + bytes] << 8) + sig[off + 2 + bytes + 1] + 7) >> 3;
-       if (sigl < off + 2 + bytes + 2 + bytes2)
-	{
-	  fprintf(stderr, "truncated sig\n");
-	  return 0;
-	}
+      setmpis(sig + off, sigl - off, 2, mpi, mpil, 0);
       x509_init(&cb);
-      x509_mpiint(&cb, sig + off + 2, bytes);
-      x509_mpiint(&cb, sig + off + 2 + bytes + 2, bytes2);
+      x509_mpiint(&cb, mpi[0], mpil[0]);
+      x509_mpiint(&cb, mpi[1], mpil[1]);
       x509_tag(&cb, 0, 0x30);
       *lenp = cb.len;
       return cb.buf;
+    }
+  else if (pkalg == 22)
+    {
+      fprintf(stderr, "EdDSA openssl signing is not supported\n");
+      return 0;
     }
   return 0;
 }

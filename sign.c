@@ -47,6 +47,8 @@ uid_t uid;
 static const char *const hashname[] = {"SHA1", "SHA256", "SHA512"};
 static const int  hashlen[] = {20, 32, 64};
 
+static const char *const pubalgoname[] = {"DSA", "RSA", "EdDSA"};
+
 int hashalgo = HASH_SHA1;
 int assertpubalgo = -1;
 static const char *timearg;
@@ -504,6 +506,21 @@ sign(char *filename, int isfilter, int mode)
       if (mode == MODE_CLEARSIGN && !isfilter)
 	unlink(outfilename);
       exit(-outl);
+    }
+
+  if (assertpubalgo >= 0)
+    {
+      int sigpubalgo = findsigpubalgo(buf + 6, outl);
+      if (sigpubalgo < 0)
+	{
+	  fprintf(stderr, "unknown public key algorithm in signature\n");
+	  exit(1);
+	}
+      if (assertpubalgo != sigpubalgo)
+	{
+	  fprintf(stderr, "unexpected public key algorithm: wanted %s, got %s\n", pubalgoname[assertpubalgo], pubalgoname[sigpubalgo]);
+	  exit(1);
+	}
     }
 
   if (mode == MODE_KEYID)
@@ -1010,8 +1027,10 @@ createcert(char *pubkey)
   int rl;
   char *name, *nameend;
   char *email;
-  byte *mpin, *mpie;
-  int mpinl, mpiel;
+  byte *mpi[4];
+  int mpil[4];
+  int pubalgo;
+
   byte *rawssl;
   int rawssllen;
   HASH_CONTEXT ctx;
@@ -1047,9 +1066,30 @@ createcert(char *pubkey)
       fprintf(stderr, "pubkey is not type 4\n");
       exit(1);
     }
-  if (pp[5] != 1)
+  if (pp[5] == 1)
+    pubalgo = PUB_RSA;
+  else if (pp[5] == 17)
+    pubalgo = PUB_DSA;
+  else if (pp[5] == 22)
+    pubalgo = PUB_EDDSA;
+  else
+    {
+      fprintf(stderr, "unsupported pubkey algorithm %d\n", pp[5]);
+      exit(1);
+    }
+  if (assertpubalgo == -1 && pubalgo != PUB_RSA)
     {
       fprintf(stderr, "not a RSA pubkey\n");
+      exit(1);
+    }
+  if (assertpubalgo >= 0 && assertpubalgo != pubalgo)
+    {
+      fprintf(stderr, "unexpected public key algorithm: wanted %s, got %s\n", pubalgoname[assertpubalgo], pubalgoname[pubalgo]);
+      exit(1);
+    }
+  if (pubalgo == PUB_EDDSA)
+    {
+      fprintf(stderr, "EdDSA certs are unsupported\n");
       exit(1);
     }
   calculatefingerprint(pp, pl, fingerprint);
@@ -1058,11 +1098,10 @@ createcert(char *pubkey)
   pkcreat = pp[1] << 24 | pp[2] << 16 | pp[3] << 8 | pp[4];
 
   /* get MPIs */
-  mpin = pp + 8;
-  mpinl = ((mpin[-2] << 8 | mpin[-1]) + 7) / 8;
-  mpie = mpin + 2 + mpinl;
-  mpiel = ((mpie[-2] << 8 | mpie[-1]) + 7) / 8;
-
+  if (pubalgo == PUB_RSA)
+    setmpis(pp + 6, pl - 6, 2, mpi, mpil, 0);
+  else if (pubalgo == PUB_DSA)
+    setmpis(pp + 6, pl - 6, 4, mpi, mpil, 0);
   pp = nextpkg(&tag, &pl, &p, &l);
   if (tag != 13)
     {
@@ -1148,7 +1187,7 @@ createcert(char *pubkey)
 
   /* create tbscert */
   x509_init(&cb);
-  x509_tbscert(&cb, name, email, beg, exp, mpin, mpinl, mpie, mpiel);
+  x509_tbscert(&cb, name, email, beg, exp, pubalgo, mpi, mpil);
   free(name);
   free(pubk);
 
@@ -1178,11 +1217,18 @@ createcert(char *pubkey)
       fprintf(stderr, "signature issuer does not match fingerprint\n");
       exit(1);
     }
+  if (pubalgo != findsigpubalgo(rbuf + 4, rbuf[2] << 8 | rbuf[3]))
+    {
+      fprintf(stderr, "signature pubkey algorithm does not match pubkey\n");
+      exit(1);
+    }
+
   /* get signnature */
+  assertpubalgo = pubalgo;
   rawssl = getrawopensslsig(sig, sigl, &rawssllen);
 
   /* finish cert */
-  x509_finishcert(&cb, rawssl, rawssllen);
+  x509_finishcert(&cb, pubalgo, rawssl, rawssllen);
   free(rawssl);
 
   /* print as PEM */

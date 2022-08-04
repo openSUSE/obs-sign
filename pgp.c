@@ -555,3 +555,46 @@ findsigpubalgo(byte *pk, int pkl)
   return -1;
 }
 
+int
+setmpis(byte *p, int l, int nmpi, byte **mpi, int *mpil, int withcurve)
+{
+  int origl = l;
+  for (; nmpi > 0; nmpi--)
+    {
+      int bytes;
+      if (l < 2)
+	{
+	  fprintf(stderr, "truncated mpi data\n");
+	  exit(1);
+	}
+      if (withcurve)
+	{
+	  withcurve = 0;
+	  bytes = p[0];
+	  if (bytes == 0 || bytes == 255)
+	    {
+	      fprintf(stderr, "illegal curve length: %d\n", bytes);
+	      exit(1);
+	    }
+	  p++;
+	  l--;
+	}
+      else
+	{
+	  bytes = ((p[0] << 8) + p[1] + 7) >> 3;
+	  p += 2;
+	  l -= 2;
+	}
+      if (l < bytes)
+	{
+	  fprintf(stderr, "truncated mpi data\n");
+	  exit(1);
+	}
+      *mpi++ = p;
+      *mpil++ = bytes;
+      p += bytes;
+      l -= bytes;
+    }
+  return origl - l;
+}
+
