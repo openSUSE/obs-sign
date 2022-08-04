@@ -1063,6 +1063,7 @@ authorityKeyIdentifier=keyid,issuer
 keyUsage = critical,keyCertSign,digitalSignature
 extendedKeyUsage = codeSigning
 EOL
+  local *F;
   open(F, ">$tmpdir/sslreq$$.conf") || die("$tmpdir/sslreq$$.conf: $!\n");
   (syswrite(F, $reqconf) || 0) == length($reqconf) || die("openssl conf write error\n");
   close(F) || die("openssl conf close error\n");
