@@ -1042,12 +1042,7 @@ sub cmd_certgen {
   my $email = $args[3];
   checkbadchar($real, 'real name');
   checkbadchar($email, 'email');
-  local *F;
-  open(F, ">$tmpdir/privkey.$$") || die("$tmpdir/privkey.$$: $!\n");
-  (syswrite(F, $privkey) || 0) == length($privkey) || die("encoded privkey write error\n");
-  close(F) || die("encoded privkey close error\n");
-  $privkey = rungpg_fatal("$phrases/$user", ["$tmpdir/privkey.$$"], $gpg, '--batch', '--decrypt', '--no-verbose', '-q', '--no-secmem-warning', @pinentrymode, '--passphrase-fd=0', "$tmpdir/privkey.$$");
-  unlink("$tmpdir/privkey.$$");
+  $privkey = do_decode("$phrases/$user", $user, $privkey);
   my $opensslprivkey = priv2openssl($privkey);
   my $reqconf = <<"EOL";
 [ req ]
