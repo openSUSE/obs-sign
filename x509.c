@@ -166,11 +166,11 @@ x509_random_serial(struct x509 *cb)
 {
   int offset = cb->len;
   int i;
-  x509_add(cb, 0, 9);
-  for (i = 1; i < 9; i++)
+  x509_add(cb, 0, 20);
+  for (i = 0; i < 20; i++)
     cb->buf[offset + i] = (byte)random();
-  cb->buf[offset] = 0;
-  cb->buf[offset + 1] |= 0x80;
+  cb->buf[offset] &= 0x3f;
+  cb->buf[offset] |= 0x40;
   x509_tag(cb, offset, 0x02);
 }
 
