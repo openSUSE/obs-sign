@@ -538,10 +538,9 @@ findsigmpioffset(byte *sig, int sigl)
 }
 
 int
-findsigpubalgo(byte *pk, int pkl)
+findsigpubalgo(byte *sig, int sigl)
 {
-  int sigl, algo = -1;
-  byte *sig = pkg2sig(pk, pkl, &sigl);
+  int algo = -1;
   if (sig[0] == 3)
     algo = sig[15];
   else if (sig[0] == 4)
@@ -553,6 +552,14 @@ findsigpubalgo(byte *pk, int pkl)
   if (algo == 22)
     return PUB_EDDSA;
   return -1;
+}
+
+int
+pkg2sigpubalgo(byte *pk, int pkl)
+{
+  int sigl;
+  byte *sig = pkg2sig(pk, pkl, &sigl);;
+  return findsigpubalgo(sig, sigl);
 }
 
 int

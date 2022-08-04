@@ -160,7 +160,7 @@ rpm_insertsig(struct rpmdata *rd, int hdronly, byte *newsig, int newsiglen)
       fprintf(stderr, "signature too big: %d\n", newsiglen);
       return -1;
     }
-  pubalgo = findsigpubalgo(newsig, newsiglen);
+  pubalgo = pkg2sigpubalgo(newsig, newsiglen);
   if (pubalgo < 0)
     {
       fprintf(stderr, "signature has unknown pubkey algorithm\n");

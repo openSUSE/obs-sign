@@ -98,7 +98,8 @@ byte *pkg2sig(byte *pk, int pkl, int *siglp);
 void calculatefingerprint(byte *pub, int publ, byte *fingerprintp);
 byte *findsigissuer(byte *sig, int sigl);
 int findsigmpioffset(byte *sig, int sigl);
-int findsigpubalgo(byte *pk, int pkl);
+int findsigpubalgo(byte *sig, int sigl);
+int pkg2sigpubalgo(byte *pk, int pkl);
 int setmpis(byte *p, int l, int nmpi, byte **mpi, int *mpil, int withcurve);
 
 /* x509.c */

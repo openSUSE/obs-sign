@@ -173,7 +173,7 @@ probe_pubalgo()
 	  memmove(buf, buf + 4, outl);
 	}
     }
-  return outl > 0 ? findsigpubalgo(buf, outl) : -1;
+  return outl > 0 ? pkg2sigpubalgo(buf, outl) : -1;
 }
 
 static byte *
@@ -510,7 +510,7 @@ sign(char *filename, int isfilter, int mode)
 
   if (assertpubalgo >= 0)
     {
-      int sigpubalgo = findsigpubalgo(buf + 6, outl);
+      int sigpubalgo = pkg2sigpubalgo(buf + 6, outl);
       if (sigpubalgo < 0)
 	{
 	  fprintf(stderr, "unknown public key algorithm in signature\n");
@@ -1217,7 +1217,7 @@ createcert(char *pubkey)
       fprintf(stderr, "signature issuer does not match fingerprint\n");
       exit(1);
     }
-  if (pubalgo != findsigpubalgo(rbuf + 4, rbuf[2] << 8 | rbuf[3]))
+  if (pubalgo != findsigpubalgo(sig, sigl))
     {
       fprintf(stderr, "signature pubkey algorithm does not match pubkey\n");
       exit(1);
