@@ -449,6 +449,17 @@ sub sign_with_gcrypt {
     my $rv = $res->nth_mpi(1, Crypt::GCrypt::MPI::FMT_USG(), 'r');
     my $sv = $res->nth_mpi(1, Crypt::GCrypt::MPI::FMT_USG(), 's');
     $sigdata = $rv->print(Crypt::GCrypt::MPI::FMT_PGP()).$sv->print(Crypt::GCrypt::MPI::FMT_PGP());
+  } elsif ($info->{'algo'} == 22 && $info->{'curve'} eq "\x2b\x06\x01\x04\x01\xda\x47\x0f\x01") {
+    die("sign_with_gcrypt: missing MPIs\n") unless @{$info->{'mpis'} || []} == 1 && @{$info->{'smpis'} || []} == 1;
+    my ($d) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$info->{'smpis'}};
+    my $data = Crypt::GCrypt::Sexp->build("(data (flags eddsa) (hash-algo sha512) (value %b))", pack('H*', $hash));
+    my $skey = Crypt::GCrypt::Sexp->build("(private-key (ecc (curve \"Ed25519\") (d %M)))", $d);
+    my $res = Crypt::GCrypt::pk_sign($data, $skey);
+    my $rv = $res->nth_mpi(1, Crypt::GCrypt::MPI::FMT_USG(), 'r');
+    my $sv = $res->nth_mpi(1, Crypt::GCrypt::MPI::FMT_USG(), 's');
+    $sigdata = $rv->print(Crypt::GCrypt::MPI::FMT_PGP()).$sv->print(Crypt::GCrypt::MPI::FMT_PGP());
+  } elsif ($info->{'algo'} == 22) {
+    die("sign_with_gcrypt: unsupported EdDSA curve\n");
   } else {
     die("sign_with_gcrypt: unsupported pubkey algorithm $info->{'algo'}\n");
   }
@@ -1299,6 +1310,17 @@ sub do_decode {
   return $decoded;
 }
 
+sub can_privsign_with_gcrypt {
+  my ($infos) = @_;
+  return 0 unless $have_gcrypt && @{$infos ||[]} == 1;
+  my $info = $infos->[0];
+  return 0 unless $info->{'smpis'};
+  return 1 if $info->{'algo'} == 1;
+  return 1 if $info->{'algo'} == 17;
+  return 1 if $info->{'algo'} == 22 && $info->{'curve'} eq "\x2b\x06\x01\x04\x01\xda\x47\x0f\x01";
+  return 0;
+}
+
 sub cmd_privsign {
   my ($cmd, $user, $hashalgo, @args) = @_;
   die("privsign: at least three arguments expected\n") if @args < 2;
@@ -1308,7 +1330,7 @@ sub cmd_privsign {
   $privkey = do_decode("$phrases/$user", $user, $privkey);
   my @infos;
   my $pubkey = priv2pub($privkey, $have_gcrypt ? \@infos : undef);
-  if ($have_gcrypt && @infos == 1 && ($infos[0]->{'algo'} == 1 || $infos[0]->{'algo'} == 17) && $infos[0]->{'smpis'}) {
+  if (can_privsign_with_gcrypt(\@infos)) {
     my $info = $infos[0];
     my $status = 0;
     my $err = '';
