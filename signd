@@ -55,7 +55,7 @@ my $conf = '/etc/sign.conf';
 my $allow_unprivileged_ports = 0;
 my $logfile;
 my $use_agent;
-my $agentsocket;
+my $agentsocket = [];
 my @pinentrymode;
 my $keycache = '';
 
@@ -558,6 +558,10 @@ while(<F>) {
     $ENV{GNUPGHOME} = $s[1];
     next;
   }
+  if ($s[0] eq 'agentsocket:') {
+    shift @s;
+    $agentsocket = \@s;
+  }
 }
 
 my $myname = $phrases ? 'signd' : 'signproxy';
@@ -568,7 +572,6 @@ my $signaddr = inet_aton($signhost);
 die("$signhost: unknown host\n") unless $signaddr;
 @pinentrymode = ( '--pinentry-mode=loopback' ) if have_pinentry_mode();
 $use_agent = 1 unless have_files_are_digests();
-find_agentsocket() if $use_agent && !$agentsocket && $phrases;
 
 my @argv;
 
@@ -1086,20 +1089,34 @@ sub cmd_pubkey {
 
 my $agent_sock;
 
-sub find_agentsocket {
-  undef $agentsocket;
+sub find_agentsocket_with_gpgconf {
+  $agentsocket = [];
   for (split("\n", `gpgconf --list-dirs`)) {
-    $agentsocket = $1 if /^agent-socket:(.*)/;
+    $agentsocket = [ $1 ] if /^agent-socket:(.*)/;
   }
+  die("could not determine agent socket\n") unless @$agentsocket;
+}
+
+sub connect_to_agent {
+  for my $s (@$agentsocket) {
+    return 1 if -e $s && connect($agent_sock, sockaddr_un($s));
+  }
+  return 0;
+}
+
+sub start_agent {
+  rungpg_fatal("/dev/null", undef, 'gpg-connect-agent', '/bye');
 }
 
 sub open_agent {
-  find_agentsocket() unless $agentsocket;
-  die("could not determine agent socket\n") unless $agentsocket;
+  undef $agent_sock;
   socket($agent_sock, PF_UNIX, SOCK_STREAM, 0) || die("socket: $!\n");
-  if (!connect($agent_sock, sockaddr_un($agentsocket))) {
-    rungpg_fatal("/dev/null", undef, 'gpg-connect-agent', '/bye');
-    connect($agent_sock, sockaddr_un($agentsocket)) || die("connect: $!\n");
+  if (!connect_to_agent()) {
+    find_agentsocket_with_gpgconf();
+    if (!connect_to_agent()) {
+      start_agent();
+      connect_to_agent() || die("connect to agent @$agentsocket: $!\n");
+    }
   }
   agent_rpc();	# read greeting
 }
@@ -1111,7 +1128,19 @@ sub close_agent {
 
 sub switch_agent {
   close_agent();
-  undef $agentsocket;
+  $agentsocket = [];
+}
+
+sub read_passphrase {
+  my ($phrasefile) = @_;
+  die("unknown passphrase\n") unless defined $phrasefile;
+  my $fd;
+  open($fd, '<', $phrasefile) || die("$phrasefile: $!\n");
+  my $passphrase = <$fd>;
+  close $fd;
+  die("unknown passphrase\n") unless defined $passphrase;
+  chomp $passphrase;
+  return $passphrase;
 }
 
 sub agent_rpc {
@@ -1144,13 +1173,7 @@ sub agent_rpc {
 	next;
       }
       if ($line eq 'INQUIRE PASSPHRASE') {
-	die("unknown passphrase\n") unless defined $phrasefile;
-	my $fd;
-        open($fd, '<', $phrasefile) || die("$phrasefile: $!\n");
-        my $passphrase = <$fd>;
-        close $fd;
-	die("unknown passphrase\n") unless defined $passphrase;
-	chomp $passphrase;
+	my $passphrase = read_passphrase($phrasefile);
 	$passphrase =~ s/([^a-zA-Z0-9])/sprintf("%%%02X",ord($1))/sge;
 	my $msg = "D $passphrase\nEND\n";
 	syswrite($agent_sock, $msg) == length($msg) || die("syswrite: $!\n");

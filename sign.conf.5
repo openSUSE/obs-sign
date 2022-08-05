@@ -81,6 +81,13 @@ Cache the result of finding the signing key for a username. This
 is only done if the gpg-agent is used for signing. The cache
 is automatically invalidated if there is a change in the gpg
 keyring.
+.TP 4
+.BR agentsocket: " socketpath [socketpath...]"
+Specify the location of the gpg agent socket. It is possible to
+specify more than one location, as gpg uses different socket
+directories depending on if the user is logged in or not.
+As a fallback, signd will call "gpgconf --list-dirs" to find
+the current location of the agent socket.
 
 .SH FILES
 .I /etc/sign.conf
