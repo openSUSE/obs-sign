@@ -123,7 +123,7 @@ appx_read(struct appxdata *appxdata, int fd, char *filename, time_t t)
 
   /* create signedattrs */
   x509_init(&appxdata->cb_signedattrs);
-  x509_signedattrs(&appxdata->cb_signedattrs, hash_read(&ctx), 32, t);
+  x509_spcsignedattrs(&appxdata->cb_signedattrs, hash_read(&ctx), 32, t);
   return 1;
 }
 

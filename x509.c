@@ -550,7 +550,7 @@ x509_issuerandserial(struct x509 *cb, unsigned char *cert, int certlen)
 }
 
 void
-x509_signedattrs(struct x509 *cb, unsigned char *digest, int digestlen, time_t signtime)
+x509_spcsignedattrs(struct x509 *cb, unsigned char *digest, int digestlen, time_t signtime)
 {
   int offset = cb->len, offset2;
 
