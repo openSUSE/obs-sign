@@ -333,9 +333,18 @@ sign(char *filename, int isfilter, int mode)
     }
   else if (mode == MODE_APPXSIGN)
     {
+      int pubalgo;
       if (!cert.len)
 	{
 	  fprintf(stderr, "need a cert for appx signing\n");
+	  exit(1);
+	}
+      pubalgo = x509_cert2pubalgo(&cert);
+      if (assertpubalgo < 0)
+	assertpubalgo = pubalgo;
+      if (assertpubalgo != pubalgo)
+	{
+	  fprintf(stderr, "pubkey algorithm does not match cert\n");
 	  exit(1);
 	}
       if (appx_read(&appxdata, fd, filename, signtime) == 0)

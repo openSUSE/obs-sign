@@ -32,10 +32,13 @@ static const byte oid_dsa_encryption[] = { 0x09, 0x06, 0x07, 0x2a, 0x86, 0x48, 0
 static const byte oid_ed25519[] = { 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70 };
 
 static const byte sig_algo_rsa_sha256[] = { 0x0f, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05, 0x00 };
+static const byte sig_algo_rsa_sha512[] = { 0x0f, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0d, 0x05, 0x00 };
 static const byte sig_algo_dsa_sha256[] = { 0x0d, 0x30, 0x0b, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x02 };
+static const byte sig_algo_dsa_sha512[] = { 0x0d, 0x30, 0x0b, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x04 };
 
-static const byte enc_algo_rsa[] = { 0x0f, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00 };
+static const byte digest_algo_sha1[] = { 0x0b, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00 };
 static const byte digest_algo_sha256[] = { 0x0f, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00 };
+static const byte digest_algo_sha512[] = { 0x0f, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03, 0x05, 0x00 };
 
 static const byte subject_key_identifier[] = { 0x1f, 0x30, 0x1d, 0x06, 0x03, 0x55, 0x1d, 0x0e, 0x04, 0x16, 0x04, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 static const byte authority_key_identifier[] = { 0x21, 0x30, 0x1f, 0x06, 0x03, 0x55, 0x1d, 0x23, 0x04, 0x18, 0x30, 0x16, 0x80, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
@@ -46,11 +49,13 @@ static const byte ext_key_usage[] = { 0x15, 0x30, 0x13, 0x06, 0x03, 0x55, 0x1d, 
 static const byte oid_contenttype[] = { 0x0b, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x03 };
 static const byte oid_messagedigest[] = { 0x0b, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x04 };
 static const byte oid_signingtime[] = { 0x0b, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x05 };
-static const byte oid_spc_indirect_data[] = { 0x0c, 0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x01, 0x04 };
 
+static const byte oid_spc_indirect_data[] = { 0x0c, 0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x01, 0x04 };
 static const byte oid_spc_spopusinfo[] = { 0x0c, 0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x01, 0x0c };
 static const byte oid_spc_statementtype[] = { 0x0c, 0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x01, 0x0b };
 static const byte oid_ms_codesigning[] = { 0x0c, 0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x01, 0x15 };
+
+/* static const byte oid_pkcs7_data[] = { 0x0b, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x01 }; */
 static const byte oid_pkcs7_signed_data[] = { 0x0b, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x02 };
 
 static const byte int_1[] = { 0x03, 0x02, 0x01, 0x01 };
@@ -231,9 +236,22 @@ x509_mpiint(struct x509 *cb, byte *p, int pl)
 }
 
 static void
-x509_pubkey(struct x509 *cb, int pubalgo, byte **mpi, int *mpil, byte *keyid)
+x509_algoid_digest(struct x509 *cb, int algo)
 {
-  int offset = cb->len, offset2;
+  if (algo == HASH_SHA1)
+    x509_add_const(cb, digest_algo_sha1);
+  else if (algo == HASH_SHA256)
+    x509_add_const(cb, digest_algo_sha256);
+  else if (algo == HASH_SHA512)
+    x509_add_const(cb, digest_algo_sha512);
+  else
+    abort();
+}
+
+static void
+x509_algoid(struct x509 *cb, int pubalgo, byte **mpi, int *mpil)
+{
+  int offset = cb->len;
   if (pubalgo == PUB_RSA)
     {
       x509_add_const(cb, oid_rsa_encryption);
@@ -242,15 +260,18 @@ x509_pubkey(struct x509 *cb, int pubalgo, byte **mpi, int *mpil, byte *keyid)
   else if (pubalgo == PUB_DSA)
     {
       x509_add_const(cb, oid_dsa_encryption);
-      offset2 = cb->len;
-      x509_mpiint(cb, mpi[0], mpil[0]);
-      x509_mpiint(cb, mpi[1], mpil[1]);
-      x509_mpiint(cb, mpi[2], mpil[2]);
-      x509_tag(cb, offset2, 0x30);
+      if (mpi)
+	{
+	  int offset2 = cb->len;
+	  x509_mpiint(cb, mpi[0], mpil[0]);
+	  x509_mpiint(cb, mpi[1], mpil[1]);
+	  x509_mpiint(cb, mpi[2], mpil[2]);
+	  x509_tag(cb, offset2, 0x30);
+	}
     }
   else if (pubalgo == PUB_EDDSA)
     {
-      if (mpil[0] == gpg_ed25519[0] && !memcmp(mpi[0], gpg_ed25519 + 1, mpil[0]))
+      if (mpi && mpil[0] == gpg_ed25519[0] && !memcmp(mpi[0], gpg_ed25519 + 1, mpil[0]))
 	x509_add_const(cb, oid_ed25519);
       else
 	{
@@ -259,11 +280,33 @@ x509_pubkey(struct x509 *cb, int pubalgo, byte **mpi, int *mpil, byte *keyid)
 	}
     }
   else
+    abort();
+  x509_tag(cb, offset, 0x30);
+}
+
+static void
+x509_algoid_sig(struct x509 *cb, int pubalgo, int algo)
+{
+  if (pubalgo == PUB_RSA && algo == HASH_SHA256)
+    x509_add_const(cb, sig_algo_rsa_sha256);
+  else if (pubalgo == PUB_RSA && algo == HASH_SHA512)
+    x509_add_const(cb, sig_algo_rsa_sha512);
+  else if (pubalgo == PUB_DSA && algo == HASH_SHA256)
+    x509_add_const(cb, sig_algo_dsa_sha256);
+  else if (pubalgo == PUB_DSA && algo == HASH_SHA512)
+    x509_add_const(cb, sig_algo_dsa_sha512);
+  else
     {
-      fprintf(stderr, "x509_pubkey: unsupported pubkey algorithm %d\n", pubalgo);
+      fprintf(stderr, "unsupported pubalgo/hashalgo combination: %d/%d\n", pubalgo, algo);
       exit(1);
     }
-  x509_tag(cb, offset, 0x30);
+}
+
+static void
+x509_pubkey(struct x509 *cb, int pubalgo, byte **mpi, int *mpil, byte *keyid)
+{
+  int offset = cb->len, offset2;
+  x509_algoid(cb, pubalgo, mpi, mpil);
   offset2 = cb->len;
   if (pubalgo == PUB_RSA)
     {
@@ -314,20 +357,6 @@ x509_extensions(struct x509 *cb, byte *keyid)
   x509_tag(cb, offset, 0xa3);	/* CONT | CONS | 3 */
 }
 
-static void
-x509_add_sigalgo(struct x509 *cb, int pubalgo)
-{
-  if (pubalgo == PUB_RSA && hashalgo == HASH_SHA256)
-    x509_add_const(cb, sig_algo_rsa_sha256);
-  else if (pubalgo == PUB_DSA && hashalgo == HASH_SHA256)
-    x509_add_const(cb, sig_algo_dsa_sha256);
-  else
-    {
-      fprintf(stderr, "unsupported pubalgo/hashalgo combination: %d/%d\n", pubalgo, hashalgo);
-      exit(1);
-    }
-}
-
 void
 x509_tbscert(struct x509 *cb, const char *cn, const char *email, time_t start, time_t end, int pubalgo, byte **mpi, int *mpil)
 {
@@ -335,7 +364,7 @@ x509_tbscert(struct x509 *cb, const char *cn, const char *email, time_t start, t
   byte keyid[20];
   x509_add_const(cb, cert_version_3);
   x509_random_serial(cb);
-  x509_add_sigalgo(cb, pubalgo);
+  x509_algoid_sig(cb, pubalgo, hashalgo);
   x509_dn(cb, cn, email);
   x509_validity(cb, start, end);
   x509_dn(cb, cn, email);
@@ -347,7 +376,7 @@ x509_tbscert(struct x509 *cb, const char *cn, const char *email, time_t start, t
 void
 x509_finishcert(struct x509 *cb, int pubalgo, byte *sig, int sigl)
 {
-  x509_add_sigalgo(cb, pubalgo);
+  x509_algoid_sig(cb, pubalgo, hashalgo);
   x509_add(cb, 0, 1);
   x509_add(cb, sig, sigl);
   x509_tag(cb, cb->len - (sigl + 1), 0x03);
@@ -506,9 +535,29 @@ x509_skip(unsigned char **bpp, int *lp, int expected)
  * 
  */
 
+static void
+x509_octed_string(struct x509 *cb, unsigned char *blob, int blobl)
+{
+  int offset = cb->len;
+  x509_add(cb, blob, blobl);
+  x509_tag(cb, offset, 0x04);
+}
+
+/* SpcIndirectDataContent */
 void
 x509_spccontent(struct x509 *cb, unsigned char *digest, int digestlen)
 {
+   /* SEQUENCE          
+    *  OBJECT            :1.3.6.1.4.1.311.2.1.30 [SPC_SIPINFO]
+    *  SEQUENCE          
+    *   INTEGER           :01010000
+    *   OCTET STRING      [HEX DUMP]:4BDFC50A07CEE24DB76E23C839A09FD1
+    *   INTEGER           :00
+    *   INTEGER           :00
+    *   INTEGER           :00
+    *   INTEGER           :00
+    *   INTEGER           :00
+    */
   static byte spcinfodata[] = {
     0x30, 0x35, 0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x01, 0x1e, 0x30, 0x27,
     0x02, 0x04, 0x01, 0x01, 0x00, 0x00, 0x04, 0x10, 0x4b, 0xdf, 0xc5, 0x0a, 0x07, 0xce, 0xe2, 0x4d,
@@ -516,14 +565,15 @@ x509_spccontent(struct x509 *cb, unsigned char *digest, int digestlen)
     0x00, 0x02, 0x01, 0x00, 0x02, 0x01, 0x00
   };
   int offset = cb->len;
-
-  x509_add(cb, digest, digestlen);
-  x509_tag(cb, offset, 0x04);
-  x509_insert_const(cb, offset, digest_algo_sha256);
+  /* DigestInfo */
+  x509_algoid_digest(cb, hashalgo);
+  x509_octed_string(cb, digest, digestlen);
   x509_tag(cb, offset, 0x30);
+  /* SpcAttributeTypeAndOptionalValue */
   x509_insert(cb, offset, spcinfodata, sizeof(spcinfodata));
 }
 
+/* copy issuer and serial from cert */
 static void
 x509_issuerandserial(struct x509 *cb, unsigned char *cert, int certlen)
 {
@@ -596,18 +646,20 @@ x509_spcsignedattrs(struct x509 *cb, unsigned char *digest, int digestlen, time_
 static void
 x509_signerinfo(struct x509 *cb, struct x509 *signedattrs, struct x509 *cert, unsigned char *sig, int siglen)
 {
-  int offset = cb->len, offset2;
+  int offset = cb->len;
+  int pubalgo = assertpubalgo >= 0 ? assertpubalgo : PUB_RSA;
   x509_add_const(cb, int_1);	/* version 1 */
   /* issuer and serial number */
   x509_issuerandserial(cb, cert->buf, cert->len);
-  x509_add_const(cb, digest_algo_sha256);
-  offset2 = cb->len;
-  x509_add(cb, signedattrs->buf, signedattrs->len);
-  x509_tag_impl(cb, offset2, 0xa0);	/* CONT | CONS | 0 */
-  x509_add_const(cb, enc_algo_rsa);
-  offset2 = cb->len;
-  x509_add(cb, sig, siglen);
-  x509_tag(cb, offset2, 0x04);
+  x509_algoid_digest(cb, hashalgo);
+  if (signedattrs)
+    {
+      int offset2 = cb->len;
+      x509_add(cb, signedattrs->buf, signedattrs->len);
+      x509_tag_impl(cb, offset2, 0xa0);	/* CONT | CONS | 0 */
+    }
+  x509_algoid(cb, pubalgo, 0, 0);
+  x509_octed_string(cb, sig, siglen);
   x509_tag(cb, offset, 0x30);
 }
 
@@ -646,9 +698,9 @@ void
 x509_pkcs7(struct x509 *cb, struct x509 *content, struct x509 *signedattrs, unsigned char *sig, int siglen, struct x509 *cert, struct x509 *othercerts)
 {
   int offset = cb->len, offset2;
-  x509_add_const(cb, digest_algo_sha256);
-  x509_tag(cb, offset, 0x31);
-  x509_insert_const(cb, offset, int_1);
+  x509_algoid_digest(cb, hashalgo);
+  x509_tag(cb, offset, 0x31);			/* SET of digest algos */
+  x509_insert_const(cb, offset, int_1);		/* version */
   /* contentinfo */
   offset2 = cb->len;
   x509_add(cb, content->buf, content->len);
@@ -671,4 +723,30 @@ x509_pkcs7(struct x509 *cb, struct x509 *content, struct x509 *signedattrs, unsi
   x509_tag(cb, offset, 0xa0);	/* CONT | CONS | 0 */
   x509_insert_const(cb, offset, oid_pkcs7_signed_data);
   x509_tag(cb, offset, 0x30);
+}
+
+int
+x509_cert2pubalgo(struct x509 *cert)
+{
+  unsigned char *b = cert->buf;
+  int l = cert->len;
+  x509_unpack(b, l, &b, &l, 0, 0x30);
+  x509_unpack(b, l, &b, &l, 0, 0x30);
+  if (x509_unpack_tag(b, l) == 0xa0)
+    x509_skip(&b, &l, 0xa0);	/* skip version */
+  x509_skip(&b, &l, 0x02);	/* skip serial */
+  x509_skip(&b, &l, 0x30);	/* skip sig algo */
+  x509_skip(&b, &l, 0x30);	/* skip issuer */
+  x509_skip(&b, &l, 0x30);	/* skip validity */
+  x509_skip(&b, &l, 0x30);	/* skip subject */
+  x509_unpack(b, l, &b, &l, 0, 0x30);	/* unpack public key */
+  x509_unpack(b, l, &b, &l, 0, 0x30);	/* unpack public key info */
+  x509_unpack(b, l, &b, &l, 0, 0x06);	/* unpack object id */
+  if (l == 9 && !memcmp(b, oid_rsa_encryption + 3, 9))
+    return PUB_RSA;
+  if (l == 7 && !memcmp(b, oid_dsa_encryption + 3, 7))
+    return PUB_DSA;
+  if (l == 3 && !memcmp(b, oid_ed25519 + 3, 3))
+    return PUB_EDDSA;	/* Ed25519 */
+  return -1;
 }
