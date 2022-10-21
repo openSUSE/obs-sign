@@ -55,7 +55,7 @@ static const byte oid_spc_spopusinfo[] = { 0x0c, 0x06, 0x0a, 0x2b, 0x06, 0x01, 0
 static const byte oid_spc_statementtype[] = { 0x0c, 0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x01, 0x0b };
 static const byte oid_ms_codesigning[] = { 0x0c, 0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x01, 0x15 };
 
-/* static const byte oid_pkcs7_data[] = { 0x0b, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x01 }; */
+static const byte oid_pkcs7_data[] = { 0x0b, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x01 };
 static const byte oid_pkcs7_signed_data[] = { 0x0b, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x02 };
 
 static const byte int_1[] = { 0x03, 0x02, 0x01, 0x01 };
@@ -544,8 +544,8 @@ x509_octed_string(struct x509 *cb, unsigned char *blob, int blobl)
 }
 
 /* SpcIndirectDataContent */
-void
-x509_spccontent(struct x509 *cb, unsigned char *digest, int digestlen)
+int
+x509_spccontentinfo(struct x509 *cb, unsigned char *digest, int digestlen)
 {
    /* SEQUENCE          
     *  OBJECT            :1.3.6.1.4.1.311.2.1.30 [SPC_SIPINFO]
@@ -565,12 +565,20 @@ x509_spccontent(struct x509 *cb, unsigned char *digest, int digestlen)
     0x00, 0x02, 0x01, 0x00, 0x02, 0x01, 0x00
   };
   int offset = cb->len;
+  int contentlen;
   /* DigestInfo */
   x509_algoid_digest(cb, hashalgo);
   x509_octed_string(cb, digest, digestlen);
   x509_tag(cb, offset, 0x30);
   /* SpcAttributeTypeAndOptionalValue */
   x509_insert(cb, offset, spcinfodata, sizeof(spcinfodata));
+  contentlen = cb->len - offset;
+
+  x509_tag(cb, offset, 0x30);
+  x509_tag(cb, offset, 0xa0);	/* CONT | CONS | 0 */
+  x509_insert_const(cb, offset, oid_spc_indirect_data);
+  x509_tag(cb, offset, 0x30);
+  return cb->len - contentlen;	/* offset to content */
 }
 
 /* copy issuer and serial from cert */
@@ -695,19 +703,20 @@ x509_add_othercerts(struct x509 *cb, struct x509 *cert, struct x509 *othercerts)
 }
 
 void
-x509_pkcs7(struct x509 *cb, struct x509 *content, struct x509 *signedattrs, unsigned char *sig, int siglen, struct x509 *cert, struct x509 *othercerts)
+x509_pkcs7(struct x509 *cb, struct x509 *contentinfo, struct x509 *signedattrs, unsigned char *sig, int siglen, struct x509 *cert, struct x509 *othercerts)
 {
   int offset = cb->len, offset2;
   x509_algoid_digest(cb, hashalgo);
   x509_tag(cb, offset, 0x31);			/* SET of digest algos */
   x509_insert_const(cb, offset, int_1);		/* version */
   /* contentinfo */
-  offset2 = cb->len;
-  x509_add(cb, content->buf, content->len);
-  x509_tag(cb, offset2, 0x30);
-  x509_tag(cb, offset2, 0xa0);	/* CONT | CONS | 0 */
-  x509_insert_const(cb, offset2, oid_spc_indirect_data);
-  x509_tag(cb, offset2, 0x30);
+  if (contentinfo) {
+    x509_add(cb, contentinfo->buf, contentinfo->len);
+  } else {
+    offset2 = cb->len;
+    x509_add_const(cb, oid_pkcs7_data);
+    x509_tag(cb, offset2, 0x30);
+  }
   /* certs */
   offset2 = cb->len;
   x509_add(cb, cert->buf, cert->len);

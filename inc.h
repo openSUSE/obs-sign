@@ -118,9 +118,9 @@ byte *getrawopensslsig(byte *sig, int sigl, int *lenp);
 void certsizelimit(char *s, int l);
 
 int x509_addpem(struct x509 *cb, char *buf, char *type);
-void x509_spccontent(struct x509 *cb, unsigned char *digest, int digestlen);
+int x509_spccontentinfo(struct x509 *cb, unsigned char *digest, int digestlen);
 void x509_spcsignedattrs(struct x509 *cb, unsigned char *digest, int digestlen, time_t signtime);
-void x509_pkcs7(struct x509 *cb, struct x509 *content, struct x509 *signedattrs, unsigned char *sig, int siglen, struct x509 *cert, struct x509 *othercerts);
+void x509_pkcs7(struct x509 *cb, struct x509 *contentinfo, struct x509 *signedattrs, unsigned char *sig, int siglen, struct x509 *cert, struct x509 *othercerts);
 int x509_cert2pubalgo(struct x509 *cert);
 
 

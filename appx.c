@@ -21,6 +21,8 @@
 
 #include "inc.h"
 
+extern int appxsig2stdout;
+
 static const unsigned char axmgsig[4] = { 0x41, 0x50, 0x50, 0x58 };
 static const unsigned char axpcsig[4] = { 0x41, 0x58, 0x50, 0x43 };
 static const unsigned char axcdsig[4] = { 0x41, 0x58, 0x43, 0x44 };
@@ -76,6 +78,7 @@ int
 appx_read(struct appxdata *appxdata, int fd, char *filename, time_t t)
 {
   unsigned char digest[4 + (4 + 32) * 5];
+  int offset;
   HASH_CONTEXT ctx;
 
   if (hashalgo != HASH_SHA256)
@@ -112,13 +115,13 @@ appx_read(struct appxdata *appxdata, int fd, char *filename, time_t t)
   /* zero AppxMetadata/CodeIntegrity.cat */
   memcpy(digest + 148, axcisig, 4);
 
-  /* create spccontent */
+  /* create spccontentinfo */
   x509_init(&appxdata->cb_content);
-  x509_spccontent(&appxdata->cb_content, digest, sizeof(digest));
+  offset = x509_spccontentinfo(&appxdata->cb_content, digest, sizeof(digest));
 
   /* hash the spccontent */
   hash_init(&ctx);
-  hash_write(&ctx, appxdata->cb_content.buf, appxdata->cb_content.len);
+  hash_write(&ctx, appxdata->cb_content.buf + offset, appxdata->cb_content.len - offset);
   hash_final(&ctx);
 
   /* create signedattrs */
@@ -137,6 +140,11 @@ appx_write(struct appxdata *appxdata, int outfd, int fd, struct x509 *cert, unsi
   x509_pkcs7(&cb, &appxdata->cb_content, &appxdata->cb_signedattrs, sig, siglen, cert, othercerts);
   /* add file magic */
   x509_insert(&cb, 0, p7xmagic, sizeof(p7xmagic));
+  if (appxsig2stdout)
+    {
+      write(1, cb.buf, cb.len);
+      exit(0);
+    }
   /* append file to zip, must use deflated compression */
   zip_appendfile(&appxdata->zip, "AppxSignature.p7x", cb.buf, cb.len, 8, appxdata->datetime);
   zip_write(&appxdata->zip, fd, outfd);

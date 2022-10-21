@@ -62,6 +62,7 @@ static int dov4sig;
 static int pubalgoprobe = -1;
 static struct x509 cert;
 static struct x509 othercerts;
+int appxsig2stdout = 0;
 
 #define MODE_UNSET        0
 #define MODE_RPMSIGN      1
@@ -1635,6 +1636,11 @@ main(int argc, char **argv)
 	}
       else if (!strcmp(opt, "--appx"))
 	mode = MODE_APPXSIGN;
+      else if (!strcmp(opt, "--appxsig2stdout"))
+	{
+	  mode = MODE_APPXSIGN;
+	  appxsig2stdout = 1;
+	}
       else if (!strcmp(opt, "--"))
 	break;
       else
