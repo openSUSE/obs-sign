@@ -120,7 +120,7 @@ void certsizelimit(char *s, int l);
 
 int x509_addpem(struct x509 *cb, char *buf, char *type);
 void x509_signedattrs(struct x509 *cb, unsigned char *digest, int digestlen, time_t signtime);
-void x509_pkcs7(struct x509 *cb, struct x509 *contentinfo, struct x509 *signedattrs, unsigned char *sig, int siglen, struct x509 *cert, struct x509 *othercerts, int flags);
+void x509_pkcs7_signed_data(struct x509 *cb, struct x509 *contentinfo, struct x509 *signedattrs, unsigned char *sig, int siglen, struct x509 *cert, struct x509 *othercerts, int flags);
 int x509_cert2pubalgo(struct x509 *cert);
 
 int x509_spccontentinfo(struct x509 *cb, unsigned char *digest, int digestlen);

@@ -137,7 +137,7 @@ appx_write(struct appxdata *appxdata, int outfd, int fd, struct x509 *cert, unsi
   struct x509 cb;
 
   x509_init(&cb);
-  x509_pkcs7(&cb, &appxdata->cb_content, &appxdata->cb_signedattrs, sig, siglen, cert, othercerts, 0);
+  x509_pkcs7_signed_data(&cb, &appxdata->cb_content, &appxdata->cb_signedattrs, sig, siglen, cert, othercerts, 0);
   /* add file magic */
   x509_insert(&cb, 0, p7xmagic, sizeof(p7xmagic));
   if (appxsig2stdout)

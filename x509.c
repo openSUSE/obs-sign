@@ -684,7 +684,7 @@ x509_add_othercerts(struct x509 *cb, struct x509 *cert, struct x509 *othercerts)
 }
 
 void
-x509_pkcs7(struct x509 *cb, struct x509 *contentinfo, struct x509 *signedattrs, unsigned char *sig, int siglen, struct x509 *cert, struct x509 *othercerts, int flags)
+x509_pkcs7_signed_data(struct x509 *cb, struct x509 *contentinfo, struct x509 *signedattrs, unsigned char *sig, int siglen, struct x509 *cert, struct x509 *othercerts, int flags)
 {
   int offset = cb->len, offset2;
   int usekeyid = flags & X509_PKCS7_USE_KEYID ? 1 : 0;

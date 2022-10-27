@@ -63,6 +63,7 @@ static int pubalgoprobe = -1;
 static struct x509 cert;
 static struct x509 othercerts;
 int appxsig2stdout = 0;
+static int cms_flags = 0;
 
 #define MODE_UNSET        0
 #define MODE_RPMSIGN      1
@@ -683,7 +684,7 @@ sign(char *filename, int isfilter, int mode)
 	  exit(1);
 	}
       x509_init(&cb);
-      x509_pkcs7(&cb, 0, (cms_signedattrs.len ? &cms_signedattrs : 0), rawssl, rawssllen, &cert, &othercerts, 0);
+      x509_pkcs7_signed_data(&cb, 0, (cms_signedattrs.len ? &cms_signedattrs : 0), rawssl, rawssllen, &cert, &othercerts, cms_flags);
       fwrite(cb.buf, 1, cb.len, fout);
       x509_free(&cb);
       x509_free(&cms_signedattrs);
@@ -1684,6 +1685,10 @@ main(int argc, char **argv)
 	}
       else if (!strcmp(opt, "--cmssign"))
 	mode = MODE_CMSSIGN;
+      else if (!strcmp(opt, "--cms-nocerts"))
+	cms_flags |= X509_PKCS7_NO_CERTS;
+      else if (!strcmp(opt, "--cms-keyid"))
+	cms_flags |= X509_PKCS7_USE_KEYID;
       else if (!strcmp(opt, "--"))
 	break;
       else
