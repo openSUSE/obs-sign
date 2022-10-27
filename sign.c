@@ -78,10 +78,12 @@ int appxsig2stdout = 0;
 #define MODE_APPIMAGESIGN 11
 #define MODE_APPXSIGN	  12
 #define MODE_HASHFILE	  13
+#define MODE_CMSSIGN	  14
 
 static const char *const modes[] = {
   "?", "rpm sign", "clear sign", "detached sign", "keyid", "pubkey", "keygen", "keyextend",
-  "raw detached sign" "raw openssl sign" "cert create", "appimage sign", "appx sign", "hashfile"
+  "raw detached sign" "raw openssl sign" "cert create", "appimage sign", "appx sign", "hashfile",
+  "cms sign"
 };
 
 static void
@@ -231,6 +233,7 @@ sign(char *filename, int isfilter, int mode)
   int getbuildtime = 0;
   unsigned char *v4sigtrail = 0;
   int v4sigtraillen = 0;
+  struct x509 cms_signedattrs;
 
   if (mode == MODE_UNSET)
     {
@@ -257,6 +260,25 @@ sign(char *filename, int isfilter, int mode)
       exit(1);
     }
 
+  /* make sure we have a cert for appx/cms sign */
+  if (mode == MODE_APPXSIGN || mode == MODE_CMSSIGN)
+    {
+      int pubalgo;
+      if (!cert.len)
+	{
+	  fprintf(stderr, "need a cert for %s\n", modes[mode]);
+	  exit(1);
+	}
+      pubalgo = x509_cert2pubalgo(&cert);
+      if (assertpubalgo < 0)
+	assertpubalgo = pubalgo;
+      if (assertpubalgo != pubalgo)
+	{
+	  fprintf(stderr, "pubkey algorithm does not match cert\n");
+	  exit(1);
+	}
+    }
+
   /* open input file */
   if (isfilter)
     fd = 0;
@@ -279,6 +301,8 @@ sign(char *filename, int isfilter, int mode)
 	sprintf(outfilename, "%s.asc", filename);
       else if (mode == MODE_RAWDETACHEDSIGN || mode == MODE_RAWOPENSSLSIGN)
 	sprintf(outfilename, "%s.sig", filename);
+      else if (mode == MODE_CMSSIGN)
+	sprintf(outfilename, "%s.p7s", filename);
       else
 	{
 	  sprintf(outfilename, "%s.sIgN%d", filename, getpid());
@@ -334,20 +358,6 @@ sign(char *filename, int isfilter, int mode)
     }
   else if (mode == MODE_APPXSIGN)
     {
-      int pubalgo;
-      if (!cert.len)
-	{
-	  fprintf(stderr, "need a cert for appx signing\n");
-	  exit(1);
-	}
-      pubalgo = x509_cert2pubalgo(&cert);
-      if (assertpubalgo < 0)
-	assertpubalgo = pubalgo;
-      if (assertpubalgo != pubalgo)
-	{
-	  fprintf(stderr, "pubkey algorithm does not match cert\n");
-	  exit(1);
-	}
       if (appx_read(&appxdata, fd, filename, signtime) == 0)
 	{
 	  fprintf(isfilter ? stderr : stdout, "%s: already signed\n", filename);
@@ -401,6 +411,18 @@ sign(char *filename, int isfilter, int mode)
 	hash_write(&ctx, buf,  l);
     }
 
+  if (mode == MODE_CMSSIGN)
+    {
+      x509_init(&cms_signedattrs);
+      if (signtime)
+	{
+	  hash_final(&ctx);
+	  x509_signedattrs(&cms_signedattrs, hash_read(&ctx), hash_len(), signtime);
+	  hash_init(&ctx);
+	  hash_write(&ctx, cms_signedattrs.buf, cms_signedattrs.len);
+	}
+    }
+
   if (verbose && mode != MODE_KEYID)
     {
       if (*user)
@@ -408,7 +430,7 @@ sign(char *filename, int isfilter, int mode)
       else
         fprintf(isfilter ? stderr : stdout, "%s %s\n", modes[mode],  filename);
     }
-  if (mode == MODE_RAWOPENSSLSIGN || mode == MODE_APPXSIGN)
+  if (mode == MODE_RAWOPENSSLSIGN || mode == MODE_APPXSIGN || mode == MODE_CMSSIGN)
     {
       sigtrail[0] = pkcs1pss ? 0xbc : 0x00;
       sigtrail[1] = sigtrail[2] = sigtrail[3] = sigtrail[4] = 0;	/* time does not matter */
@@ -646,6 +668,25 @@ sign(char *filename, int isfilter, int mode)
       appx_write(&appxdata, isfilter ? 1 : fileno(fout), fd, &cert, rawssl, rawssllen, &othercerts);
       appx_free(&appxdata);
       free(rawssl);
+    }
+  else if (mode == MODE_CMSSIGN)
+    {
+      struct x509 cb;
+      int rawssllen = 0;
+      int sigl;
+      byte *sig = pkg2sig(buf + 6, outl, &sigl);
+      byte *rawssl = getrawopensslsig(sig, sigl, &rawssllen);
+      if (!rawssl)
+	{
+	  if (!isfilter)
+	    unlink(outfilename);
+	  exit(1);
+	}
+      x509_init(&cb);
+      x509_pkcs7(&cb, 0, (cms_signedattrs.len ? &cms_signedattrs : 0), rawssl, rawssllen, &cert, &othercerts, 0);
+      fwrite(cb.buf, 1, cb.len, fout);
+      x509_free(&cb);
+      x509_free(&cms_signedattrs);
     }
   else
     fwrite(buf + 6, 1, outl, fout);
@@ -1641,6 +1682,8 @@ main(int argc, char **argv)
 	  mode = MODE_APPXSIGN;
 	  appxsig2stdout = 1;
 	}
+      else if (!strcmp(opt, "--cmssign"))
+	mode = MODE_CMSSIGN;
       else if (!strcmp(opt, "--"))
 	break;
       else

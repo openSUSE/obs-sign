@@ -126,7 +126,7 @@ appx_read(struct appxdata *appxdata, int fd, char *filename, time_t t)
 
   /* create signedattrs */
   x509_init(&appxdata->cb_signedattrs);
-  x509_spcsignedattrs(&appxdata->cb_signedattrs, hash_read(&ctx), 32, t);
+  x509_spcsignedattrs(&appxdata->cb_signedattrs, hash_read(&ctx), hash_len(), t);
   return 1;
 }
 
@@ -137,7 +137,7 @@ appx_write(struct appxdata *appxdata, int outfd, int fd, struct x509 *cert, unsi
   struct x509 cb;
 
   x509_init(&cb);
-  x509_pkcs7(&cb, &appxdata->cb_content, &appxdata->cb_signedattrs, sig, siglen, cert, othercerts);
+  x509_pkcs7(&cb, &appxdata->cb_content, &appxdata->cb_signedattrs, sig, siglen, cert, othercerts, 0);
   /* add file magic */
   x509_insert(&cb, 0, p7xmagic, sizeof(p7xmagic));
   if (appxsig2stdout)

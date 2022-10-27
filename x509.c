@@ -59,6 +59,7 @@ static const byte oid_pkcs7_data[] = { 0x0b, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86,
 static const byte oid_pkcs7_signed_data[] = { 0x0b, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x02 };
 
 static const byte int_1[] = { 0x03, 0x02, 0x01, 0x01 };
+static const byte int_3[] = { 0x03, 0x02, 0x01, 0x03 };
 
 static const byte gpg_ed25519[] = { 0x09, 0x2b, 0x06, 0x01, 0x04, 0x01, 0xda, 0x47, 0x0f, 0x01, 0x18 };
 
@@ -536,49 +537,11 @@ x509_skip(unsigned char **bpp, int *lp, int expected)
  */
 
 static void
-x509_octed_string(struct x509 *cb, unsigned char *blob, int blobl)
+x509_octed_string(struct x509 *cb, const unsigned char *blob, int blobl)
 {
   int offset = cb->len;
   x509_add(cb, blob, blobl);
   x509_tag(cb, offset, 0x04);
-}
-
-/* SpcIndirectDataContent */
-int
-x509_spccontentinfo(struct x509 *cb, unsigned char *digest, int digestlen)
-{
-   /* SEQUENCE          
-    *  OBJECT            :1.3.6.1.4.1.311.2.1.30 [SPC_SIPINFO]
-    *  SEQUENCE          
-    *   INTEGER           :01010000
-    *   OCTET STRING      [HEX DUMP]:4BDFC50A07CEE24DB76E23C839A09FD1
-    *   INTEGER           :00
-    *   INTEGER           :00
-    *   INTEGER           :00
-    *   INTEGER           :00
-    *   INTEGER           :00
-    */
-  static byte spcinfodata[] = {
-    0x30, 0x35, 0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x01, 0x1e, 0x30, 0x27,
-    0x02, 0x04, 0x01, 0x01, 0x00, 0x00, 0x04, 0x10, 0x4b, 0xdf, 0xc5, 0x0a, 0x07, 0xce, 0xe2, 0x4d,
-    0xb7, 0x6e, 0x23, 0xc8, 0x39, 0xa0, 0x9f, 0xd1, 0x02, 0x01, 0x00, 0x02, 0x01, 0x00, 0x02, 0x01,
-    0x00, 0x02, 0x01, 0x00, 0x02, 0x01, 0x00
-  };
-  int offset = cb->len;
-  int contentlen;
-  /* DigestInfo */
-  x509_algoid_digest(cb, hashalgo);
-  x509_octed_string(cb, digest, digestlen);
-  x509_tag(cb, offset, 0x30);
-  /* SpcAttributeTypeAndOptionalValue */
-  x509_insert(cb, offset, spcinfodata, sizeof(spcinfodata));
-  contentlen = cb->len - offset;
-
-  x509_tag(cb, offset, 0x30);
-  x509_tag(cb, offset, 0xa0);	/* CONT | CONS | 0 */
-  x509_insert_const(cb, offset, oid_spc_indirect_data);
-  x509_tag(cb, offset, 0x30);
-  return cb->len - contentlen;	/* offset to content */
 }
 
 /* copy issuer and serial from cert */
@@ -607,58 +570,76 @@ x509_issuerandserial(struct x509 *cb, unsigned char *cert, int certlen)
   x509_tag(cb, offset, 0x30);
 }
 
-void
-x509_spcsignedattrs(struct x509 *cb, unsigned char *digest, int digestlen, time_t signtime)
+/* copy subject key id from cert */
+static void
+x509_subjectkeyid(struct x509 *cb, unsigned char *cert, int certlen)
 {
-  int offset = cb->len, offset2;
-
-  /* opusinfo attribute */
-  offset2 = cb->len;
-  x509_tag(cb, offset2, 0x30);
-  x509_tag(cb, offset2, 0x31);
-  x509_insert_const(cb, offset2, oid_spc_spopusinfo);
-  x509_tag(cb, offset2, 0x30);
-  /* contenttype attribute */
-  offset2 = cb->len;
-  x509_add_const(cb, oid_spc_indirect_data);
-  x509_tag(cb, offset2, 0x31);
-  x509_insert_const(cb, offset2, oid_contenttype);
-  x509_tag(cb, offset2, 0x30);
-  /* signingtime attribute */
-  if (signtime)
+  unsigned char *b = cert;
+  int l = certlen;
+  x509_unpack(b, l, &b, &l, 0, 0x30);
+  x509_unpack(b, l, &b, &l, 0, 0x30);
+  if (x509_unpack_tag(b, l) == 0xa0)
+    x509_skip(&b, &l, 0xa0);	/* skip version */
+  x509_skip(&b, &l, 0x02);	/* skip serial */
+  x509_skip(&b, &l, 0x30);	/* skip sig algo */
+  x509_skip(&b, &l, 0x30);	/* skip issuer */
+  x509_skip(&b, &l, 0x30);	/* skip validity */
+  x509_skip(&b, &l, 0x30);	/* skip subject */
+  x509_skip(&b, &l, 0x30);	/* skip public key */
+  if (x509_unpack_tag(b, l) == 0x81)
+    x509_skip(&b, &l, 0x81);	/* skip optional issuer unique id */
+  if (x509_unpack_tag(b, l) == 0x82)
+    x509_skip(&b, &l, 0x82);	/* skip optional subject unique id */
+  if (x509_unpack_tag(b, l) == 0xa3)
     {
-      offset2 = cb->len;
-      x509_time(cb, signtime);
-      x509_tag(cb, offset2, 0x31);
-      x509_insert_const(cb, offset2, oid_signingtime);
-      x509_tag(cb, offset2, 0x30);
+      x509_unpack(b, l, &b, &l, 0, 0xa3);
+      x509_unpack(b, l, &b, &l, 0, 0x30);
     }
-  /* statementtype attribute */
-  offset2 = cb->len;
-  x509_add_const(cb, oid_ms_codesigning);
-  x509_tag(cb, offset2, 0x30);
-  x509_tag(cb, offset2, 0x31);
-  x509_insert_const(cb, offset2, oid_spc_statementtype);
-  x509_tag(cb, offset2, 0x30);
-  /* message digest attribute */
-  offset2 = cb->len;
-  x509_add(cb, digest, digestlen);
-  x509_tag(cb, offset2, 0x04);
-  x509_tag(cb, offset2, 0x31);
-  x509_insert_const(cb, offset2, oid_messagedigest);
-  x509_tag(cb, offset2, 0x30);
-  /* return a set */
-  x509_tag(cb, offset, 0x31);
+  else
+    l = 0;
+  while (l > 0)
+    {
+      unsigned char *b2;
+      int l2, cl;
+      x509_unpack(b, l, &b2, &l2, &cl, 0x30);
+      b += cl;
+      l -= cl;
+      if (l2 < 6 || memcmp(b2, "\006\003\125\035\016", 5))
+	continue;
+      b2 += 5;
+      l2 -= 5;
+      if (x509_unpack_tag(b2, l2) == 0x01)
+	x509_skip(&b2, &l2, 0x01);	/* skip critical bit */
+      x509_unpack(b2, l2, &b2, &l2, 0, 0x04);
+      x509_unpack(b2, l2, &b2, &l2, 0, 0x04);
+      x509_add(cb, b2, l2);
+      return;
+    }
+  fprintf(stderr, "cert does not contain the subject key identifier extension\n");
+  exit(1);
 }
 
 static void
-x509_signerinfo(struct x509 *cb, struct x509 *signedattrs, struct x509 *cert, unsigned char *sig, int siglen)
+x509_signerinfo(struct x509 *cb, struct x509 *signedattrs, struct x509 *cert, unsigned char *sig, int siglen, int usekeyid)
 {
   int offset = cb->len;
   int pubalgo = assertpubalgo >= 0 ? assertpubalgo : PUB_RSA;
-  x509_add_const(cb, int_1);	/* version 1 */
-  /* issuer and serial number */
-  x509_issuerandserial(cb, cert->buf, cert->len);
+
+  if (usekeyid)
+    {
+      int offset2;
+      x509_add_const(cb, int_3);	/* version 3 */
+      /* refer to cert by subject key id */
+      offset2 = cb->len;
+      x509_subjectkeyid(cb, cert->buf, cert->len);
+      x509_tag(cb, offset2, 0x80);
+    }
+  else
+    {
+      x509_add_const(cb, int_1);	/* version 1 */
+      /* issuer and serial number */
+      x509_issuerandserial(cb, cert->buf, cert->len);
+    }
   x509_algoid_digest(cb, hashalgo);
   if (signedattrs)
     {
@@ -703,35 +684,86 @@ x509_add_othercerts(struct x509 *cb, struct x509 *cert, struct x509 *othercerts)
 }
 
 void
-x509_pkcs7(struct x509 *cb, struct x509 *contentinfo, struct x509 *signedattrs, unsigned char *sig, int siglen, struct x509 *cert, struct x509 *othercerts)
+x509_pkcs7(struct x509 *cb, struct x509 *contentinfo, struct x509 *signedattrs, unsigned char *sig, int siglen, struct x509 *cert, struct x509 *othercerts, int flags)
 {
   int offset = cb->len, offset2;
+  int usekeyid = flags & X509_PKCS7_USE_KEYID ? 1 : 0;
   x509_algoid_digest(cb, hashalgo);
   x509_tag(cb, offset, 0x31);			/* SET of digest algos */
-  x509_insert_const(cb, offset, int_1);		/* version */
+  x509_insert_const(cb, offset, usekeyid ? int_3 : int_1);		/* version */
   /* contentinfo */
-  if (contentinfo) {
+  if (contentinfo)
     x509_add(cb, contentinfo->buf, contentinfo->len);
-  } else {
-    offset2 = cb->len;
-    x509_add_const(cb, oid_pkcs7_data);
-    x509_tag(cb, offset2, 0x30);
-  }
+  else
+    {
+      offset2 = cb->len;
+      x509_add_const(cb, oid_pkcs7_data);
+      x509_tag(cb, offset2, 0x30);
+    }
   /* certs */
-  offset2 = cb->len;
-  x509_add(cb, cert->buf, cert->len);
-  if (othercerts)
-    x509_add_othercerts(cb, cert, othercerts);
-  x509_tag(cb, offset2, 0xa0);	/* CONT | CONS | 0 */
+  if (!(flags & X509_PKCS7_NO_CERTS))
+    {
+      offset2 = cb->len;
+      x509_add(cb, cert->buf, cert->len);
+      if (othercerts)
+	x509_add_othercerts(cb, cert, othercerts);
+      x509_tag(cb, offset2, 0xa0);	/* CONT | CONS | 0 */
+    }
   /* signerinfos */
   offset2 = cb->len;
-  x509_signerinfo(cb, signedattrs, cert, sig, siglen);
+  x509_signerinfo(cb, signedattrs, cert, sig, siglen, usekeyid);
   x509_tag(cb, offset2, 0x31);
   /* finish */
   x509_tag(cb, offset, 0x30);
   x509_tag(cb, offset, 0xa0);	/* CONT | CONS | 0 */
   x509_insert_const(cb, offset, oid_pkcs7_signed_data);
   x509_tag(cb, offset, 0x30);
+}
+
+static void
+x509_addsignedattr(struct x509 *cb, int offset, const unsigned char *oid)
+{
+  x509_tag(cb, offset, 0x31);	/* make it a set */
+  x509_insert_const(cb, offset, oid);	/* prepend oid */
+  x509_tag(cb, offset, 0x30);	/* make sequence */
+}
+
+static void
+x509_addsignedattr_contenttype(struct x509 *cb, const unsigned char *oid)
+{
+  int offset = cb->len;
+  x509_add_const(cb, oid);
+  x509_addsignedattr(cb, offset, oid_contenttype);
+}
+
+static void
+x509_addsignedattr_signtime(struct x509 *cb, time_t signtime)
+{
+  int offset = cb->len;
+  x509_time(cb, signtime);
+  x509_addsignedattr(cb, offset, oid_signingtime);
+}
+
+static void
+x509_addsignedattr_messagedigest(struct x509 *cb, const unsigned char *digest, int digestlen)
+{
+  int offset = cb->len;
+  x509_octed_string(cb, digest, digestlen);
+  x509_addsignedattr(cb, offset, oid_messagedigest);
+}
+
+/* simple signed attributes generator just containing the signing time
+   and pkcs7-data as content type */
+void
+x509_signedattrs(struct x509 *cb, unsigned char *digest, int digestlen, time_t signtime)
+{
+  int offset = cb->len;
+  x509_addsignedattr_contenttype(cb, oid_pkcs7_data);
+  if (signtime)
+    x509_addsignedattr_signtime(cb, signtime);
+  x509_addsignedattr_messagedigest(cb, digest, digestlen);
+  /* return a set */
+  x509_tag(cb, offset, 0x31);
 }
 
 int
@@ -759,3 +791,71 @@ x509_cert2pubalgo(struct x509 *cert)
     return PUB_EDDSA;	/* Ed25519 */
   return -1;
 }
+
+
+
+/* Special SPC functions needed for appx signing */
+
+/* SpcIndirectDataContent */
+int
+x509_spccontentinfo(struct x509 *cb, unsigned char *digest, int digestlen)
+{
+   /* SEQUENCE          
+    *  OBJECT            :1.3.6.1.4.1.311.2.1.30 [SPC_SIPINFO]
+    *  SEQUENCE          
+    *   INTEGER           :01010000
+    *   OCTET STRING      [HEX DUMP]:4BDFC50A07CEE24DB76E23C839A09FD1
+    *   INTEGER           :00
+    *   INTEGER           :00
+    *   INTEGER           :00
+    *   INTEGER           :00
+    *   INTEGER           :00
+    */
+  static byte spcinfodata[] = {
+    0x30, 0x35, 0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x01, 0x1e, 0x30, 0x27,
+    0x02, 0x04, 0x01, 0x01, 0x00, 0x00, 0x04, 0x10, 0x4b, 0xdf, 0xc5, 0x0a, 0x07, 0xce, 0xe2, 0x4d,
+    0xb7, 0x6e, 0x23, 0xc8, 0x39, 0xa0, 0x9f, 0xd1, 0x02, 0x01, 0x00, 0x02, 0x01, 0x00, 0x02, 0x01,
+    0x00, 0x02, 0x01, 0x00, 0x02, 0x01, 0x00
+  };
+  int offset = cb->len;
+  int contentlen;
+  /* DigestInfo */
+  x509_algoid_digest(cb, hashalgo);
+  x509_octed_string(cb, digest, digestlen);
+  x509_tag(cb, offset, 0x30);
+  /* SpcAttributeTypeAndOptionalValue */
+  x509_insert(cb, offset, spcinfodata, sizeof(spcinfodata));
+  contentlen = cb->len - offset;
+
+  x509_tag(cb, offset, 0x30);
+  x509_tag(cb, offset, 0xa0);	/* CONT | CONS | 0 */
+  x509_insert_const(cb, offset, oid_spc_indirect_data);
+  x509_tag(cb, offset, 0x30);
+  return cb->len - contentlen;	/* offset to content */
+}
+
+void
+x509_spcsignedattrs(struct x509 *cb, unsigned char *digest, int digestlen, time_t signtime)
+{
+  int offset = cb->len, offset2;
+
+  /* opusinfo attribute */
+  offset2 = cb->len;
+  x509_tag(cb, offset2, 0x30);
+  x509_addsignedattr(cb, offset2, oid_spc_spopusinfo);
+  /* contenttype attribute */
+  x509_addsignedattr_contenttype(cb, oid_spc_indirect_data);
+  /* signingtime attribute */
+  if (signtime)
+    x509_addsignedattr_signtime(cb, signtime);
+  /* statementtype attribute */
+  offset2 = cb->len;
+  x509_add_const(cb, oid_ms_codesigning);
+  x509_tag(cb, offset2, 0x30);
+  x509_addsignedattr(cb, offset2, oid_spc_statementtype);
+  /* message digest attribute */
+  x509_addsignedattr_messagedigest(cb, digest, digestlen);
+  /* return a set */
+  x509_tag(cb, offset, 0x31);
+}
+

@@ -1110,3 +1110,14 @@ unsigned char *hash_read(HASH_CONTEXT *c)
   return 0;
 }
 
+int hash_len()
+{
+  if (hashalgo == HASH_SHA1)
+    return 20;
+  else if (hashalgo == HASH_SHA256)
+    return 32;
+  else if (hashalgo == HASH_SHA512)
+    return 64;
+  return 0;
+}
+

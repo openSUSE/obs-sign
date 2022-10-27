@@ -77,6 +77,7 @@ void hash_init(HASH_CONTEXT *c);
 void hash_write(HASH_CONTEXT *c, const unsigned char *b, size_t l);
 void hash_final(HASH_CONTEXT *c);
 unsigned char *hash_read(HASH_CONTEXT *c);
+int hash_len(void);
 
 /* base64.c */
 void printr64(FILE *f, const byte *str, int len);
@@ -118,11 +119,15 @@ byte *getrawopensslsig(byte *sig, int sigl, int *lenp);
 void certsizelimit(char *s, int l);
 
 int x509_addpem(struct x509 *cb, char *buf, char *type);
-int x509_spccontentinfo(struct x509 *cb, unsigned char *digest, int digestlen);
-void x509_spcsignedattrs(struct x509 *cb, unsigned char *digest, int digestlen, time_t signtime);
-void x509_pkcs7(struct x509 *cb, struct x509 *contentinfo, struct x509 *signedattrs, unsigned char *sig, int siglen, struct x509 *cert, struct x509 *othercerts);
+void x509_signedattrs(struct x509 *cb, unsigned char *digest, int digestlen, time_t signtime);
+void x509_pkcs7(struct x509 *cb, struct x509 *contentinfo, struct x509 *signedattrs, unsigned char *sig, int siglen, struct x509 *cert, struct x509 *othercerts, int flags);
 int x509_cert2pubalgo(struct x509 *cert);
 
+int x509_spccontentinfo(struct x509 *cb, unsigned char *digest, int digestlen);
+void x509_spcsignedattrs(struct x509 *cb, unsigned char *digest, int digestlen, time_t signtime);
+
+#define X509_PKCS7_USE_KEYID (1 << 0)
+#define X509_PKCS7_NO_CERTS  (1 << 1)
 
 /* zip.c */
 struct zip {
