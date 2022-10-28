@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006-2013 Michael Schroeder, Novell Inc.
+ * Copyright (c) 2006-2022 SUSE LLC
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
