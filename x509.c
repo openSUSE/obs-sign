@@ -63,12 +63,14 @@ static const byte int_3[] = { 0x03, 0x02, 0x01, 0x03 };
 
 static const byte gpg_ed25519[] = { 0x09, 0x2b, 0x06, 0x01, 0x04, 0x01, 0xda, 0x47, 0x0f, 0x01, 0x18 };
 
+static void x509_skip(unsigned char **bpp, int *lp, int expected);
+
 static void
 x509_room(struct x509 *cb, int l)
 {
   if (l < 0 || l > 100000 || cb->len > 100000)
     {
-      fprintf(stderr, "x509_room: illegal request\n");
+      fprintf(stderr, "x509_room: illegal size\n");
       exit(1);
     }
   if (cb->len + l > cb->alen)
@@ -125,6 +127,9 @@ x509_insert_const(struct x509 *cb, int offset, const byte *c)
   x509_insert(cb, offset, c + 1, c[0]);
 }
 
+
+/* ASN.1 primitives */
+
 static void
 x509_tag(struct x509 *cb, int offset, int tag)
 {
@@ -150,6 +155,90 @@ x509_tag_impl(struct x509 *cb, int offset, int tag)
     return;
   cb->buf[offset] = tag | (cb->buf[offset] & 0x20);	/* keep CONS */
 }
+
+static void
+x509_mpiint(struct x509 *cb, byte *p, int pl)
+{
+  int offset = cb->len;
+  while (pl && !*p)
+    {
+      p++;
+      pl--;
+    }
+  if (!pl || p[0] >= 128)
+    x509_add(cb, 0, 1);
+  if (pl)
+    x509_add(cb, p, pl);
+  x509_tag(cb, offset, 0x02);
+}
+
+static void
+x509_octed_string(struct x509 *cb, const unsigned char *blob, int blobl)
+{
+  int offset = cb->len;
+  x509_add(cb, blob, blobl);
+  x509_tag(cb, offset, 0x04);
+}
+
+static int
+x509_set_of_sort_cmp(const void *va, const void *vb)
+{
+  unsigned char *ab = ((unsigned char **)va)[0];
+  size_t as = ((unsigned char **)va)[1] - ab;
+  unsigned char *bb = ((unsigned char **)vb)[0];
+  size_t bs = ((unsigned char **)vb)[1] - bb;
+  size_t m = as < bs ? as : bs;
+  int r = memcmp(ab, bb, m);
+  return r ? r : as < bs ? -1 : as > bs ? 1 : 0;
+}
+
+/* ASN.1 DER encoding wants sorted SET OF elements */
+static void
+x509_set_of(struct x509 *cb, int offset)
+{
+  int i, len = cb->len;
+  int n = 0;
+  unsigned char **offs = 0;
+  for (i = 0; i < 2; i++)
+    {
+      unsigned char *b = cb->buf + offset;
+      int l = len - offset;
+      for (n = 0; l > 0; n++)
+	{
+	  unsigned char *oldb = b;
+	  x509_skip(&b, &l, 0);
+	  if (!offs)
+	    continue;
+	  offs[2 * n] = oldb;
+	  offs[2 * n + 1] = b;
+	}
+      if (i == 0)
+	{
+	  if (n < 2)
+	    {
+	      x509_tag(cb, offset, 0x31);
+	      return;
+	    }
+	  x509_room(cb, len - offset);	/* do this now so that the cb->buf does not change */
+	  offs = malloc(2 * n * sizeof(unsigned char *));
+	  if (!offs)
+	    {
+	      fprintf(stderr, "out of x509_setsort memory\n");
+	      exit(1);
+	    }
+	}
+    }
+  qsort(offs, n, 2 * sizeof(unsigned char *), x509_set_of_sort_cmp);
+  for (i = 0; i < n; i++)
+    x509_add(cb, offs[2 * i], offs[2 * i + 1] - offs[2 * i]);
+  memmove(cb->buf + offset, cb->buf + len, cb->len - len);
+  cb->alen += len - offset;
+  cb->len -= len - offset;
+  free(offs);
+  x509_tag(cb, offset, 0x31);
+}
+
+/* X509 helpers */
 
 static void
 x509_time(struct x509 *cb, time_t t)
@@ -218,22 +307,6 @@ x509_validity(struct x509 *cb, time_t start, time_t end)
   x509_time(cb, start);
   x509_time(cb, end);
   x509_tag(cb, offset, 0x30);
-}
-
-static void
-x509_mpiint(struct x509 *cb, byte *p, int pl)
-{
-  int offset = cb->len;
-  while (pl && !*p)
-    {
-      p++;
-      pl--;
-    }
-  if (!pl || p[0] >= 128)
-    x509_add(cb, 0, 1);
-  if (pl)
-    x509_add(cb, p, pl);
-  x509_tag(cb, offset, 0x02);
 }
 
 static void
@@ -358,6 +431,7 @@ x509_extensions(struct x509 *cb, byte *keyid)
   x509_tag(cb, offset, 0xa3);	/* CONT | CONS | 3 */
 }
 
+/* create an unsigned self-signed cert */
 void
 x509_tbscert(struct x509 *cb, const char *cn, const char *email, time_t start, time_t end, int pubalgo, byte **mpi, int *mpil)
 {
@@ -535,14 +609,6 @@ x509_skip(unsigned char **bpp, int *lp, int expected)
  * spc info: http://download.microsoft.com/download/9/c/5/9c5b2167-8017-4bae-9fde-d599bac8184a/authenticode_pe.docx
  * 
  */
-
-static void
-x509_octed_string(struct x509 *cb, const unsigned char *blob, int blobl)
-{
-  int offset = cb->len;
-  x509_add(cb, blob, blobl);
-  x509_tag(cb, offset, 0x04);
-}
 
 /* copy issuer and serial from cert */
 static void
@@ -723,7 +789,7 @@ x509_pkcs7_signed_data(struct x509 *cb, struct x509 *contentinfo, struct x509 *s
 static void
 x509_addsignedattr(struct x509 *cb, int offset, const unsigned char *oid)
 {
-  x509_tag(cb, offset, 0x31);	/* make it a set */
+  x509_tag(cb, offset, 0x31);	/* make it a set (assuming there is just one entry) */
   x509_insert_const(cb, offset, oid);	/* prepend oid */
   x509_tag(cb, offset, 0x30);	/* make sequence */
 }
@@ -763,7 +829,7 @@ x509_signedattrs(struct x509 *cb, unsigned char *digest, int digestlen, time_t s
     x509_addsignedattr_signtime(cb, signtime);
   x509_addsignedattr_messagedigest(cb, digest, digestlen);
   /* return a set */
-  x509_tag(cb, offset, 0x31);
+  x509_set_of(cb, offset);
 }
 
 int
@@ -856,6 +922,5 @@ x509_spcsignedattrs(struct x509 *cb, unsigned char *digest, int digestlen, time_
   /* message digest attribute */
   x509_addsignedattr_messagedigest(cb, digest, digestlen);
   /* return a set */
-  x509_tag(cb, offset, 0x31);
+  x509_set_of(cb, offset);
 }
-
