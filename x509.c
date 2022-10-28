@@ -425,7 +425,7 @@ x509_extensions(struct x509 *cb, byte *keyid)
       x509_add_const(cb, authority_key_identifier);
       memcpy(cb->buf + cb->len - 20, keyid, 20);
     }
-  x509_add(cb, key_usage + 1, key_usage[0]);
+  x509_add_const(cb, key_usage);
   x509_add_const(cb, ext_key_usage);
   x509_tag(cb, offset, 0x30);
   x509_tag(cb, offset, 0xa3);	/* CONT | CONS | 3 */
@@ -544,31 +544,33 @@ static int
 x509_unpack(unsigned char *bp, int l, unsigned char **dpp, int *dlp, int *clp, int expected)
 {
   unsigned char *bporig = bp;
-  int tag = 0, tl = 0;
-  if (l >= 2)
+  int tag, tl;
+  if (l < 2)
     {
-      tag = bp[0];
-      tl = bp[1];
-      bp += 2;
-      l -= 2;
-      if (tl >= 128)
+      fprintf(stderr, "x509_unpack: unexpected EOF\n");
+      exit(1);
+    }
+  tag = bp[0];
+  tl = bp[1];
+  bp += 2;
+  l -= 2;
+  if (tl >= 128)
+    {
+      int ll = 0;
+      tl -= 128;
+      if (tl < 1 || tl > 3)
 	{
-	  int ll = 0;
-	  tl -= 128;
-	  if (tl < 1 || tl > 4)
-	    {
-	      fprintf(stderr, "x509_unpack: unsupported len %d\n", tl);
-	      exit(1);
-	    }
-	  if (l < tl)
-	    {
-	      fprintf(stderr, "x509_unpack: EOF in len\n");
-	      exit(1);
-	    }
-	  for (; tl > 0; tl--, l--)
-	    ll = (ll << 8) + *bp++;
-	  tl = ll;
+	  fprintf(stderr, "x509_unpack: unsupported len %d\n", tl);
+	  exit(1);
 	}
+      if (l < tl)
+	{
+	  fprintf(stderr, "x509_unpack: unexpected EOF in len\n");
+	  exit(1);
+	}
+      for (; tl > 0; tl--, l--)
+	ll = (ll << 8) + *bp++;
+      tl = ll;
     }
   if (tl < 0 || tl > l)
     {
@@ -603,11 +605,9 @@ x509_skip(unsigned char **bpp, int *lp, int expected)
   *lp -= cl;
 }
 
-/* pkcs7 stuff
+/*
+ * pkcs7/CMS stuff, see RFC 2315 and RFC 5652
  *
- * general info: rfc2315
- * spc info: http://download.microsoft.com/download/9/c/5/9c5b2167-8017-4bae-9fde-d599bac8184a/authenticode_pe.docx
- * 
  */
 
 /* copy issuer and serial from cert */
@@ -860,7 +860,10 @@ x509_cert2pubalgo(struct x509 *cert)
 
 
 
-/* Special SPC functions needed for appx signing */
+/* Special SPC functions needed for appx signing
+ *
+ * info: http://download.microsoft.com/download/9/c/5/9c5b2167-8017-4bae-9fde-d599bac8184a/authenticode_pe.docx 
+ */
 
 /* SpcIndirectDataContent */
 int
