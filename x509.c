@@ -57,6 +57,7 @@ static const byte oid_ms_codesigning[] = { 0x0c, 0x06, 0x0a, 0x2b, 0x06, 0x01, 0
 
 static const byte oid_pkcs7_data[] = { 0x0b, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x01 };
 static const byte oid_pkcs7_signed_data[] = { 0x0b, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x02 };
+static const byte oid_pkcs7_smime_capabilities[] = { 0x0b, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x0f };
 
 static const byte int_1[] = { 0x03, 0x02, 0x01, 0x01 };
 static const byte int_3[] = { 0x03, 0x02, 0x01, 0x03 };
@@ -860,14 +861,15 @@ x509_cert2pubalgo(struct x509 *cert)
 
 
 
-/* Special SPC functions needed for appx signing
+/*
+ * Special SPC functions needed for appx signing
  *
  * info: http://download.microsoft.com/download/9/c/5/9c5b2167-8017-4bae-9fde-d599bac8184a/authenticode_pe.docx 
  */
 
 /* SpcIndirectDataContent */
 int
-x509_spccontentinfo(struct x509 *cb, unsigned char *digest, int digestlen)
+x509_appx_contentinfo(struct x509 *cb, unsigned char *digest, int digestlen)
 {
    /* SEQUENCE          
     *  OBJECT            :1.3.6.1.4.1.311.2.1.30 [SPC_SIPINFO]
@@ -904,7 +906,7 @@ x509_spccontentinfo(struct x509 *cb, unsigned char *digest, int digestlen)
 }
 
 void
-x509_spcsignedattrs(struct x509 *cb, unsigned char *digest, int digestlen, time_t signtime)
+x509_appx_signedattrs(struct x509 *cb, unsigned char *digest, int digestlen, time_t signtime)
 {
   int offset = cb->len, offset2;
 
@@ -922,6 +924,63 @@ x509_spcsignedattrs(struct x509 *cb, unsigned char *digest, int digestlen, time_
   x509_add_const(cb, oid_ms_codesigning);
   x509_tag(cb, offset2, 0x30);
   x509_addsignedattr(cb, offset2, oid_spc_statementtype);
+  /* message digest attribute */
+  x509_addsignedattr_messagedigest(cb, digest, digestlen);
+  /* return a set */
+  x509_set_of(cb, offset);
+}
+
+
+/*
+ * Special functions needed for PE authenticode signing
+ *
+ * info: http://download.microsoft.com/download/9/c/5/9c5b2167-8017-4bae-9fde-d599bac8184a/authenticode_pe.docx 
+ */
+
+int
+x509_pe_contentinfo(struct x509 *cb, unsigned char *digest, int digestlen)
+{
+   /* cons:       SEQUENCE          
+    * prim:        OBJECT            :1.3.6.1.4.1.311.2.1.15 [SPC_PE_IMAGE_DATAOBJ]
+    * cons:        SEQUENCE          
+    * prim:         BIT STRING        
+    * cons:         cont [ 0 ]        
+    * cons:          cont [ 2 ]        
+    * prim:           cont [ 0 ]        
+    */
+  static byte spcpeimagedata[] = {
+    0x30, 0x17, 0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x01, 0x0f,
+    0x30, 0x09, 0x03, 0x01, 0x00, 0xa0, 0x04, 0xa2, 0x02, 0x80, 0x00
+  };
+  int offset = cb->len;
+  int contentlen;
+  /* DigestInfo */
+  x509_algoid_digest(cb, hashalgo);
+  x509_octed_string(cb, digest, digestlen);
+  x509_tag(cb, offset, 0x30);
+  x509_insert(cb, offset, spcpeimagedata, sizeof(spcpeimagedata));
+  contentlen = cb->len - offset;
+  x509_tag(cb, offset, 0x30);
+  x509_tag(cb, offset, 0xa0);	/* CONT | CONS | 0 */
+  x509_insert_const(cb, offset, oid_spc_indirect_data);
+  x509_tag(cb, offset, 0x30);
+  return cb->len - contentlen;	/* offset to content */
+}
+
+void
+x509_pe_signedattrs(struct x509 *cb, unsigned char *digest, int digestlen, time_t signtime)
+{
+  int offset = cb->len, offset2;
+
+  /* smime capabilities attribute */
+  offset2 = cb->len;
+  x509_tag(cb, offset2, 0x30);
+  x509_addsignedattr(cb, offset2, oid_pkcs7_smime_capabilities);
+  /* contenttype attribute */
+  x509_addsignedattr_contenttype(cb, oid_spc_indirect_data);
+  /* signingtime attribute */
+  if (signtime)
+    x509_addsignedattr_signtime(cb, signtime);
   /* message digest attribute */
   x509_addsignedattr_messagedigest(cb, digest, digestlen);
   /* return a set */

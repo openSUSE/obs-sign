@@ -117,7 +117,7 @@ appx_read(struct appxdata *appxdata, int fd, char *filename, time_t t)
 
   /* create spccontentinfo */
   x509_init(&appxdata->cb_content);
-  offset = x509_spccontentinfo(&appxdata->cb_content, digest, sizeof(digest));
+  offset = x509_appx_contentinfo(&appxdata->cb_content, digest, sizeof(digest));
 
   /* hash the spccontent */
   hash_init(&ctx);
@@ -126,7 +126,7 @@ appx_read(struct appxdata *appxdata, int fd, char *filename, time_t t)
 
   /* create signedattrs */
   x509_init(&appxdata->cb_signedattrs);
-  x509_spcsignedattrs(&appxdata->cb_signedattrs, hash_read(&ctx), hash_len(), t);
+  x509_appx_signedattrs(&appxdata->cb_signedattrs, hash_read(&ctx), hash_len(), t);
   return 1;
 }
 

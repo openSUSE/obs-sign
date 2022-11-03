@@ -80,11 +80,12 @@ static int cms_flags = 0;
 #define MODE_APPXSIGN	  12
 #define MODE_HASHFILE	  13
 #define MODE_CMSSIGN	  14
+#define MODE_PESIGN	  15
 
 static const char *const modes[] = {
   "?", "rpm sign", "clear sign", "detached sign", "keyid", "pubkey", "keygen", "keyextend",
   "raw detached sign" "raw openssl sign" "cert create", "appimage sign", "appx sign", "hashfile",
-  "cms sign"
+  "cms sign", "PE sign"
 };
 
 static void
@@ -221,6 +222,7 @@ sign(char *filename, int isfilter, int mode)
   u32 signtime;
   struct rpmdata rpmrd;
   struct appxdata appxdata;
+  struct pedata pedata;
   byte buf[8192];
   int l, fd;
   byte sigtrail[5], *p, *ph = 0;
@@ -262,7 +264,7 @@ sign(char *filename, int isfilter, int mode)
     }
 
   /* make sure we have a cert for appx/cms sign */
-  if (mode == MODE_APPXSIGN || mode == MODE_CMSSIGN)
+  if (mode == MODE_APPXSIGN || mode == MODE_CMSSIGN || mode == MODE_PESIGN)
     {
       int pubalgo;
       if (!cert.len)
@@ -372,6 +374,21 @@ sign(char *filename, int isfilter, int mode)
       opensocket();
       hash_write(&ctx, appxdata.cb_signedattrs.buf, appxdata.cb_signedattrs.len);
     }
+  else if (mode == MODE_PESIGN)
+    {
+      if (pe_read(&pedata, fd, filename, signtime) == 0)
+	{
+	  fprintf(isfilter ? stderr : stdout, "%s: already signed\n", filename);
+	  close(fd);
+	  if (outfilename)
+	    free(outfilename);
+	  if (isfilter)
+	    exit(1);
+	  return 1;
+	}
+      opensocket();
+      hash_write(&ctx, pedata.cb_signedattrs.buf, pedata.cb_signedattrs.len);
+    }
   else if (mode == MODE_APPIMAGESIGN)
     {
       unsigned char appimagedigest[64]; /*  sha256 sum */
@@ -431,7 +448,7 @@ sign(char *filename, int isfilter, int mode)
       else
         fprintf(isfilter ? stderr : stdout, "%s %s\n", modes[mode],  filename);
     }
-  if (mode == MODE_RAWOPENSSLSIGN || mode == MODE_APPXSIGN || mode == MODE_CMSSIGN)
+  if (mode == MODE_RAWOPENSSLSIGN || mode == MODE_APPXSIGN || mode == MODE_PESIGN || mode == MODE_CMSSIGN)
     {
       sigtrail[0] = pkcs1pss ? 0xbc : 0x00;
       sigtrail[1] = sigtrail[2] = sigtrail[3] = sigtrail[4] = 0;	/* time does not matter */
@@ -668,6 +685,22 @@ sign(char *filename, int isfilter, int mode)
 	}
       appx_write(&appxdata, isfilter ? 1 : fileno(fout), fd, &cert, rawssl, rawssllen, &othercerts);
       appx_free(&appxdata);
+      free(rawssl);
+    }
+  else if (mode == MODE_PESIGN)
+    {
+      int rawssllen = 0;
+      int sigl;
+      byte *sig = pkg2sig(buf + 6, outl, &sigl);
+      byte *rawssl = getrawopensslsig(sig, sigl, &rawssllen);
+      if (!rawssl)
+	{
+	  if (!isfilter)
+	    unlink(outfilename);
+	  exit(1);
+	}
+      pe_write(&pedata, isfilter ? 1 : fileno(fout), fd, &cert, rawssl, rawssllen, &othercerts);
+      pe_free(&pedata);
       free(rawssl);
     }
   else if (mode == MODE_CMSSIGN)
@@ -1685,6 +1718,8 @@ main(int argc, char **argv)
 	}
       else if (!strcmp(opt, "--cmssign"))
 	mode = MODE_CMSSIGN;
+      else if (!strcmp(opt, "--pesign"))
+	mode = MODE_PESIGN;
       else if (!strcmp(opt, "--cms-nocerts"))
 	cms_flags |= X509_PKCS7_NO_CERTS;
       else if (!strcmp(opt, "--cms-keyid"))
@@ -1701,6 +1736,8 @@ main(int argc, char **argv)
     hashalgo = HASH_SHA256;	/* always sign certs with sha256 */
   if (mode == MODE_APPXSIGN)
     hashalgo = HASH_SHA256;	/* always sign appx with sha256 */
+  if (mode == MODE_PESIGN)
+    hashalgo = HASH_SHA256;	/* always sign PE with sha256 */
   if (hashalgo == HASH_SHA1)
     algouser = user;
   else

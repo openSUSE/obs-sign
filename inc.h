@@ -123,8 +123,10 @@ void x509_signedattrs(struct x509 *cb, unsigned char *digest, int digestlen, tim
 void x509_pkcs7_signed_data(struct x509 *cb, struct x509 *contentinfo, struct x509 *signedattrs, unsigned char *sig, int siglen, struct x509 *cert, struct x509 *othercerts, int flags);
 int x509_cert2pubalgo(struct x509 *cert);
 
-int x509_spccontentinfo(struct x509 *cb, unsigned char *digest, int digestlen);
-void x509_spcsignedattrs(struct x509 *cb, unsigned char *digest, int digestlen, time_t signtime);
+int x509_appx_contentinfo(struct x509 *cb, unsigned char *digest, int digestlen);
+void x509_appx_signedattrs(struct x509 *cb, unsigned char *digest, int digestlen, time_t signtime);
+int x509_pe_contentinfo(struct x509 *cb, unsigned char *digest, int digestlen);
+void x509_pe_signedattrs(struct x509 *cb, unsigned char *digest, int digestlen, time_t signtime);
 
 #define X509_PKCS7_USE_KEYID (1 << 0)
 #define X509_PKCS7_NO_CERTS  (1 << 1)
@@ -189,7 +191,6 @@ void appimage_write_signature(char *filename, byte *signature, int length);
 
 /* appx.c */
 struct appxdata {
-  int fd;
   struct x509 cb_content;
   struct x509 cb_signedattrs;
   struct zip zip;
@@ -208,3 +209,20 @@ int doreq(int argc, const char **argv, byte *buf, int bufl, int nret);
 
 /* clearsign.c */
 int clearsign(int fd, char *filename, char *outfilename, HASH_CONTEXT *ctx, const char *hname, int isfilter, int force, FILE **foutp);
+
+/* pe.c */
+
+struct pedata {
+  struct x509 cb_content;
+  struct x509 cb_signedattrs;
+  unsigned char hdr[4096];
+  unsigned int headersize;
+  unsigned int c_off;
+  unsigned int csum_off;
+  unsigned int filesize;
+  unsigned int csum;
+};
+
+int pe_read(struct pedata *pedata, int fd, char *filename, time_t t);
+void pe_write(struct pedata *pedata, int outfd, int fd, struct x509 *cert, unsigned char *sig, int siglen, struct x509 *othercerts);
+void pe_free(struct pedata *pedata);
