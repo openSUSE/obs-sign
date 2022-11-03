@@ -1,7 +1,7 @@
 #
 # spec file for package obs-signd
 #
-# Copyright (c) 2019 SUSE LINUX GmbH, Nuernberg, Germany.
+# Copyright (c) 2022 SUSE LLC
 #
 # All modifications and additions to the file contributed by third parties
 # remain the property of their copyright owners, unless otherwise agreed
@@ -24,12 +24,13 @@ Group:          Productivity/Networking/Web/Utilities
 Version:        2.6.1
 Release:        0
 
-Url:            http://en.opensuse.org/Build_Service
+URL:            http://en.opensuse.org/Build_Service
 Source:         obs-sign-%version.tar.xz
 Source1:        obs-signd-rpmlintrc
 Requires:       user(obsrun)
 %if 0%{?suse_version}
-PreReq:         %fillup_prereq permissions
+PreReq:         %fillup_prereq
+PreReq:         permissions
 %endif
 
 %if ! %{defined _fillupdir}
