@@ -27,7 +27,6 @@ Release:        0
 Url:            http://en.opensuse.org/Build_Service
 Source:         obs-sign-%version.tar.xz
 Source1:        obs-signd-rpmlintrc
-Requires:       gpg2_signd_support
 Requires:       user(obsrun)
 %if 0%{?suse_version}
 PreReq:         %fillup_prereq permissions
