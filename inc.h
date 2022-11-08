@@ -187,6 +187,7 @@ void rpm_free(struct rpmdata *rd);
 void rpm_writechecksums(struct rpmdata *rd, int chksumfilefd);
 
 /* appimage.c */
+int appimage_read(char *filename, HASH_CONTEXT *ctx);
 void appimage_write_signature(char *filename, byte *signature, int length);
 
 /* appx.c */
@@ -197,7 +198,7 @@ struct appxdata {
   unsigned int datetime;
 };
 
-int appx_read(struct appxdata *appxdata, int fd, char *filename, time_t t);
+int appx_read(struct appxdata *appxdata, int fd, char *filename, HASH_CONTEXT *ctx, time_t t);
 void appx_write(struct appxdata *appxdata, int outfd, int fd, struct x509 *cert, unsigned char *sig, int siglen, struct x509 *othercerts);
 void appx_free(struct appxdata *appxdata);
 
@@ -223,6 +224,10 @@ struct pedata {
   unsigned int csum;
 };
 
-int pe_read(struct pedata *pedata, int fd, char *filename, time_t t);
+int pe_read(struct pedata *pedata, int fd, char *filename, HASH_CONTEXT *hctx, time_t t);
 void pe_write(struct pedata *pedata, int outfd, int fd, struct x509 *cert, unsigned char *sig, int siglen, struct x509 *othercerts);
 void pe_free(struct pedata *pedata);
+
+/* ko.c */
+int ko_read(int fd, char *filename, HASH_CONTEXT *ctx);
+void ko_write(int outfd, int fd, struct x509 *cb);

@@ -51,13 +51,13 @@ docopy(int outfd, int fd, const char *filename, unsigned int l)
 }
 
 static void
-update_chksum(unsigned int pos, const unsigned char *b, int l, unsigned int *chkp)
+update_chksum(unsigned int pos, const unsigned char *b, int l, unsigned int *csump)
 {
-  unsigned int c = 0;
+  unsigned int c = *csump;
   if (!l)
     return;
-  if (l > 65536)
-    abort();	/* this might overflow */
+  if (l < 0 || l > 0x10000 * 2)
+    abort();	/* this can overflow */
   if (pos & 1)
     {
       c = *b++ << 8;
@@ -67,8 +67,9 @@ update_chksum(unsigned int pos, const unsigned char *b, int l, unsigned int *chk
     c += b[0] + (b[1] << 8);
   if (l)
     c += b[0];
-  c += *chkp;
-  *chkp = (c & 0xffff) + (c >> 16);
+  c = (c & 0xffff) + (c >> 16);		/* fold to [0..0x1fffe] */
+  c = (c & 0xffff) + (c >> 16);		/* fold to [0..0xffff] */
+  *csump = c;
 }
 
 static unsigned int
@@ -147,7 +148,7 @@ sectioncmp(const void *av, const void *bv)
 }
 
 int
-pe_read(struct pedata *pedata, int fd, char *filename, time_t t)
+pe_read(struct pedata *pedata, int fd, char *filename, HASH_CONTEXT *hctx, time_t t)
 {
   unsigned char hdr[4096];
   HASH_CONTEXT ctx;
@@ -219,12 +220,15 @@ pe_read(struct pedata *pedata, int fd, char *filename, time_t t)
     }
   pedata->headersize = headersize;
   pedata->c_off = stubsize + 24 + c_off;
-  /* clear checksum */
-  setle4(hdr + stubsize + 24 + 64, 0);	/* clear checksum */
   pedata->csum = 0;
   pedata->csum_off = stubsize + 24 + 64;
   memcpy(pedata->hdr, hdr, headersize);
 
+  if (hashalgo != HASH_SHA256)
+    {
+      fprintf(stderr, "can only use sha256 for hashing\n");
+      exit(1);
+    }
   hash_init(&ctx);
   hash_write(&ctx, hdr, stubsize + 24 + 64);
   hash_write(&ctx, hdr + (stubsize + 24 + 68), c_off - 68);
@@ -273,7 +277,7 @@ pe_read(struct pedata *pedata, int fd, char *filename, time_t t)
 	{
 	  int pad = 8 - (bytes_hashed & 7);
 	  hash_write(&ctx, (const unsigned char *)"\0\0\0\0\0\0\0\0", pad);
-	  update_chksum(bytes_hashed, (const unsigned char *)"\0\0\0\0\0\0\0\0", pad, &pedata->csum);
+	  /* no need to call update_chksum() on zeros */
 	  bytes_hashed += pad;
 	}
     }
@@ -290,6 +294,9 @@ pe_read(struct pedata *pedata, int fd, char *filename, time_t t)
   /* create signedattrs */
   x509_init(&pedata->cb_signedattrs);
   x509_pe_signedattrs(&pedata->cb_signedattrs, hash_read(&ctx), hash_len(), t);
+
+  /* hash signedattrs */
+  hash_write(hctx, pedata->cb_signedattrs.buf, pedata->cb_signedattrs.len);
   return 1;
 }
 
@@ -314,11 +321,10 @@ pe_write(struct pedata *pedata, int outfd, int fd, struct x509 *cert, unsigned c
   setle4(pedata->hdr + pedata->c_off, pedata->filesize + filesizepad);
   setle4(pedata->hdr + pedata->c_off + 4, cb.len);
 
-  /* update checksum with header and cert data, finalize checksum */
+  /* update checksum with header and cert data, put in header */
+  setle4(pedata->hdr + pedata->csum_off, 0);
   update_chksum(0, pedata->hdr, pedata->headersize, &pedata->csum);
   update_chksum(pedata->filesize + filesizepad, cb.buf, cb.len, &pedata->csum);
-  while (pedata->csum >= 0x10000)
-    pedata->csum = (pedata->csum & 0xffff) + (pedata->csum >> 16);
   pedata->csum += pedata->filesize + filesizepad + cb.len;
   setle4(pedata->hdr + pedata->csum_off, pedata->csum);
 

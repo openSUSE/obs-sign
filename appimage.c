@@ -61,6 +61,26 @@ perror_exit(const char *s)
   exit(1);
 }
 
+int
+appimage_read(char *filename, HASH_CONTEXT *ctx)
+{
+  unsigned char appimagedigest[64]; /*  sha256 sum */
+  char *digestfilename;
+  FILE *fp;
+
+  digestfilename = malloc(strlen(filename) + 8);
+  sprintf(digestfilename, "%s.digest", filename);
+  if ((fp = fopen(digestfilename, "r")) == 0 || 64 != fread(appimagedigest, 1, 64, fp))
+    {
+      perror(digestfilename);
+      exit(1);
+    }
+  fclose(fp);
+  free(digestfilename);
+  hash_write(ctx, appimagedigest, 64);
+  return 1;
+}
+
 void
 appimage_write_signature(char *filename, byte *signature, int length)
 {

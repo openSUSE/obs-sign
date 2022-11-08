@@ -23,13 +23,6 @@
 
 extern int appxsig2stdout;
 
-static const unsigned char axmgsig[4] = { 0x41, 0x50, 0x50, 0x58 };
-static const unsigned char axpcsig[4] = { 0x41, 0x58, 0x50, 0x43 };
-static const unsigned char axcdsig[4] = { 0x41, 0x58, 0x43, 0x44 };
-static const unsigned char axctsig[4] = { 0x41, 0x58, 0x43, 0x54 };
-static const unsigned char axbmsig[4] = { 0x41, 0x58, 0x42, 0x4d };
-static const unsigned char axcisig[4] = { 0x41, 0x58, 0x43, 0x49 };
-
 static void
 dosha256hash(int fd, unsigned long long size, unsigned char *out)
 {
@@ -74,34 +67,28 @@ hashfileentry(struct zip *zip, int fd, char *fn, unsigned char *dig)
   return zip_entry_datetime(entry);
 }
 
-int
-appx_read(struct appxdata *appxdata, int fd, char *filename, time_t t)
+static int
+appx_create_contentinfo(struct appxdata *appxdata, int fd)
 {
   unsigned char digest[4 + (4 + 32) * 5];
-  int offset;
-  HASH_CONTEXT ctx;
+  static const unsigned char axmgsig[4] = { 0x41, 0x50, 0x50, 0x58 };
+  static const unsigned char axpcsig[4] = { 0x41, 0x58, 0x50, 0x43 };
+  static const unsigned char axcdsig[4] = { 0x41, 0x58, 0x43, 0x44 };
+  static const unsigned char axctsig[4] = { 0x41, 0x58, 0x43, 0x54 };
+  static const unsigned char axbmsig[4] = { 0x41, 0x58, 0x42, 0x4d };
+  static const unsigned char axcisig[4] = { 0x41, 0x58, 0x43, 0x49 };
 
-  if (hashalgo != HASH_SHA256)
-    {
-      fprintf(stderr, "can only use sha256 for hashing\n");
-      exit(1);
-    }
-  memset(appxdata, 0, sizeof(*appxdata));
-  zip_read(&appxdata->zip, fd);
-
-  if (zip_findentry(&appxdata->zip, "AppxSignature.p7x"))
-    return 0;
-
-  /* create digests */
-  memset(digest, 0, sizeof(digest));
-  memcpy(digest, axmgsig, 4);
-  memcpy(digest + 4, axpcsig, 4);
-  /* hash from start to central dir */
+  /* rewind */
   if (lseek(fd, 0, SEEK_SET) == (off_t)-1)
     {
       perror("seek");
       exit(1);
     }
+  /* create digests */
+  memset(digest, 0, sizeof(digest));
+  memcpy(digest, axmgsig, 4);
+  memcpy(digest + 4, axpcsig, 4);
+  /* hash from start to central dir */
   dosha256hash(fd, appxdata->zip.cd_offset, digest + 8);
   /* hash from central dir to end */
   memcpy(digest + 40, axcdsig, 4);
@@ -115,18 +102,45 @@ appx_read(struct appxdata *appxdata, int fd, char *filename, time_t t)
   /* zero AppxMetadata/CodeIntegrity.cat */
   memcpy(digest + 148, axcisig, 4);
 
-  /* create spccontentinfo */
   x509_init(&appxdata->cb_content);
-  offset = x509_appx_contentinfo(&appxdata->cb_content, digest, sizeof(digest));
+  return x509_appx_contentinfo(&appxdata->cb_content, digest, sizeof(digest));
+}
+
+static void
+appx_create_signedattrs(struct appxdata *appxdata, int offset, time_t t)
+{
+  HASH_CONTEXT ctx;
 
   /* hash the spccontent */
   hash_init(&ctx);
   hash_write(&ctx, appxdata->cb_content.buf + offset, appxdata->cb_content.len - offset);
   hash_final(&ctx);
-
-  /* create signedattrs */
   x509_init(&appxdata->cb_signedattrs);
   x509_appx_signedattrs(&appxdata->cb_signedattrs, hash_read(&ctx), hash_len(), t);
+}
+
+int
+appx_read(struct appxdata *appxdata, int fd, char *filename, HASH_CONTEXT *ctx, time_t t)
+{
+  int offset;
+
+  if (hashalgo != HASH_SHA256)
+    {
+      fprintf(stderr, "can only use sha256 for hashing\n");
+      exit(1);
+    }
+  memset(appxdata, 0, sizeof(*appxdata));
+  zip_read(&appxdata->zip, fd);
+
+  if (zip_findentry(&appxdata->zip, "AppxSignature.p7x"))
+    return 0;
+
+  /* create spccontentinfo */
+  offset = appx_create_contentinfo(appxdata, fd);
+  /* create signedattrs */
+  appx_create_signedattrs(appxdata, offset, t);
+  /* hash signedattrs */
+  hash_write(ctx, appxdata->cb_signedattrs.buf, appxdata->cb_signedattrs.len);
   return 1;
 }
 

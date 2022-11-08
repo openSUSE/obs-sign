@@ -81,11 +81,12 @@ static int cms_flags = 0;
 #define MODE_HASHFILE	  13
 #define MODE_CMSSIGN	  14
 #define MODE_PESIGN	  15
+#define MODE_KOSIGN	  16
 
 static const char *const modes[] = {
   "?", "rpm sign", "clear sign", "detached sign", "keyid", "pubkey", "keygen", "keyextend",
-  "raw detached sign" "raw openssl sign" "cert create", "appimage sign", "appx sign", "hashfile",
-  "cms sign", "PE sign"
+  "raw detached sign", "raw openssl sign", "cert create", "appimage sign", "appx sign", "hashfile",
+  "cms sign", "PE sign", "kernel module sign"
 };
 
 static void
@@ -217,6 +218,25 @@ slurp(char *filename, char *buf, int bufl)
 }
 
 static int
+plainsign_read(int fd, char *filename, HASH_CONTEXT *ctx)
+{
+  byte buf[8192];
+  for (;;)
+    {
+      int l = read(fd, buf, sizeof(buf));
+      if (l < 0)
+	{
+	  perror(filename);
+	  exit(1);
+	}
+      if (l == 0)
+	break;
+      hash_write(ctx, buf,  l);
+    }
+  return 1;
+}
+
+static int
 sign(char *filename, int isfilter, int mode)
 {
   u32 signtime;
@@ -237,6 +257,9 @@ sign(char *filename, int isfilter, int mode)
   unsigned char *v4sigtrail = 0;
   int v4sigtraillen = 0;
   struct x509 cms_signedattrs;
+  int needsign;
+  int rawssllen;
+  byte *rawssl;
 
   if (mode == MODE_UNSET)
     {
@@ -264,7 +287,7 @@ sign(char *filename, int isfilter, int mode)
     }
 
   /* make sure we have a cert for appx/cms sign */
-  if (mode == MODE_APPXSIGN || mode == MODE_CMSSIGN || mode == MODE_PESIGN)
+  if (mode == MODE_APPXSIGN || mode == MODE_CMSSIGN || mode == MODE_PESIGN || mode == MODE_KOSIGN)
     {
       int pubalgo;
       if (!cert.len)
@@ -339,97 +362,47 @@ sign(char *filename, int isfilter, int mode)
       signtime = stb.st_mtime;
     }
 
+  needsign = 0;
   hash_init(&ctx);
   if (mode == MODE_CLEARSIGN)
     {
       /* clearsign is somewhat special: it can open fout */
-      if (clearsign(fd, filename, outfilename, &ctx, hashname[hashalgo], isfilter, force, &fout) == 0)
-	{
-	  fprintf(isfilter ? stderr : stdout, "%s: already signed\n", filename);
-	  close(fd);
-	  if (outfilename)
-	    free(outfilename);
-	  if (isfilter)
-	    exit(1);
-	  return(1);
-	}
+      needsign = clearsign(fd, filename, outfilename, &ctx, hashname[hashalgo], isfilter, force, &fout);
     }
   else if (mode == MODE_KEYID)
-    {
-      /* sign empty string */
-      opensocket();
-    }
+    needsign = 1;	/* sign an empty string */
   else if (mode == MODE_APPXSIGN)
-    {
-      if (appx_read(&appxdata, fd, filename, signtime) == 0)
-	{
-	  fprintf(isfilter ? stderr : stdout, "%s: already signed\n", filename);
-	  close(fd);
-	  if (outfilename)
-	    free(outfilename);
-	  if (isfilter)
-	    exit(1);
-	  return 1;
-	}
-      opensocket();
-      hash_write(&ctx, appxdata.cb_signedattrs.buf, appxdata.cb_signedattrs.len);
-    }
+    needsign = appx_read(&appxdata, fd, filename, &ctx, signtime);
   else if (mode == MODE_PESIGN)
-    {
-      if (pe_read(&pedata, fd, filename, signtime) == 0)
-	{
-	  fprintf(isfilter ? stderr : stdout, "%s: already signed\n", filename);
-	  close(fd);
-	  if (outfilename)
-	    free(outfilename);
-	  if (isfilter)
-	    exit(1);
-	  return 1;
-	}
-      opensocket();
-      hash_write(&ctx, pedata.cb_signedattrs.buf, pedata.cb_signedattrs.len);
-    }
+    needsign = pe_read(&pedata, fd, filename, &ctx, signtime);
+  else if (mode == MODE_KOSIGN)
+    needsign = ko_read(fd, filename, &ctx);
   else if (mode == MODE_APPIMAGESIGN)
-    {
-      unsigned char appimagedigest[64]; /*  sha256 sum */
-      char *digestfilename;
-      FILE *fp;
-
-      digestfilename = malloc(strlen(filename) + 8);
-      sprintf(digestfilename, "%s.digest", filename);
-      if ((fp = fopen(digestfilename, "r")) == 0 || 64 != fread(appimagedigest, 1, 64, fp))
-        {
-          perror(digestfilename);
-          exit(1);
-        }
-      fclose(fp);
-      free(digestfilename);
-      opensocket();
-      hash_write(&ctx, appimagedigest, 64);
-    }
+    needsign = appimage_read(filename, &ctx);
   else if (mode == MODE_RPMSIGN)
     {
-      if (rpm_read(&rpmrd, fd, filename, &ctx, &hctx, getbuildtime) == 0)
-	{
-	  fprintf(isfilter ? stderr : stdout, "%s: already signed\n", filename);
-	  close(fd);
-	  if (outfilename)
-	    free(outfilename);
-	  if (isfilter)
-	    exit(1);
-	  return 1;
-	}
+      needsign = rpm_read(&rpmrd, fd, filename, &ctx, &hctx, getbuildtime);
       if (getbuildtime)
 	signtime = rpmrd.buildtime;
     }
   else
-    {
-      opensocket();
-      while ((l = read(fd, buf, sizeof(buf))) > 0)
-	hash_write(&ctx, buf,  l);
-    }
+    needsign = plainsign_read(fd, filename, &ctx);
 
-  if (mode == MODE_CMSSIGN)
+  if (!needsign)
+    {
+      fprintf(isfilter ? stderr : stdout, "%s: already signed\n", filename);
+      close(fd);
+      if (outfilename)
+	free(outfilename);
+      if (isfilter)
+	exit(1);
+      return 1;
+    }
+  /* open the socket and connect to signd (clearsign already opened it) */
+  if (mode != MODE_CLEARSIGN)
+    opensocket();
+
+  if (mode == MODE_CMSSIGN || mode == MODE_KOSIGN)
     {
       x509_init(&cms_signedattrs);
       if (signtime)
@@ -448,7 +421,9 @@ sign(char *filename, int isfilter, int mode)
       else
         fprintf(isfilter ? stderr : stdout, "%s %s\n", modes[mode],  filename);
     }
-  if (mode == MODE_RAWOPENSSLSIGN || mode == MODE_APPXSIGN || mode == MODE_PESIGN || mode == MODE_CMSSIGN)
+
+  /* finalize the hash for gpg signatures */
+  if (mode == MODE_RAWOPENSSLSIGN || mode == MODE_APPXSIGN || mode == MODE_PESIGN || mode == MODE_KOSIGN || mode == MODE_CMSSIGN)
     {
       sigtrail[0] = pkcs1pss ? 0xbc : 0x00;
       sigtrail[1] = sigtrail[2] = sigtrail[3] = sigtrail[4] = 0;	/* time does not matter */
@@ -596,7 +571,7 @@ sign(char *filename, int isfilter, int mode)
       free(v4sigtrail);
     }
 
-  /* open output file */
+  /* finally open the output file */
   if (isfilter)
     fout = stdout;
   else if (mode != MODE_CLEARSIGN && mode != MODE_APPIMAGESIGN)
@@ -604,6 +579,22 @@ sign(char *filename, int isfilter, int mode)
       if ((fout = fopen(outfilename, "w")) == 0)
 	{
 	  perror(outfilename);
+	  exit(1);
+	}
+    }
+
+  /* find raw openssl signature if needed */
+  rawssllen = 0;
+  rawssl = 0;
+  if (mode == MODE_RAWOPENSSLSIGN || mode == MODE_APPXSIGN || mode == MODE_PESIGN || mode == MODE_CMSSIGN || mode == MODE_KOSIGN)
+    {
+      int sigl;
+      byte *sig = pkg2sig(buf + 6, outl, &sigl);
+      rawssl = getrawopensslsig(sig, sigl, &rawssllen);
+      if (!rawssl)
+	{
+	  if (!isfilter)
+	    unlink(outfilename);
 	  exit(1);
 	}
     }
@@ -625,16 +616,6 @@ sign(char *filename, int isfilter, int mode)
     }
   else if (mode == MODE_RAWOPENSSLSIGN)
     {
-      int rawssllen = 0;
-      int sigl;
-      byte *sig = pkg2sig(buf + 6, outl, &sigl);
-      byte *rawssl = getrawopensslsig(sig, sigl, &rawssllen);
-      if (!rawssl)
-	{
-	  if (!isfilter)
-	    unlink(outfilename);
-	  exit(1);
-	}
       if (fwrite(rawssl, rawssllen, 1, fout) != 1)
 	{
 	  perror("fwrite");
@@ -642,7 +623,6 @@ sign(char *filename, int isfilter, int mode)
 	    unlink(outfilename);
 	  exit(1);
 	}
-      free(rawssl);
     }
   else if (mode == MODE_RPMSIGN)
     {
@@ -673,57 +653,37 @@ sign(char *filename, int isfilter, int mode)
     appimage_write_signature(filename, buf + 6, outl);
   else if (mode == MODE_APPXSIGN)
     {
-      int rawssllen = 0;
-      int sigl;
-      byte *sig = pkg2sig(buf + 6, outl, &sigl);
-      byte *rawssl = getrawopensslsig(sig, sigl, &rawssllen);
-      if (!rawssl)
-	{
-	  if (!isfilter)
-	    unlink(outfilename);
-	  exit(1);
-	}
       appx_write(&appxdata, isfilter ? 1 : fileno(fout), fd, &cert, rawssl, rawssllen, &othercerts);
       appx_free(&appxdata);
-      free(rawssl);
     }
   else if (mode == MODE_PESIGN)
     {
-      int rawssllen = 0;
-      int sigl;
-      byte *sig = pkg2sig(buf + 6, outl, &sigl);
-      byte *rawssl = getrawopensslsig(sig, sigl, &rawssllen);
-      if (!rawssl)
-	{
-	  if (!isfilter)
-	    unlink(outfilename);
-	  exit(1);
-	}
       pe_write(&pedata, isfilter ? 1 : fileno(fout), fd, &cert, rawssl, rawssllen, &othercerts);
       pe_free(&pedata);
-      free(rawssl);
     }
   else if (mode == MODE_CMSSIGN)
     {
       struct x509 cb;
-      int rawssllen = 0;
-      int sigl;
-      byte *sig = pkg2sig(buf + 6, outl, &sigl);
-      byte *rawssl = getrawopensslsig(sig, sigl, &rawssllen);
-      if (!rawssl)
-	{
-	  if (!isfilter)
-	    unlink(outfilename);
-	  exit(1);
-	}
       x509_init(&cb);
       x509_pkcs7_signed_data(&cb, 0, (cms_signedattrs.len ? &cms_signedattrs : 0), rawssl, rawssllen, &cert, &othercerts, cms_flags);
       fwrite(cb.buf, 1, cb.len, fout);
       x509_free(&cb);
       x509_free(&cms_signedattrs);
     }
+  else if (mode == MODE_KOSIGN)
+    {
+      struct x509 cb;
+      x509_init(&cb);
+      x509_pkcs7_signed_data(&cb, 0, (cms_signedattrs.len ? &cms_signedattrs : 0), rawssl, rawssllen, &cert, &othercerts, cms_flags | X509_PKCS7_NO_CERTS);
+      ko_write(isfilter ? 1 : fileno(fout), fd, &cb);
+      x509_free(&cb);
+      x509_free(&cms_signedattrs);
+    }
   else
     fwrite(buf + 6, 1, outl, fout);
+
+  if (rawssl)
+    free(rawssl);
 
   /* close and rename output file */
   if (!isfilter)
@@ -1720,6 +1680,8 @@ main(int argc, char **argv)
 	mode = MODE_CMSSIGN;
       else if (!strcmp(opt, "--pesign"))
 	mode = MODE_PESIGN;
+      else if (!strcmp(opt, "--kosign"))
+	mode = MODE_KOSIGN;
       else if (!strcmp(opt, "--cms-nocerts"))
 	cms_flags |= X509_PKCS7_NO_CERTS;
       else if (!strcmp(opt, "--cms-keyid"))
