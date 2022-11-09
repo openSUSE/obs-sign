@@ -100,7 +100,7 @@ dohash(int fd, char *filename, unsigned int pos, unsigned int l, int toeof, HASH
 	  fprintf(stderr, "%s: unexpexted EOF\n", filename);
 	  exit(1);
 	}
-      if (pos + r >= 0x40000000)
+      if (pos + (unsigned int)r >= 0x40000000)
 	{
 	  fprintf(stderr, "unsupported pe file size\n");
 	  exit(1);

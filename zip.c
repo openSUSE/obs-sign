@@ -155,6 +155,8 @@ zip_read(struct zip *zip, int fd)
       perror("lseek");
       exit(1);
     }
+  if (size >= 0x100000000000ULL)
+    zipdie("zip archive too big");
   size += 20 + 22;
   zip->size = size;
   doread(fd, eocd64l, 20);
@@ -175,6 +177,8 @@ zip_read(struct zip *zip, int fd)
   doseek(fd, eocd64_offset);
   zip->eocd_size = size - (20 + 22) - eocd64_offset;
   zip->eocd = malloc(zip->eocd_size);
+  if (!zip->eocd)
+    zipdie("out of memory allocating eocd");
   doread(fd, zip->eocd, zip->eocd_size);
   if (readu4(zip->eocd) != 0x06064b50)
     zipdie("missing zip64 end of central directory record");
@@ -190,6 +194,8 @@ zip_read(struct zip *zip, int fd)
     zipdie("central directory too big");
   doseek(fd, zip->cd_offset);
   zip->cd = malloc(zip->cd_size ? zip->cd_size : 1);
+  if (!zip->cd)
+    zipdie("out of memory allocating cd");
   doread(fd, zip->cd, zip->cd_size);
   /* scan through directory entries */
   p = zip->cd;
@@ -303,6 +309,8 @@ dummydeflate(unsigned char *in, int inlen, int *outlenp)
   if (inlen > 100000)
     zipdie("dummydeflate: file too big");
   out = p = malloc(inlen ? inlen + ((inlen + 65535) / 65535) * 5 : 1);
+  if (!out)
+    zipdie("out of memory in dummydeflate");
   while (inlen > 0)
     {
       int chunk = inlen > 65535 ? 65535 : inlen;
@@ -391,8 +399,12 @@ zip_appendfile(struct zip *zip, char *fn, unsigned char *file, unsigned long lon
     zip->appended = realloc(zip->appended, zip->appendedsize + size);
   else
     zip->appended = malloc(size);
+  if (!zip->appended)
+    zipdie("out of memory in zip_appendfile");
   lfh = zip->appended + zip->appendedsize;
   zip->cd = realloc(zip->cd, zip->cd_size + 46 + fnl);
+  if (!zip->cd)
+    zipdie("out of memory in zip_appendfile");
   entry = zip->cd + zip->cd_size;
   zip->cd_size += 46 + fnl;
   zip->appendedsize += size;

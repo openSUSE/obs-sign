@@ -134,7 +134,7 @@ void x509_pe_signedattrs(struct x509 *cb, unsigned char *digest, int digestlen, 
 /* zip.c */
 struct zip {
   unsigned char *eocd;
-  int eocd_size;
+  unsigned long long eocd_size;
   unsigned long long size;
   unsigned long long cd_offset;
   unsigned long long cd_size;
