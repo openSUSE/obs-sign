@@ -46,7 +46,7 @@ if the file name ends in ".rpm", otherwise it does a clearsign. If no
 file name is specified, sign reads from stdin and writes to stdout.
 
 One can specify a specific user or hash method with the -u and -h option.
-Currently sign understands sha1 and sha256 hashes.
+Currently sign understands sha1, sha256, and sha512 hashes.
 
 sign does not create signatures by itself, it needs a running signing
 daemon (called signd) to do the work. The host and port information is read
@@ -60,13 +60,47 @@ to store the private key needs to be provided with the -P option. This
 private key can be used for signing by also using the -P option with the
 other modes. The pubkey of the generated key is printed to stdout.
 
-In case a SSL certification
-is also needed (e.g. for linux kernel modules), the key can be converted to
-a certificate by using the -C option.
+In case a X509 certificate
+is needed (e.g. for linux kernel modules), the key can be converted to
+a (self-signed) certificate by using the -C option.
 
 The expire time of existing keys can be extended with the -x option.
 
-.SH OTHER OPTIONS
+
+.SH SIGNING MODES
+.TP
+.B \-c
+Clearsign
+.TP
+.B \-r
+Sign RPM package
+.TP
+.B \-d
+Create a detached gpg signature
+.TP
+.B \-D
+Create a unarmored detached gpg signature
+.TP
+.B \-O
+Create a raw X509 signature. Enforces RSA unless the -A option is used.
+.TP
+.B \-a
+Sign AppImage container
+.TP
+.B \-\-appx
+Sign a windows appx container
+.TP
+.B \-\-pesign
+Sign a PE/COFF file
+.TP
+.B \-\-kosign
+Sign a linux kernel object
+.TP
+.B \-\-cmssign
+Create a detached pkcs7/CMS signature
+
+
+.SH COMMON OPTIONS
 In some cases it it useful to specify the signature time. This can be done
 with the -T option.
 
@@ -75,88 +109,75 @@ the checksum of the signed rpms. This can be used to speed up repository
 metadata generation.
 
 .TP
-.B \-t
-Ping signd. If ping was successful, return exit code 0.
-.TP
 .B \-v
 Verbose mode
 .TP
-.B \-T
-.B <unixtime>
- Explicit sign time. If RPM mode used (\-r) also accepts string "buildtime"
+.BI "\-u " username
+Specify the key to use. Signd should already know about that user.
+.TP
+.BI "\-h " hash
+Either sha1, sha256, or sha512
+.TP
+.BI "\-T " unixtime
+Explicit sign time. If RPM mode used (\-r) also accepts the string "buildtime".
+.TP
+.BI "\-P " keyfile
+Private key file. This file must contain the encrypted privatekey generated
+with the \-g option.
+.TP
+.BI "\-S " checksumfile
+Usable only with \-r option: appends checksums into the file.
+.TP
+.B \-4
+Create a pgp v4 signature instead of v3
+.TP
+.BI "\-A " pubkeyalgo
+Enforce that the specified algorithm (rsa or dsa) is used for signing
+.TP
+.BI "\-\-cert " certfile
+Speficy a x509 certificate to use. A certificate is needed by some of the
+signing modes, like appx signing or kernel object signing.
+.TP
+.B \-\-cms-nocerts
+Do not include certificates in the pkcs7/cms signature
+.TP
+.B \-\-cms-keyid
+Identify the certificate with the keyid instead of the issuer/serial
 
 
+.SH KEY GENERATION
 .TP
-.BR
-.B Signature modes
-.TP
- Requires private key (\-P) or user (\-u) with key in the signd root keyring.
-.TP
-.B \-c
-.B <file>
- Create clearsign
-.TP
-.B \-r
-.B <file>
- Sign RPM package
-.TP
-.B \-a
-.B <file>
- Sign AppImage container
-.TP
-.B \-S
-.B <path to checksumfile>
- Usable only with \-r option: writes checksums into the file
+.BR "\-g " "[\-P \fIprivkey\fP] " "\fItype\fP \fIexpire\fP \fIname\fP \fIemail\fP"
+Generate new key-pair. Where:
+.br
+  type: defined as {dsa,rsa}@{1024,2048,4096}
+  expire: integer, days before expire
+  name: real name
+  email: email
+.br
+Write pubkey and the encrypted private key to stdout.
+If the \-P option isused, the private key will be
+written to the specified file and only the pubkey goes
+to stdout.
 
 .TP
-.B \-d
-.B <file>
- Create detached sign
+.BI "\-x " expire " \fIpubkey\fP"
+Extend key. Requires a private key to be specified with the \-P option.
 .TP
-.B \-D
-.B <file>
- Create RAW detached sign
-.TP
-.B \-C
-.B <path to pubkey>
- Create SSL certificate
-.TP
-.B \-O
-.B <path to pubkey>
- Create RAW SSL certificate
+.BI "\-C " pubkeyfile
+Convert a gpg pubkey to a self-signed X509 certificate
 
 
-.B Key generation
+.SH OTHER MODES
 .TP
-.BR \-g
-.B [\-P \<privkey\>\] <type> <expire> <name> <email>
- Generate new key-pair. Where:
- type: defined as {dsa,rsa}@{1024,2048}
- expire: integer, days before expire
- name: real name
- email: email
- Write pubkey and privke to stdout. If \-P option used,
- privkey will be written there and only pubkey goes to stdout.
-
-.TP
-.BR \-x
-.B <expire> <pubkey>
- Extend key. Requires private key (\-P).
-
-
-.B Query signd for key information / Common options
+.B \-t
+Ping signd. If ping was successful, return exit code 0.
 .TP
 .BR \-k
 Print the keyid of signd key-pair (root key or defined by \-u)
 .TP
 .BR \-p
 Print pubkey of signd key-pair (root key or defined by \-u)
-.TP
-.BR \-u
-Username, signd should already know about that user
-.TP
-.BR \-h
-Hash: either sha1 or sha256
 
 
 .SH SECURITY
