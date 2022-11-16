@@ -1087,6 +1087,8 @@ createcert(char *pubkey)
   /* get signnature */
   assertpubalgo = pubalgo;
   rawssl = getrawopensslsig(sig, sigl, &rawssllen);
+  if (!rawssl)
+    exit(1);
 
   /* finish cert */
   x509_finishcert(&cb, pubalgo, rawssl, rawssllen);
@@ -1206,7 +1208,7 @@ read_sign_conf(const char *conf)
 	  else if (!strcasecmp(bp, "sha512"))
 	    hashalgo = HASH_SHA512;
 	  else
-	    dodie("sign: hash: unknown argument");
+	    dodie("sign.conf: unsupported hash argument");
 	}
       if (uid && !allowuser && !strcmp(buf, "allowuser"))
 	{
