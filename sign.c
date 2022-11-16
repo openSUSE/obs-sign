@@ -483,8 +483,7 @@ sign(char *filename, int isfilter, int mode)
 	    {
 	      if (mode == MODE_CLEARSIGN && !isfilter)
 		unlink(outfilename);
-	      fprintf(stderr, "server returned empty signature\n");
-	      exit(1);
+	      dodie("server returned empty signature");
 	    }
 	  if (!ph)
 	    memmove(buf + 6, buf + 4, outl);	/* make 1st arg always start at offset 6, we know there is room */
@@ -1156,10 +1155,7 @@ read_sign_conf(const char *conf)
   if (uid)
     pwd = getpwuid(uid);
   if ((cfp = fopen(conf, "r")) == 0)
-    {
-      perror(conf);
-      exit(1);
-    }
+    dodie_errno(conf);
   while (fgets(buf, sizeof(buf), cfp))
     {
       l = strlen(buf);
@@ -1269,10 +1265,7 @@ hashfile(char *filename, int isfilter)
   if (isfilter)
     fd = 0;
   else if ((fd = open(filename, O_RDONLY)) == -1)
-    {
-      perror(filename);
-      exit(1);
-    }
+    dodie_errno(filename);
   hash_init(&ctx);
   while ((l = read(fd, buf, sizeof(buf))) > 0)
     hash_write(&ctx, buf, l);
@@ -1331,10 +1324,7 @@ main(int argc, char **argv)
   if (argc > 2 && !strcmp(argv[1], "--config"))
     {
       if (uid && !test_sign)
-	{
-	  fprintf(stderr, "sign: only root may use --config\n");
-	  exit(1);
-	}
+	dodie("sign: only root may use --config");
       conf = argv[2];
       argc -= 2;
       argv += 2;
@@ -1344,15 +1334,9 @@ main(int argc, char **argv)
   if (uid)
     {
       if (!allowuser)
-	{
-	  fprintf(stderr, "sign: permission denied\n");
-	  exit(1);
-	}
+	dodie("sign: permission denied");
       if (seteuid(uid))
-	{
-	  perror("seteuid");
-	  exit(1);
-	}
+	dodie_errno("seteuid");
     }
   if (argc == 2 && !strcmp(argv[1], "-t"))
     {
@@ -1516,58 +1500,40 @@ main(int argc, char **argv)
       sprintf(algouser, "%s:%s", hashname[hashalgo], user);
     }
   if (pkcs1pss && mode != MODE_RAWOPENSSLSIGN)
-    {
-      fprintf(stderr, "can only generate a pkcs1pss signature in openssl mode\n");
-      exit(1);
-    }
+    dodie("can only generate a pkcs1pss signature in openssl mode");
   if (mode == MODE_PUBKEY)
     {
       if (argc != 1)
-	{
-	  fprintf(stderr, "usage: sign -p [-u user]\n");
-	  exit(1);
-	}
+	dodie("usage: sign -p [-u user]");
       getpubkey();
       exit(0);
     }
   if (mode == MODE_KEYGEN)
     {
       if (argc != 5)
-	{
-	  fprintf(stderr, "usage: sign -g <type> <expire> <name> <email>\n");
-	  exit(1);
-	}
+	dodie("usage: sign -g <type> <expire> <name> <email>");
       keygen(argv[1], argv[2], argv[3], argv[4]);
       exit(0);
     }
   if (mode == MODE_KEYEXTEND)
     {
       if (argc != 3)
-	{
-	  fprintf(stderr, "usage: sign -x <expire> <pubkey>\n");
-	  exit(1);
-	}
+        dodie("usage: sign -x <expire> <pubkey>");
       keyextend(argv[1], argv[2]);
       exit(0);
     }
   if (mode == MODE_CREATECERT)
     {
-      initrandom();
       if (argc != 2)
-	{
-	  fprintf(stderr, "usage: sign -C <pubkey>\n");
-	  exit(1);
-	}
+	dodie("usage: sign -C <pubkey>");
+      initrandom();
       createcert(argv[1]);
       exit(0);
     }
   if (mode == MODE_KEYID)
     {
       if (argc != 1)
-	{
-	  fprintf(stderr, "usage: sign -k [-u user]\n");
-	  exit(1);
-	}
+	dodie("usage: sign -k [-u user]");
       dov4sig = 0;	/* no need for the extra work */
       sign("<stdin>", 1, mode);
       exit(0);
@@ -1579,19 +1545,13 @@ main(int argc, char **argv)
       else if (argc == 2)
         hashfile(argv[1], 0);
       else
-	{
-	  fprintf(stderr, "usage: sign --hashfile [-h algo] [file]\n");
-	  exit(1);
-	}
+	dodie("usage: sign --hashfile [-h algo] [file]");
       exit(0);
     }
   if (mode == MODE_RAWOPENSSLSIGN)
     dov4sig = 0;	/* no need for the extra work */
   if (privkey && access(privkey, R_OK))
-    {
-      perror(privkey);
-      exit(1);
-    }
+    dodie_errno(privkey);
 
   if (dov4sig)
     pubalgoprobe = probe_pubalgo();
@@ -1603,10 +1563,7 @@ main(int argc, char **argv)
       else
 	chksumfilefd = 1;
       if (chksumfilefd < 0)
-	{
-	  perror(chksumfile); 
-	  exit(1);
-	}
+	dodie_errno(chksumfile); 
     }
   if (argc == 1)
     sign("<stdin>", 1, mode);
@@ -1619,10 +1576,7 @@ main(int argc, char **argv)
   if (chksumfile && strcmp(chksumfile, "-") && chksumfilefd >= 0)
     {
       if (close(chksumfilefd))
-	{
-	  perror("chksum file close");
-	  exit(1);
-	}
+        dodie_errno("chksum file close");
     }
   x509_free(&cert);
   x509_free(&othercerts);
