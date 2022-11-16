@@ -17,14 +17,10 @@
  *
  ***************************************************************/
 
-#include <unistd.h>
-
 #include "inc.h"
 
-extern int appxsig2stdout;
-
 static void
-dosha256hash(int fd, unsigned long long size, unsigned char *out)
+dosha256hash(int fd, u64 size, unsigned char *out)
 {
   unsigned char buf[65536];
   HASH_CONTEXT ctx;
@@ -32,29 +28,20 @@ dosha256hash(int fd, unsigned long long size, unsigned char *out)
   hash_init(&ctx);
   while (size > 0)
     {
-      int r = read(fd, buf, size > 65536 ? 65536 : size);
-      if (r < 0)
-	{
-	  perror("read");
-	  exit(1);
-	}
-      if (r == 0)
-	{
-	  fprintf(stderr, "dosha256hash: unexpeced EOF\n");
-	  exit(1);
-	}
-      hash_write(&ctx, buf, r);
-      size -= r;
+      int chunk = size > sizeof(buf) ? sizeof(buf) : size;
+      doread(fd, buf, chunk);
+      hash_write(&ctx, buf, chunk);
+      size -= chunk;
     }
   hash_final(&ctx);
   memcpy(out, hash_read(&ctx), 32);
 }
 
-static unsigned int
+static u32
 hashfileentry(struct zip *zip, int fd, char *fn, unsigned char *dig)
 {
   unsigned char *entry;
-  unsigned long long datasize;
+  u64 datasize;
 
   entry = zip_findentry(zip, fn);
   if (!entry)
@@ -79,11 +66,7 @@ appx_create_contentinfo(struct appxdata *appxdata, int fd)
   static const unsigned char axcisig[4] = { 0x41, 0x58, 0x43, 0x49 };
 
   /* rewind */
-  if (lseek(fd, 0, SEEK_SET) == (off_t)-1)
-    {
-      perror("seek");
-      exit(1);
-    }
+  doseek(fd, 0);
   /* create digests */
   memset(digest, 0, sizeof(digest));
   memcpy(digest, axmgsig, 4);
@@ -125,10 +108,7 @@ appx_read(struct appxdata *appxdata, int fd, char *filename, HASH_CONTEXT *ctx, 
   int offset;
 
   if (hashalgo != HASH_SHA256)
-    {
-      fprintf(stderr, "can only use sha256 for hashing\n");
-      exit(1);
-    }
+    dodie("can only use sha256 for appx hashing");
   memset(appxdata, 0, sizeof(*appxdata));
   zip_read(&appxdata->zip, fd);
 
@@ -149,15 +129,17 @@ appx_write(struct appxdata *appxdata, int outfd, int fd, struct x509 *cert, unsi
 {
   static const unsigned char p7xmagic[4] = { 0x50, 0x4b, 0x43, 0x58 };
   struct x509 cb;
+  extern int appxdetached;
 
   x509_init(&cb);
   x509_pkcs7_signed_data(&cb, &appxdata->cb_content, &appxdata->cb_signedattrs, sig, siglen, cert, othercerts, 0);
-  /* add file magic */
+  /* prepend file magic */
   x509_insert(&cb, 0, p7xmagic, sizeof(p7xmagic));
-  if (appxsig2stdout)
+  if (appxdetached)
     {
-      write(1, cb.buf, cb.len);
-      exit(0);
+      dowrite(outfd, cb.buf, cb.len);
+      x509_free(&cb);
+      return;
     }
   /* append file to zip, must use deflated compression */
   zip_appendfile(&appxdata->zip, "AppxSignature.p7x", cb.buf, cb.len, 8, appxdata->datetime);

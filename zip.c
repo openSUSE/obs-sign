@@ -20,202 +20,95 @@
 #include <unistd.h>
 
 #include "inc.h"
+#include "bele.h"
 
-/* data access */
+/* 64bit le support */
 
-static unsigned int
-readu2(unsigned char *p)
+static u64
+getle8(unsigned char *p)
 {
-  return p[0] | p[1] << 8;
-}
-
-static unsigned int
-readu4(unsigned char *p)
-{
-  return p[0] | p[1] << 8 | p[2] << 16 | p[3] << 24;
-}
-
-static unsigned int
-readu8(unsigned char *p)
-{
-  return readu4(p) | ((unsigned long long)readu4(p + 4)) << 32;
+  return (u64)getle4(p) | ((u64)getle4(p + 4)) << 32;
 }
 
 static void
-writeu2(unsigned char *p, unsigned int x)
+setle8(unsigned char *p, u64 x)
 {
-  *p++ = x;
-  *p++ = x >> 8;
-}
-
-static void
-writeu4(unsigned char *p, unsigned int x)
-{
-  *p++ = x;
-  *p++ = x >> 8;
-  *p++ = x >> 16;
-  *p++ = x >> 24;
-}
-
-static void
-writeu8(unsigned char *p, unsigned long long x)
-{
-  writeu4(p, x);
-  writeu4(p + 4, x >> 32);
-}
-
-/* file io */
-
-static void
-doread(int fd, unsigned char *buf, size_t len)
-{
-  ssize_t r;
-  while (len > 0)
-    {
-      r = read(fd, buf, len > 65536 ? 65536 : len);
-      if (r < 0)
-	{
-	  perror("read");
-	  exit(1);
-	}
-      if (r == 0)
-	{
-	  fprintf(stderr, "unexpeced EOF\n");
-	  exit(1);
-	}
-      buf += r;
-      len -= r;
-    }
-}
-
-static void
-dowrite(int fd, unsigned char *buf, size_t len)
-{
-  ssize_t r;
-  while (len > 0)
-    {
-      r = write(fd, buf, len > 65536 ? 65536 : len);
-      if (r < 0)
-	{
-	  perror("write");
-	  exit(1);
-	}
-      buf += r;
-      len -= r;
-    }
-}
-
-static void
-docopy(int infd, int outfd, unsigned long long len)
-{
-  unsigned char buf[65536];
-  while (len > 0)
-    {
-      int chunk = len > 65536 ? 65536 : len;
-      doread(infd, buf, chunk);
-      dowrite(outfd, buf, chunk);
-      len -= chunk;
-    }
-}
-
-static void
-doseek(int fd, unsigned long long pos)
-{
-  if (lseek(fd, (off_t)pos, SEEK_SET) == (off_t)-1)
-    {
-      perror("lseek");
-      exit(1);
-    }
+  setle4(p, x);
+  setle4(p + 4, x >> 32);
 }
 
 /* main */
-
-static void
-zipdie(char *msg)
-{
-  fprintf(stderr, "%s\n", msg);
-  exit(1);
-}
 
 void
 zip_read(struct zip *zip, int fd)
 {
   unsigned char eocd[22];
   unsigned char eocd64l[20];
-  unsigned long long eocd64_offset;
-  unsigned long long size;
-  unsigned long long left;
+  u64 eocd64_offset;
+  u64 size;
+  u64 left;
   unsigned char *p;
   int fnlen;
 
   memset(zip, 0, sizeof(*zip));
-  size = lseek(fd, -(20 + 22), SEEK_END);
-  if ((off_t)size == (off_t)-1)
-    {
-      perror("lseek");
-      exit(1);
-    }
+  size = doseek_eof(fd, 20 + 22);
   if (size >= 0x100000000000ULL)
-    zipdie("zip archive too big");
+    dodie("zip archive too big");
   size += 20 + 22;
   zip->size = size;
   doread(fd, eocd64l, 20);
   doread(fd, eocd, 22);
-  if (readu4(eocd) != 0x06054b50 || readu2(eocd + 20) != 0)
-    zipdie("not a (commentless) zip archive");
-  if (readu2(eocd + 4) || readu2(eocd + 6))
-    zipdie("multidisc zip archive");
-  if (readu2(eocd + 8) != 0xffff || readu2(eocd + 10) != 0xffff || readu4(eocd + 12) != 0xffffffff || readu4(eocd + 16) != 0xffffffff)
-    zipdie("no zip64 end of central directory record");
-  if (readu4(eocd64l) != 0x07064b50)
-    zipdie("missing zip64 locator");
-  if (readu4(eocd64l + 4) != 0)
-    zipdie("multidisc zip archive?");
-  eocd64_offset = readu8(eocd64l + 8);
+  if (getle4(eocd) != 0x06054b50 || getle2(eocd + 20) != 0)
+    dodie("not a (commentless) zip archive");
+  if (getle2(eocd + 4) || getle2(eocd + 6))
+    dodie("multidisc zip archive");
+  if (getle2(eocd + 8) != 0xffff || getle2(eocd + 10) != 0xffff || getle4(eocd + 12) != 0xffffffff || getle4(eocd + 16) != 0xffffffff)
+    dodie("no zip64 end of central directory record");
+  if (getle4(eocd64l) != 0x07064b50)
+    dodie("missing zip64 locator");
+  if (getle4(eocd64l + 4) != 0)
+    dodie("multidisc zip archive?");
+  eocd64_offset = getle8(eocd64l + 8);
   if (eocd64_offset >= size - (20 + 22) || size - (20 + 22) - eocd64_offset >= 0x10000 || size - (20 + 22) - eocd64_offset < 56)
-    zipdie("invalid eocd64 offset");
+    dodie("invalid eocd64 offset");
   doseek(fd, eocd64_offset);
   zip->eocd_size = size - (20 + 22) - eocd64_offset;
-  zip->eocd = malloc(zip->eocd_size);
-  if (!zip->eocd)
-    zipdie("out of memory allocating eocd");
+  zip->eocd = doalloc(zip->eocd_size);
   doread(fd, zip->eocd, zip->eocd_size);
-  if (readu4(zip->eocd) != 0x06064b50)
-    zipdie("missing zip64 end of central directory record");
-  if (readu4(zip->eocd + 16) != 0 || readu4(zip->eocd + 20) != 0)
-    zipdie("multidisc zip archive??");
-  zip->cd_offset = readu8(zip->eocd + 48);
+  if (getle4(zip->eocd) != 0x06064b50)
+    dodie("missing zip64 end of central directory record");
+  if (getle4(zip->eocd + 16) != 0 || getle4(zip->eocd + 20) != 0)
+    dodie("multidisc zip archive??");
+  zip->cd_offset = getle8(zip->eocd + 48);
   if (zip->cd_offset > eocd64_offset)
-    zipdie("invalid cd offset");
+    dodie("invalid cd offset");
   zip->cd_size = eocd64_offset - zip->cd_offset;
-  if (zip->cd_size != readu8(zip->eocd + 40))
-    zipdie("central directory size mismatch");
+  if (zip->cd_size != getle8(zip->eocd + 40))
+    dodie("central directory size mismatch");
   if (zip->cd_size >= 0x1000000)
-    zipdie("central directory too big");
+    dodie("central directory too big");
   doseek(fd, zip->cd_offset);
-  zip->cd = malloc(zip->cd_size ? zip->cd_size : 1);
-  if (!zip->cd)
-    zipdie("out of memory allocating cd");
+  zip->cd = doalloc(zip->cd_size);
   doread(fd, zip->cd, zip->cd_size);
   /* scan through directory entries */
   p = zip->cd;
   left = zip->cd_size;
   while (left > 0)
     {
-      if (left < 46 || readu4(p) != 0x02014b50)
-	zipdie("bad directory entry");
-      fnlen = readu2(p + 28);
+      if (left < 46 || getle4(p) != 0x02014b50)
+	dodie("bad directory entry");
+      fnlen = getle2(p + 28);
       if (fnlen == 0 || left < 46 + fnlen)
-	zipdie("bad directory entry");
-      fnlen += readu2(p + 30) + readu2(p + 32) + 46;
+	dodie("bad directory entry");
+      fnlen += getle2(p + 30) + getle2(p + 32) + 46;
       if (left < fnlen)
-        zipdie("bad directory entry");
+        dodie("bad directory entry");
       p += fnlen;
       left -= fnlen;
       zip->num++;
     }
-  if (readu8(zip->eocd + 24) != zip->num || readu8(zip->eocd + 32) != zip->num)
-    zipdie("central directory entries mismatch");
+  if (getle8(zip->eocd + 24) != zip->num || getle8(zip->eocd + 32) != zip->num)
+    dodie("central directory entries mismatch");
 }
 
 unsigned char *
@@ -224,21 +117,21 @@ zip_iterentry(struct zip *zip, unsigned char **iter)
   unsigned char *p = *iter;
   if (p == zip->cd + zip->cd_size)
     return 0;
-  *iter = p + 46 + readu2(p + 28) + readu2(p + 30) + readu2(p + 32);
+  *iter = p + 46 + getle2(p + 28) + getle2(p + 30) + getle2(p + 32);
   return p;
 }
 
 char *
 zip_entry_name(unsigned char *entry, int *lenp)
 {
-  *lenp = readu2(entry + 28);
+  *lenp = getle2(entry + 28);
   return (char *)(entry + 46);
 }
 
-unsigned int
+u32
 zip_entry_datetime(unsigned char *entry)
 {
-  return readu4(entry + 12);
+  return getle4(entry + 12);
 }
 
 unsigned char *
@@ -257,36 +150,36 @@ zip_findentry(struct zip *zip, char *fn)
   return 0;
 }
 
-unsigned long long
+u64
 zip_entry_fhpos(unsigned char *entry)
 {
-  unsigned int pos = readu4(entry + 42);
+  u32 pos = getle4(entry + 42);
   if (pos == 0xffffffff)
-    zipdie("zip64 not supported yet");
+    dodie("zip64 not supported yet");
   return pos;
 }
 
-unsigned long long
+u64
 zip_seekdata(struct zip *zip, int fd, unsigned char *entry)
 {
-  unsigned long long pos = zip_entry_fhpos(entry);
+  u64 pos = zip_entry_fhpos(entry);
   unsigned char lfh[30];
-  unsigned int size;
+  u32 size;
 
   if (pos >= zip->cd_offset - zip->appendedsize)
-    zipdie("zip_seekdata: illegal file header position");
+    dodie("zip_seekdata: illegal file header position");
   doseek(fd, pos);
   doread(fd, lfh, 30);
-  if (readu4(lfh) != 0x04034b50)
-    zipdie("zip_seekdata: not a file header at that position");
-  if (readu2(lfh + 8) != 0)
-    zipdie("only uncompressed files supported");
-  size = readu4(lfh + 18);
+  if (getle4(lfh) != 0x04034b50)
+    dodie("zip_seekdata: not a file header at that position");
+  if (getle2(lfh + 8) != 0)
+    dodie("only uncompressed files supported");
+  size = getle4(lfh + 18);
   if (size == 0xffffffff)
-    zipdie("zip64 not supported yet");
-  pos += 30 + readu2(lfh + 26) + readu2(lfh + 28);
+    dodie("zip64 not supported yet");
+  pos += 30 + getle2(lfh + 26) + getle2(lfh + 28);
   if (pos + size > zip->cd_offset - zip->appendedsize)
-    zipdie("data overlaps central directory");
+    dodie("data overlaps central directory");
   doseek(fd, pos);
   return size;
 }
@@ -307,10 +200,8 @@ dummydeflate(unsigned char *in, int inlen, int *outlenp)
 {
   unsigned char *out, *p;
   if (inlen > 100000)
-    zipdie("dummydeflate: file too big");
-  out = p = malloc(inlen ? inlen + ((inlen + 65535) / 65535) * 5 : 1);
-  if (!out)
-    zipdie("out of memory in dummydeflate");
+    dodie("dummydeflate: file too big");
+  out = p = doalloc(inlen + ((inlen + 65535) / 65535));
   while (inlen > 0)
     {
       int chunk = inlen > 65535 ? 65535 : inlen;
@@ -328,7 +219,7 @@ dummydeflate(unsigned char *in, int inlen, int *outlenp)
   return out;
 }
 
-static unsigned int crc32_tab[] = {
+static u32 crc32_tab[] = {
   0x00000000, 0x77073096, 0xee0e612c, 0x990951ba, 0x076dc419, 0x706af48f, 0xe963a535, 0x9e6495a3,
   0x0edb8832, 0x79dcb8a4, 0xe0d5e91e, 0x97d2d988, 0x09b64c2b, 0x7eb17cbd, 0xe7b82d07, 0x90bf1d91,
   0x1db71064, 0x6ab020f2, 0xf3b97148, 0x84be41de, 0x1adad47d, 0x6ddde4eb, 0xf4d4b551, 0x83d385c7,
@@ -363,30 +254,30 @@ static unsigned int crc32_tab[] = {
   0xb3667a2e, 0xc4614ab8, 0x5d681b02, 0x2a6f2b94, 0xb40bbe37, 0xc30c8ea1, 0x5a05df1b, 0x2d02ef8d
 };
 
-static unsigned int
-crc32buf(unsigned char *buf, unsigned long long len)
+static u32
+crc32buf(unsigned char *buf, u64 len)
 {
-  unsigned int x = 0xffffffff;
+  u32 x = 0xffffffff;
   for (; len > 0; len--)
     x = crc32_tab[(x ^ *buf++) & 0xff] ^ (x >> 8);
   return x ^ 0xffffffff;
 }
 
 void
-zip_appendfile(struct zip *zip, char *fn, unsigned char *file, unsigned long long filelen, int comp, unsigned int datetime)
+zip_appendfile(struct zip *zip, char *fn, unsigned char *file, u64 filelen, int comp, u32 datetime)
 {
   unsigned char *compfile = file;
-  unsigned long long compfilelen = filelen;
+  u64 compfilelen = filelen;
   unsigned char *lfh, *entry;
-  unsigned long long size;
-  unsigned int crc32;
+  u64 size;
+  u32 crc32;
   int fnl = strlen(fn);
   if (fnl > 0xfffe)
-    zipdie("zip_appendfile: file name too long");
+    dodie("zip_appendfile: file name too long");
   if (comp != 0 && comp != 8)
-    zipdie("zip_appendfile: unsupported compression");
+    dodie("zip_appendfile: unsupported compression");
   if (filelen > 0xfffffffe || zip->cd_offset > 0xfffffffe)
-    zipdie("zip_appendfile: zip64 not supported");
+    dodie("zip_appendfile: zip64 not supported");
   crc32 = crc32buf(file, filelen);
   if (comp == 8)
     {
@@ -395,16 +286,9 @@ zip_appendfile(struct zip *zip, char *fn, unsigned char *file, unsigned long lon
       compfilelen = deflatelen;
     }
   size = 30 + fnl + compfilelen;
-  if (zip->appended)
-    zip->appended = realloc(zip->appended, zip->appendedsize + size);
-  else
-    zip->appended = malloc(size);
-  if (!zip->appended)
-    zipdie("out of memory in zip_appendfile");
+  zip->appended = dorealloc(zip->appended, zip->appendedsize + size);
   lfh = zip->appended + zip->appendedsize;
-  zip->cd = realloc(zip->cd, zip->cd_size + 46 + fnl);
-  if (!zip->cd)
-    zipdie("out of memory in zip_appendfile");
+  zip->cd = dorealloc(zip->cd, zip->cd_size + 46 + fnl);
   entry = zip->cd + zip->cd_size;
   zip->cd_size += 46 + fnl;
   zip->appendedsize += size;
@@ -412,42 +296,42 @@ zip_appendfile(struct zip *zip, char *fn, unsigned char *file, unsigned long lon
   zip->size += size + 46 + fnl;
   zip->num++;
 
-  writeu4(lfh, 0x04034b50);
+  setle4(lfh, 0x04034b50);
   memcpy(lfh + 30, fn, fnl);
   memcpy(lfh + 30 + fnl, compfile, compfilelen);
-  writeu2(lfh + 4, 20);
-  writeu2(lfh + 6, 0);
-  writeu2(lfh + 8, comp);
-  writeu4(lfh + 10, datetime);
-  writeu4(lfh + 14, crc32);
-  writeu4(lfh + 18, compfilelen);
-  writeu4(lfh + 22, filelen);
-  writeu2(lfh + 26, fnl);
-  writeu2(lfh + 28, 0);
+  setle2(lfh + 4, 20);
+  setle2(lfh + 6, 0);
+  setle2(lfh + 8, comp);
+  setle4(lfh + 10, datetime);
+  setle4(lfh + 14, crc32);
+  setle4(lfh + 18, compfilelen);
+  setle4(lfh + 22, filelen);
+  setle2(lfh + 26, fnl);
+  setle2(lfh + 28, 0);
 
-  writeu4(entry, 0x02014b50);
+  setle4(entry, 0x02014b50);
   memcpy(entry + 46, fn, fnl);
-  writeu2(entry + 4, 45);
-  writeu2(entry + 6, 20);
-  writeu2(entry + 8, 0);
-  writeu2(entry + 10, comp);
-  writeu4(entry + 12, datetime);
-  writeu4(entry + 16, crc32);
-  writeu4(entry + 20, compfilelen);
-  writeu4(entry + 24, filelen);
-  writeu2(entry + 28, fnl);
-  writeu2(entry + 30, 0);
-  writeu2(entry + 32, 0);
-  writeu2(entry + 34, 0);	/* disk no */
-  writeu2(entry + 36, 0);
-  writeu4(entry + 38, 0);
-  writeu4(entry + 42, zip->cd_offset - size);
+  setle2(entry + 4, 45);
+  setle2(entry + 6, 20);
+  setle2(entry + 8, 0);
+  setle2(entry + 10, comp);
+  setle4(entry + 12, datetime);
+  setle4(entry + 16, crc32);
+  setle4(entry + 20, compfilelen);
+  setle4(entry + 24, filelen);
+  setle2(entry + 28, fnl);
+  setle2(entry + 30, 0);
+  setle2(entry + 32, 0);
+  setle2(entry + 34, 0);	/* disk no */
+  setle2(entry + 36, 0);
+  setle4(entry + 38, 0);
+  setle4(entry + 42, zip->cd_offset - size);
   
   /* patch eocd entries */
-  writeu8(zip->eocd + 24, zip->num);
-  writeu8(zip->eocd + 32, zip->num);
-  writeu8(zip->eocd + 40, zip->cd_size);
-  writeu8(zip->eocd + 48, zip->cd_offset);
+  setle8(zip->eocd + 24, zip->num);
+  setle8(zip->eocd + 32, zip->num);
+  setle8(zip->eocd + 40, zip->cd_size);
+  setle8(zip->eocd + 48, zip->cd_offset);
 
   if (file != compfile)
     free(compfile);
@@ -459,19 +343,19 @@ zip_write(struct zip *zip, int zipfd, int fd)
   unsigned char eocdl[20];
   unsigned char eocdr[22];
 
-  writeu4(eocdl, 0x07064b50);
-  writeu4(eocdl + 4, 0);
-  writeu8(eocdl + 8, zip->cd_offset + zip->cd_size);
-  writeu4(eocdl + 16, 1);
+  setle4(eocdl, 0x07064b50);
+  setle4(eocdl + 4, 0);
+  setle8(eocdl + 8, zip->cd_offset + zip->cd_size);
+  setle4(eocdl + 16, 1);
 
-  writeu4(eocdr, 0x06054b50);
-  writeu2(eocdr + 4, 0);
-  writeu2(eocdr + 6, 0);
-  writeu2(eocdr + 8, 0xffff);
-  writeu2(eocdr + 10, 0xffff);
-  writeu4(eocdr + 12, 0xffffffff);
-  writeu4(eocdr + 16, 0xffffffff);
-  writeu2(eocdr + 20, 0);
+  setle4(eocdr, 0x06054b50);
+  setle2(eocdr + 4, 0);
+  setle2(eocdr + 6, 0);
+  setle2(eocdr + 8, 0xffff);
+  setle2(eocdr + 10, 0xffff);
+  setle4(eocdr + 12, 0xffffffff);
+  setle4(eocdr + 16, 0xffffffff);
+  setle2(eocdr + 20, 0);
 
   /* copy old */
   doseek(zipfd, 0);

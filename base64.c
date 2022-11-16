@@ -46,7 +46,7 @@ printr64(FILE *f, const byte *str, int len)
 }
 
 char *
-r64dec1(char *p, unsigned int *vp, int *eofp)
+r64dec1(char *p, u32 *vp, int *eofp)
 {
   int i, x;
   unsigned int v = 0;
@@ -89,7 +89,7 @@ r64dec1(char *p, unsigned int *vp, int *eofp)
 char *
 r64dec(char *p, unsigned char **bpp)
 {
-  unsigned int v;
+  u32 v;
   int eof = 0;
   unsigned char *bp = *bpp;
   while (!eof)

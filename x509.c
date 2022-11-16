@@ -31,8 +31,10 @@ static const byte oid_rsa_encryption[] = { 0x0b, 0x06, 0x09, 0x2a, 0x86, 0x48, 0
 static const byte oid_dsa_encryption[] = { 0x09, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x38, 0x04, 0x01 };
 static const byte oid_ed25519[] = { 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70 };
 
+static const byte sig_algo_rsa_sha1[]   = { 0x0b, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x05 };
 static const byte sig_algo_rsa_sha256[] = { 0x0f, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05, 0x00 };
 static const byte sig_algo_rsa_sha512[] = { 0x0f, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0d, 0x05, 0x00 };
+static const byte sig_algo_dsa_sha1[]   = { 0x09, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x38, 0x04, 0x03 };
 static const byte sig_algo_dsa_sha256[] = { 0x0d, 0x30, 0x0b, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x02 };
 static const byte sig_algo_dsa_sha512[] = { 0x0d, 0x30, 0x0b, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x04 };
 
@@ -77,15 +79,7 @@ x509_room(struct x509 *cb, int l)
   if (cb->len + l > cb->alen)
     {
       cb->alen = cb->len + l + 256;
-      if (cb->buf)
-        cb->buf = realloc(cb->buf, cb->alen);
-      else
-        cb->buf = malloc(cb->alen);
-      if (!cb->buf)
-	{
-	  fprintf(stderr, "out of x509 memory\n");
-	  exit(1);
-	}
+      cb->buf = dorealloc(cb->buf, cb->alen);
     }
 }
 
@@ -197,37 +191,23 @@ x509_set_of_sort_cmp(const void *va, const void *vb)
 static void
 x509_set_of(struct x509 *cb, int offset)
 {
-  int i, len = cb->len;
-  int n = 0;
-  unsigned char **offs = 0;
-  for (i = 0; i < 2; i++)
+  int i, n, l, len = cb->len;
+  unsigned char *b, **offs;
+
+  for (b = cb->buf + offset, l = len - offset, n = 0; l > 0; n++)
+    x509_skip(&b, &l, 0);
+  if (n < 2)
     {
-      unsigned char *b = cb->buf + offset;
-      int l = len - offset;
-      for (n = 0; l > 0; n++)
-	{
-	  unsigned char *oldb = b;
-	  x509_skip(&b, &l, 0);
-	  if (!offs)
-	    continue;
-	  offs[2 * n] = oldb;
-	  offs[2 * n + 1] = b;
-	}
-      if (i == 0)
-	{
-	  if (n < 2)
-	    {
-	      x509_tag(cb, offset, 0x31);
-	      return;
-	    }
-	  x509_room(cb, len - offset);	/* do this now so that the cb->buf does not change */
-	  offs = malloc(2 * n * sizeof(unsigned char *));
-	  if (!offs)
-	    {
-	      fprintf(stderr, "out of x509_setsort memory\n");
-	      exit(1);
-	    }
-	}
+      x509_tag(cb, offset, 0x31);
+      return;
+    }
+  x509_room(cb, len - offset);	/* do this now so that the cb->buf does not change */
+  offs = doalloc(2 * n * sizeof(unsigned char *));
+  for (b = cb->buf + offset, l = len - offset, n = 0; l > 0; n++)
+    {
+      offs[2 * n] = b;
+      x509_skip(&b, &l, 0);
+      offs[2 * n + 1] = b;
     }
   qsort(offs, n, 2 * sizeof(unsigned char *), x509_set_of_sort_cmp);
   for (i = 0; i < n; i++)
@@ -362,10 +342,14 @@ x509_algoid(struct x509 *cb, int pubalgo, byte **mpi, int *mpil)
 static void
 x509_algoid_sig(struct x509 *cb, int pubalgo, int algo)
 {
-  if (pubalgo == PUB_RSA && algo == HASH_SHA256)
+  if (pubalgo == PUB_RSA && algo == HASH_SHA1)
+    x509_add_const(cb, sig_algo_rsa_sha1);
+  else if (pubalgo == PUB_RSA && algo == HASH_SHA256)
     x509_add_const(cb, sig_algo_rsa_sha256);
   else if (pubalgo == PUB_RSA && algo == HASH_SHA512)
     x509_add_const(cb, sig_algo_rsa_sha512);
+  else if (pubalgo == PUB_DSA && algo == HASH_SHA1)
+    x509_add_const(cb, sig_algo_dsa_sha1);
   else if (pubalgo == PUB_DSA && algo == HASH_SHA256)
     x509_add_const(cb, sig_algo_dsa_sha256);
   else if (pubalgo == PUB_DSA && algo == HASH_SHA512)
@@ -476,9 +460,10 @@ getrawopensslsig(byte *sig, int sigl, int *lenp)
   off = findsigmpioffset(sig, sigl);
   if (pkalg == 1)
     {
+      byte *ret;
       setmpis(sig + off, sigl - off, 1, mpi, mpil, 0);
       /* zero pad to multiple of 16 */
-      byte *ret = malloc(mpil[0] + 15);
+      ret = doalloc(mpil[0] + 15);
       memset(ret, 0, 15);
       nbytes = (mpil[0] + 15) & ~15;
       memcpy(ret + nbytes - mpil[0], sig + off + 2, mpil[0]);

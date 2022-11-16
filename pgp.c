@@ -91,7 +91,7 @@ unarmor_pubkey(char *pubkey, int *pktlp)
   char *p;
   int l, eof;
   unsigned char *buf, *bp;
-  unsigned int v;
+  u32 v;
 
   *pktlp = 0;
   while (strncmp(pubkey, "-----BEGIN PGP PUBLIC KEY BLOCK-----", 36) != 0)
@@ -120,7 +120,7 @@ unarmor_pubkey(char *pubkey, int *pktlp)
   if (!p)
     return 0;
   l = p - pubkey;
-  buf = malloc(l * 3 / 4 + 4 + 16);
+  buf = doalloc(l * 3 / 4 + 4 + 16);
   bp = buf;
   pubkey = r64dec(pubkey, &bp);
   if (!pubkey)
@@ -175,7 +175,7 @@ v4sig_skel[] = {
 unsigned char *
 genv4sigtrail(int clearsign, int pubalgo, int hashalgo, u32 signtime, int *v4sigtraillen)
 {
-  unsigned char *v4sigtrail = malloc(V4SIG_HASHED + 6);
+  unsigned char *v4sigtrail = doalloc(V4SIG_HASHED + 6);
   memcpy(v4sigtrail, v4sig_skel, V4SIG_HASHED);
   v4sigtrail[1] = clearsign ? 0x01 : 0x00;
   v4sigtrail[2] = pubpgpalgo[pubalgo];

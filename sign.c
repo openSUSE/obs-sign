@@ -62,7 +62,7 @@ static int dov4sig;
 static int pubalgoprobe = -1;
 static struct x509 cert;
 static struct x509 othercerts;
-int appxsig2stdout = 0;
+int appxdetached = 0;
 static int cms_flags = 0;
 
 #define MODE_UNSET        0
@@ -102,7 +102,7 @@ readprivkey(void)
       exit(1);
     }
   privkey_read = 1;
-  privkey = malloc(8192);
+  privkey = doalloc(8192);
   *privkey = 0;
   l = 0;
   while (l < 8192 && (ll = fread(privkey + l, 1, 8192 - l, fp)) > 0)
@@ -317,18 +317,15 @@ sign(char *filename, int isfilter, int mode)
   /* calculate output file name (but do not open yet) */
   if (!isfilter && mode != MODE_APPIMAGESIGN)
     {
-      outfilename = malloc(strlen(filename) + 16);
-      if (!outfilename)
-	{
-	  fprintf(stderr, "out of memory for filename\n");
-	  exit(1);
-	}
+      outfilename = doalloc(strlen(filename) + 16);
       if (mode == MODE_DETACHEDSIGN)
 	sprintf(outfilename, "%s.asc", filename);
       else if (mode == MODE_RAWDETACHEDSIGN || mode == MODE_RAWOPENSSLSIGN)
 	sprintf(outfilename, "%s.sig", filename);
       else if (mode == MODE_CMSSIGN)
 	sprintf(outfilename, "%s.p7s", filename);
+      else if (mode == MODE_APPXSIGN && appxdetached)
+	sprintf(outfilename, "%s.p7x", filename);
       else
 	{
 	  sprintf(outfilename, "%s.sIgN%d", filename, getpid());
@@ -632,21 +629,13 @@ sign(char *filename, int isfilter, int mode)
 	    unlink(outfilename);
 	  exit(1);
 	}
-      if (outlh)
-	{
-	  if (rpm_insertsig(&rpmrd, 1, buf + 6 + outl, outlh))
-	    {
-	      if (!isfilter)
-		unlink(outfilename);
-	      exit(1);
-	    }
-	}
-      if (!rpm_write(&rpmrd, isfilter ? 1 : fileno(fout), fd, chksumfilefd))
+      if (outlh && rpm_insertsig(&rpmrd, 1, buf + 6 + outl, outlh))
 	{
 	  if (!isfilter)
 	    unlink(outfilename);
 	  exit(1);
 	}
+      rpm_write(&rpmrd, isfilter ? 1 : fileno(fout), fd, chksumfilefd);
       rpm_free(&rpmrd);
     }
   else if (mode == MODE_APPIMAGESIGN)
@@ -734,7 +723,7 @@ keygen(const char *type, const char *expire, const char *name, const char *email
   if (privkey && strcmp(privkey, "-"))
     {
       int fout;
-      char *outfilename = malloc(strlen(privkey) + 16);
+      char *outfilename = doalloc(strlen(privkey) + 16);
 
       sprintf(outfilename, "%s.sIgN%d", privkey, getpid());
       if ((fout = open(outfilename, O_WRONLY|O_CREAT|O_TRUNC, 0600)) == -1)
@@ -899,7 +888,7 @@ keyextend(char *expire, char *pubkey)
     algouser = user;
   else
     {
-      algouser = malloc(strlen(user) + strlen(hashname[hashalgo]) + 2);
+      algouser = doalloc(strlen(user) + strlen(hashname[hashalgo]) + 2);
       sprintf(algouser, "%s:%s", hashname[hashalgo], user);
     }
   if (pl < 6)
@@ -1023,7 +1012,7 @@ keyextend(char *expire, char *pubkey)
    * rsigl: length of new v3 sig
    * rsighl: offset of left 16 bits of hash in new v3 sig
    */
-  newpubk = malloc((selfsigpkg - pubk) + 4 + hl + (rsigl - rsighl) + l);
+  newpubk = doalloc((selfsigpkg - pubk) + 4 + hl + (rsigl - rsighl) + l);
   memcpy(newpubk, pubk, selfsigpkg - pubk);
   /* leave 4 bytes space for pkg header */
   memcpy(newpubk + (selfsigpkg - pubk) + 4, pp, hl);
@@ -1203,12 +1192,7 @@ createcert(char *pubkey)
     }
   
   /* split user id into name and email */
-  name = malloc(useridl + 1);
-  if (!name)
-    {
-      fprintf(stderr, "out of mem\n");
-      exit(1);
-    }
+  name = doalloc(useridl + 1);
   strncpy(name, (char *)userid, useridl);
   name[useridl] = 0;
   if (!useridl || name[useridl - 1] != '>')
@@ -1612,7 +1596,7 @@ main(int argc, char **argv)
 	mode = MODE_RAWOPENSSLSIGN;
       else if (!strcmp(opt, "-r"))
 	mode = MODE_RPMSIGN;
-      else if (!strcmp(opt, "-a"))
+      else if (!strcmp(opt, "-a") || !strcmp(opt, "--appimage"))
 	mode = MODE_APPIMAGESIGN;
       else if (!strcmp(opt, "-v"))
 	verbose++;
@@ -1671,10 +1655,10 @@ main(int argc, char **argv)
 	}
       else if (!strcmp(opt, "--appx"))
 	mode = MODE_APPXSIGN;
-      else if (!strcmp(opt, "--appxsig2stdout"))
+      else if (!strcmp(opt, "--appxdetached"))
 	{
 	  mode = MODE_APPXSIGN;
-	  appxsig2stdout = 1;
+	  appxdetached = 1;
 	}
       else if (!strcmp(opt, "--cmssign"))
 	mode = MODE_CMSSIGN;
@@ -1704,7 +1688,7 @@ main(int argc, char **argv)
     algouser = user;
   else
     {
-      algouser = malloc(strlen(user) + strlen(hashname[hashalgo]) + 2);
+      algouser = doalloc(strlen(user) + strlen(hashname[hashalgo]) + 2);
       sprintf(algouser, "%s:%s", hashname[hashalgo], user);
     }
   if (pkcs1pss && mode != MODE_RAWOPENSSLSIGN)

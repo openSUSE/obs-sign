@@ -81,7 +81,7 @@ int hash_len(void);
 
 /* base64.c */
 void printr64(FILE *f, const byte *str, int len);
-char *r64dec1(char *p, unsigned int *vp, int *eofp);
+char *r64dec1(char *p, u32 *vp, int *eofp);
 char *r64dec(char *p, unsigned char **bpp);
 
 /* pgp.c */
@@ -134,14 +134,14 @@ void x509_pe_signedattrs(struct x509 *cb, unsigned char *digest, int digestlen, 
 /* zip.c */
 struct zip {
   unsigned char *eocd;
-  unsigned long long eocd_size;
-  unsigned long long size;
-  unsigned long long cd_offset;
-  unsigned long long cd_size;
+  u64 eocd_size;
+  u64 size;
+  u64 cd_offset;
+  u64 cd_size;
   unsigned char *cd;
-  unsigned long long num;
+  u64 num;
   unsigned char *appended;
-  unsigned long long appendedsize;
+  u64 appendedsize;
 };
 
 void zip_read(struct zip *zip, int fd);
@@ -150,11 +150,11 @@ unsigned char *zip_iterentry(struct zip *zip, unsigned char **iterp);
 unsigned char *zip_findentry(struct zip *zip, char *fn);
 
 char *zip_entry_name(unsigned char *entry, int *namel);
-unsigned long long zip_entry_fhpos(unsigned char *entry);
-unsigned int zip_entry_datetime(unsigned char *entry);
+u64 zip_entry_fhpos(unsigned char *entry);
+u32 zip_entry_datetime(unsigned char *entry);
 
-unsigned long long zip_seekdata(struct zip *zip, int fd, unsigned char *entry);
-void zip_appendfile(struct zip *zip, char *fn, unsigned char *file, unsigned long long filelen, int comp, unsigned int datetime);
+u64 zip_seekdata(struct zip *zip, int fd, unsigned char *entry);
+void zip_appendfile(struct zip *zip, char *fn, unsigned char *file, u64 filelen, int comp, u32 datetime);
 void zip_write(struct zip *zip, int zipfd, int fd);
 
 /* rpm.c */
@@ -166,8 +166,8 @@ struct rpmdata {
   int rpmsigsize;
   byte *rpmsig;         /* signature data (with room for two new signatures) */
 
-  u32 rpmdataoff;
-  unsigned long long hdrin_size;
+  u32 rpmdataoff;	/* header+payload offset in unsigned rpm */
+  u64 hdrin_size;
   byte *hdrin_md5;      /* points into rpmsig */
   int gotsha1;          /* did we see a RPMSIGTAG_SHA1 tag? */
 
@@ -182,7 +182,7 @@ struct rpmdata {
 
 int rpm_insertsig(struct rpmdata *rd, int hdronly, byte *newsig, int newsiglen);
 int rpm_read(struct rpmdata *rd, int fd, char *filename, HASH_CONTEXT *ctx, HASH_CONTEXT *hctx, int getbuildtime);
-int rpm_write(struct rpmdata *rd, int foutfd, int fd, int chksumfilefd);
+void rpm_write(struct rpmdata *rd, int foutfd, int fd, int chksumfilefd);
 void rpm_free(struct rpmdata *rd);
 void rpm_writechecksums(struct rpmdata *rd, int chksumfilefd);
 
@@ -195,7 +195,7 @@ struct appxdata {
   struct x509 cb_content;
   struct x509 cb_signedattrs;
   struct zip zip;
-  unsigned int datetime;
+  u32 datetime;
 };
 
 int appx_read(struct appxdata *appxdata, int fd, char *filename, HASH_CONTEXT *ctx, time_t t);
@@ -216,12 +216,12 @@ int clearsign(int fd, char *filename, char *outfilename, HASH_CONTEXT *ctx, cons
 struct pedata {
   struct x509 cb_content;
   struct x509 cb_signedattrs;
-  unsigned char hdr[4096];
-  unsigned int headersize;
-  unsigned int c_off;
-  unsigned int csum_off;
-  unsigned int filesize;
-  unsigned int csum;
+  byte hdr[4096];
+  u32 headersize;
+  u32 c_off;
+  u32 csum_off;
+  u32 filesize;
+  u32 csum;
 };
 
 int pe_read(struct pedata *pedata, int fd, char *filename, HASH_CONTEXT *hctx, time_t t);
@@ -231,3 +231,17 @@ void pe_free(struct pedata *pedata);
 /* ko.c */
 int ko_read(int fd, char *filename, HASH_CONTEXT *ctx);
 void ko_write(int outfd, int fd, struct x509 *cb);
+
+/* util.c */
+void *doalloc(size_t sz);
+void *dorealloc(void *p, size_t sz);
+void dodie(const char *msg);
+void dodie_errno(const char *msg);
+size_t doread_eof(int fd, unsigned char *buf, size_t len);
+void doread(int fd, unsigned char *buf, size_t len);
+void dowrite(int fd, const unsigned char *buf, size_t len);
+void doseek(int fd, u64 pos);
+u64 doseek_eof(int fd, u64 pos);
+void docopy(int infd, int outfd, u64 len);
+
+

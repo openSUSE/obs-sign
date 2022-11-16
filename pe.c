@@ -1,59 +1,10 @@
 #include "inc.h"
+#include "bele.h"
 
 static void
-doread(int fd, const char *filename, unsigned char *b, int l)
+update_chksum(u32 pos, const unsigned char *b, int l, u32 *csump)
 {
-  while (l > 0)
-    {
-      int r = read(fd, b, l);
-      if (r < 0)
-	{
-	  perror(filename);
-	  exit(1);
-	}
-      if (r == 0)
-	{
-	  fprintf(stderr, "%s: unexpexted EOF\n", filename);
-	  exit(1);
-	}
-      b += r;
-      l -= r;
-    }
-}
-
-static void
-dowrite(int fd, const unsigned char *b, int l)
-{
-  while (l > 0)
-    {
-      int r = write(fd, b, l);
-      if (r < 0)
-        {
-	  perror("write");
-	  exit(1);
-        }
-      b += r;
-      l -= r;
-    }
-}
-
-static void
-docopy(int outfd, int fd, const char *filename, unsigned int l)
-{
-  unsigned char buf[4096];
-  while (l > 0)
-    {
-      int chunk = l > sizeof(buf) ? sizeof(buf) : l;
-      doread(fd, filename, buf, chunk);
-      dowrite(outfd, buf, chunk);
-      l -= chunk;
-    }
-}
-
-static void
-update_chksum(unsigned int pos, const unsigned char *b, int l, unsigned int *csump)
-{
-  unsigned int c = *csump;
+  u32 c = *csump;
   if (!l)
     return;
   if (l < 0 || l > 0x10000 * 2)
@@ -72,27 +23,21 @@ update_chksum(unsigned int pos, const unsigned char *b, int l, unsigned int *csu
   *csump = c;
 }
 
-static unsigned int
-dohash(int fd, char *filename, unsigned int pos, unsigned int l, int toeof, HASH_CONTEXT *ctx, unsigned int *chkp)
+static u32
+dohash(int fd, char *filename, u32 pos, u32 l, int toeof, HASH_CONTEXT *ctx, u32 *chkp)
 {
   unsigned char buf[4096];
-  unsigned int hashed = 0;
+  u32 hashed = 0;
 
   if (pos >= 0x40000000)
-    {
-      fprintf(stderr, "unsupported pe file size\n");
-      exit(1);
-    }
+    dodie("unsupported pe file size");
   if (toeof)
     l = sizeof(buf);
   while (l > 0)
     {
       int r = read(fd, buf, l > sizeof(buf) ? sizeof(buf) : (int)l);
       if (r < 0)
-	{
-	  perror(filename);
-	  exit(1);
-	}
+	dodie_errno(filename);
       if (r == 0 && toeof)
 	break;
       if (r == 0)
@@ -100,11 +45,8 @@ dohash(int fd, char *filename, unsigned int pos, unsigned int l, int toeof, HASH
 	  fprintf(stderr, "%s: unexpexted EOF\n", filename);
 	  exit(1);
 	}
-      if (pos + (unsigned int)r >= 0x40000000)
-	{
-	  fprintf(stderr, "unsupported pe file size\n");
-	  exit(1);
-	}
+      if (pos + (u32)r >= 0x40000000)
+	dodie("unsupported pe file size");
       hash_write(ctx, buf, r);
       hashed += r;
       if (chkp)
@@ -116,34 +58,13 @@ dohash(int fd, char *filename, unsigned int pos, unsigned int l, int toeof, HASH
   return hashed;
 }
 
-static inline
-unsigned int getle2(const unsigned char *b)
-{
-  return b[0] | b[1] << 8;
-}
-
-static inline
-unsigned int getle4(const unsigned char *b)
-{
-  return b[0] | b[1] << 8 | b[2] << 16 | b[3] << 24;
-}
-
-static inline
-void setle4(unsigned char *b, unsigned int v)
-{
-  b[0] = v & 255;
-  b[1] = (v >> 8) & 255;
-  b[2] = (v >> 16) & 255;
-  b[3] = (v >> 24) & 255;
-}
-
 static int
 sectioncmp(const void *av, const void *bv)
 {
   const unsigned char *a = av;
   const unsigned char *b = bv;
-  unsigned int aoff = getle4(a + 20);
-  unsigned int boff = getle4(b + 20);
+  u32 aoff = getle4(a + 20);
+  u32 boff = getle4(b + 20);
   return aoff < boff ? -1 : aoff > boff ? 1 : 0;
 }
 
@@ -152,25 +73,25 @@ pe_read(struct pedata *pedata, int fd, char *filename, HASH_CONTEXT *hctx, time_
 {
   unsigned char hdr[4096];
   HASH_CONTEXT ctx;
-  unsigned int stubsize, opthdrsize;
-  unsigned int opthdrmagic;
-  unsigned int headersize;
-  unsigned int hdd_off;
-  unsigned int c_off, c_end;
-  unsigned int nsections;
-  unsigned int bytes_hashed;
-  unsigned int cert_pos = 0;
+  u32 stubsize, opthdrsize;
+  u32 opthdrmagic;
+  u32 headersize;
+  u32 hdd_off;
+  u32 c_off, c_end;
+  u32 nsections;
+  u32 bytes_hashed;
+  u32 cert_pos = 0;
   int i;
   int offset;
 
-  doread(fd, filename, hdr, 0x40);
+  doread(fd, hdr, 0x40);
   stubsize = getle4(hdr + 0x3c);
   if (stubsize >= sizeof(hdr) - 24 || stubsize < 0x40)
     {
       fprintf(stderr, "illegal stub size: %u\n", stubsize);
       exit(1);
     }
-  doread(fd, filename, hdr + 0x40, stubsize - 0x40 + 24);
+  doread(fd, hdr + 0x40, stubsize - 0x40 + 24);
   if (getle4(hdr + stubsize) != 0x4550)
     {
       fprintf(stderr, "%s: not a PE file\n", filename);
@@ -182,7 +103,7 @@ pe_read(struct pedata *pedata, int fd, char *filename, HASH_CONTEXT *hctx, time_
       fprintf(stderr, "illegal optional header size: %u\n", opthdrsize);
       exit(1);
     }
-  doread(fd, filename, hdr + stubsize + 24, opthdrsize);
+  doread(fd, hdr + stubsize + 24, opthdrsize);
   opthdrmagic = getle2(hdr + stubsize + 24);
   if (opthdrmagic != 0x10b && opthdrmagic != 0x20b)
     {
@@ -201,7 +122,7 @@ pe_read(struct pedata *pedata, int fd, char *filename, HASH_CONTEXT *hctx, time_
       fprintf(stderr, "unsupported header size: 0x%08x\n", headersize);
       exit(1);
     }
-  doread(fd, filename, hdr + stubsize + 24 + opthdrsize, headersize - (stubsize + 24 + opthdrsize));
+  doread(fd, hdr + stubsize + 24 + opthdrsize, headersize - (stubsize + 24 + opthdrsize));
 
   c_off = hdd_off + 8 * 4;
   if (c_off > opthdrsize)
@@ -214,10 +135,7 @@ pe_read(struct pedata *pedata, int fd, char *filename, HASH_CONTEXT *hctx, time_
     return 0;	/* already signed */
 
   if (c_end == c_off)
-    {
-      fprintf(stderr, "missing certificate directory entry\n");
-      exit(1);
-    }
+    dodie("missing certificate directory entry");
   pedata->headersize = headersize;
   pedata->c_off = stubsize + 24 + c_off;
   pedata->csum = 0;
@@ -225,10 +143,7 @@ pe_read(struct pedata *pedata, int fd, char *filename, HASH_CONTEXT *hctx, time_
   memcpy(pedata->hdr, hdr, headersize);
 
   if (hashalgo != HASH_SHA256)
-    {
-      fprintf(stderr, "can only use sha256 for hashing\n");
-      exit(1);
-    }
+    dodie("can only use sha256 for PE file hashing");
   hash_init(&ctx);
   hash_write(&ctx, hdr, stubsize + 24 + 64);
   hash_write(&ctx, hdr + (stubsize + 24 + 68), c_off - 68);
@@ -246,8 +161,8 @@ pe_read(struct pedata *pedata, int fd, char *filename, HASH_CONTEXT *hctx, time_
   for (i = 0; i < nsections; i++)
     {
       unsigned char *sp = hdr + (stubsize + 24 + opthdrsize) + 40 * i;
-      unsigned int sz = getle4(sp + 16);
-      unsigned int off = getle4(sp + 20);
+      u32 sz = getle4(sp + 16);
+      u32 off = getle4(sp + 20);
       if (!sz)
 	continue;
       if (off != bytes_hashed)
@@ -259,7 +174,7 @@ pe_read(struct pedata *pedata, int fd, char *filename, HASH_CONTEXT *hctx, time_
     }
   if (cert_pos)
     {
-      unsigned int sz;
+      u32 sz;
       if (cert_pos < bytes_hashed || (cert_pos & 7) != 0)
 	{
 	  fprintf(stderr, "illegal cert position: 0x%08x\n", cert_pos);
@@ -304,7 +219,7 @@ void
 pe_write(struct pedata *pedata, int outfd, int fd, struct x509 *cert, unsigned char *sig, int siglen, struct x509 *othercerts)
 {
   struct x509 cb;
-  unsigned int filesizepad;
+  u32 filesizepad;
 
   x509_init(&cb);
   x509_pkcs7_signed_data(&cb, &pedata->cb_content, &pedata->cb_signedattrs, sig, siglen, cert, othercerts, 0);
@@ -329,13 +244,9 @@ pe_write(struct pedata *pedata, int outfd, int fd, struct x509 *cert, unsigned c
   setle4(pedata->hdr + pedata->csum_off, pedata->csum);
 
   /* write signed pe file */
-  if (lseek(fd, pedata->headersize, SEEK_SET) != (off_t)pedata->headersize)
-    {
-      perror("lseek");
-      exit(1);
-    }
   dowrite(outfd, pedata->hdr, pedata->headersize);
-  docopy(outfd, fd, "input file", pedata->filesize - pedata->headersize);
+  doseek(fd, pedata->headersize);
+  docopy(outfd, fd, pedata->filesize - pedata->headersize);
   if (filesizepad)
     dowrite(outfd, (const unsigned char *)"\0\0\0\0\0\0\0\0", filesizepad);
   dowrite(outfd, cb.buf, cb.len);
