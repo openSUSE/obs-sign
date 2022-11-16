@@ -412,7 +412,8 @@ findsubpkg(unsigned char *q, int l, int type)
 unsigned char *
 addpkg(unsigned char *to, unsigned char *p, int l, int tag, int newformat)
 {
-  /* we know that l < 8192 */
+  if (l < 0 || l >= 8192)
+    abort();
   if (!newformat)
     {
       if (l < 256)
