@@ -66,40 +66,25 @@ opensocket(void)
       hostknown = 1;
     }
   if ((sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0)
-    {
-      perror("socket");
-      exit(1);
-    }
+    dodie_errno("socket");
   if (uid)
     {
       if (seteuid(0))
-	{
-	  perror("seteuid");
-	  exit(1);
-	}
+        dodie_errno("seteuid");
     }
   while (bindresvport(sock, NULL) != 0)
     {
       if (errno != EADDRINUSE)
-	{
-	  perror("bindresvport");
-	  exit(1);
-	}
+        dodie_errno("bindresvport");
       sleep(1);
     }
   if (uid)
     {
       if (seteuid(uid))
-	{
-	  perror("seteuid");
-	  exit(1);
-	}
+        dodie_errno("seteuid");
     }
   if (connect(sock, (struct sockaddr *)&svt, sizeof(svt)))
-    {
-      perror(host);
-      exit(1);
-    }
+    dodie_errno(host);
   optval = 1;
   setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &optval, sizeof(optval));
 }
@@ -119,15 +104,9 @@ pipe_and_fork(int *pip)
 {
   pid_t pid;
   if (pipe(pip) == -1)
-    {
-      perror("pipe");
-      exit(1);
-    }
+    dodie_errno("pipe");
   if ((pid = fork()) == (pid_t)-1)
-    {
-      perror("fork");
-      exit(1);
-    }
+    dodie_errno("fork");
   if (pid == 0)
     {
       close(pip[0]);
@@ -179,10 +158,7 @@ reap_test_signd()
   int status;
   pid_t pid = waitpid(0, &status, 0);
   if (pid <= 0)
-    {
-      perror("waitpid");
-      exit(1);
-    }
+    dodie_errno("waitpid");
   if (status)
     {
       fprintf(stderr, "test signd returned status 0x%x\n", status);

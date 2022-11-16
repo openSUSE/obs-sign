@@ -72,10 +72,7 @@ static void
 x509_room(struct x509 *cb, int l)
 {
   if (l < 0 || l > 100000 || cb->len > 100000)
-    {
-      fprintf(stderr, "x509_room: illegal size\n");
-      exit(1);
-    }
+    dodie("x509_room: illegal size");
   if (cb->len + l > cb->alen)
     {
       cb->alen = cb->len + l + 256;
@@ -329,10 +326,7 @@ x509_algoid(struct x509 *cb, int pubalgo, byte **mpi, int *mpil)
       if (mpi && mpil[0] == gpg_ed25519[0] && !memcmp(mpi[0], gpg_ed25519 + 1, mpil[0]))
 	x509_add_const(cb, oid_ed25519);
       else
-	{
-	  fprintf(stderr, "x509_pubkey: unsupported EdDSA curve\n");
-	  exit(1);
-	}
+	dodie("x509_pubkey: unsupported EdDSA curve");
     }
   else
     abort();
@@ -378,10 +372,7 @@ x509_pubkey(struct x509 *cb, int pubalgo, byte **mpi, int *mpil, byte *keyid)
   else if (pubalgo == PUB_EDDSA)
     {
       if (mpil[1] < 2 || mpi[1][0] != 0x40)
-	{
-	  fprintf(stderr, "x509_pubkey: bad EdDSA point\n");
-	  exit(1);
-	}
+	dodie("x509_pubkey: bad EdDSA point");
       x509_add(cb, mpi[1] + 1, mpil[1] - 1);
     }
   if (keyid)
@@ -532,10 +523,7 @@ x509_unpack(unsigned char *bp, int l, unsigned char **dpp, int *dlp, int *clp, i
   unsigned char *bporig = bp;
   int tag, tl;
   if (l < 2)
-    {
-      fprintf(stderr, "x509_unpack: unexpected EOF\n");
-      exit(1);
-    }
+    dodie("x509_unpack: unexpected EOF");
   tag = bp[0];
   tl = bp[1];
   bp += 2;
@@ -550,19 +538,13 @@ x509_unpack(unsigned char *bp, int l, unsigned char **dpp, int *dlp, int *clp, i
 	  exit(1);
 	}
       if (l < tl)
-	{
-	  fprintf(stderr, "x509_unpack: unexpected EOF in len\n");
-	  exit(1);
-	}
+	dodie("x509_unpack: unexpected EOF in len");
       for (; tl > 0; tl--, l--)
 	ll = (ll << 8) + *bp++;
       tl = ll;
     }
   if (tl < 0 || tl > l)
-    {
-      fprintf(stderr, "x509_unpack: unexpected EOF\n");
-      exit(1);
-    }
+    dodie("x509_unpack: unexpected EOF");
   *dpp = bp;
   *dlp = tl;
   if (clp)
@@ -667,8 +649,7 @@ x509_subjectkeyid(struct x509 *cb, unsigned char *cert, int certlen)
       x509_add(cb, b2, l2);
       return;
     }
-  fprintf(stderr, "cert does not contain the subject key identifier extension\n");
-  exit(1);
+  dodie("cert does not contain the subject key identifier extension");
 }
 
 static void

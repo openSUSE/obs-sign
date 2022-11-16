@@ -34,18 +34,11 @@ clearsign(int fd, char *filename, char *outfilename, HASH_CONTEXT *ctx, const ch
   int first = 1;
   FILE *fout;
 
-  if ((cbuf = malloc(8192)) == NULL)
-    {
-      fprintf(stderr, "no mem for clearsign buffer\n");
-      exit(1);
-    }
   cbufl = 8192;
+  cbuf = doalloc(cbufl);
   l = read(fd, cbuf, cbufl);
   if (l < 0)
-    {
-      perror("read");
-      exit(1);
-    }
+    dodie_errno("read");
   if (l >= 34 && !strncmp((char *)cbuf, "-----BEGIN PGP SIGNED MESSAGE-----", 34))
     return 0;	/* already signed */
   for (i = 0; i < l; i++)
@@ -63,10 +56,7 @@ clearsign(int fd, char *filename, char *outfilename, HASH_CONTEXT *ctx, const ch
   if (isfilter)
     fout = stdout;
   else if ((fout = fopen(outfilename, "w")) == 0)
-    {
-      perror(outfilename);
-      exit(1);
-    }
+    dodie_errno(outfilename);
   fprintf(fout, "-----BEGIN PGP SIGNED MESSAGE-----\nHash: %s\n\n", hname);
   while (first || (l = read(fd, cbuf + have, cbufl - have)) > 0 || (l == 0 && have))
     {
@@ -81,12 +71,7 @@ clearsign(int fd, char *filename, char *outfilename, HASH_CONTEXT *ctx, const ch
       if (i == l && i == cbufl && l != have)
 	{
 	  cbufl *= 2;
-	  cbuf = realloc(cbuf, cbufl);
-	  if (!cbuf)
-	    {
-	      fprintf(stderr, "no mem for clearsign buffer\n");
-	      exit(1);
-	    }
+	  cbuf = dorealloc(cbuf, cbufl);
 	  have = l;
 	  continue;
 	}
@@ -99,10 +84,7 @@ clearsign(int fd, char *filename, char *outfilename, HASH_CONTEXT *ctx, const ch
 	  l++;
 	}
       if (i > 20000)
-	{
-	  fprintf(stderr, "line too long for clearsign\n");
-	  exit(1);
-	}
+	dodie("line too long for clearsign");
       fwrite(cbuf, 1, i + 1, fout);
       for (j = i - 1; j >= 0; j--)
 	if (cbuf[j] != '\r' && cbuf[j] != ' ' && cbuf[j] != '\t')

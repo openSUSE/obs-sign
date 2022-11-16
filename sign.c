@@ -97,10 +97,7 @@ readprivkey(void)
   if (privkey_read)
     return;
   if ((fp = fopen(privkey, "r")) == 0)
-    {
-      perror(privkey);
-      exit(1);
-    }
+    dodie_errno(privkey);
   privkey_read = 1;
   privkey = doalloc(8192);
   *privkey = 0;
@@ -109,15 +106,9 @@ readprivkey(void)
     l += ll;
   fclose(fp);
   if (l == 0)
-    {
-      fprintf(stderr, "empty private\n");
-      exit(1);
-    }
+    dodie("empty private key");
   if (l == 8192)
-    {
-      fprintf(stderr, "private key too large\n");
-      exit(1);
-    }
+    dodie("private key too large");
   if (privkey[l - 1] == '\n')
     l--;
   privkey[l] = 0;
@@ -200,10 +191,7 @@ slurp(char *filename, char *buf, int bufl)
   int l, ll;
   FILE *fp;
   if ((fp = fopen(filename, "r")) == 0)
-    {
-      perror(filename);
-      exit(1);
-    }
+    dodie_errno(filename);
   l = 0;
   while (l < bufl && (ll = fread(buf + l, 1, bufl - l, fp)) > 0)
     l += ll;
@@ -225,10 +213,7 @@ plainsign_read(int fd, char *filename, HASH_CONTEXT *ctx)
     {
       int l = read(fd, buf, sizeof(buf));
       if (l < 0)
-	{
-	  perror(filename);
-	  exit(1);
-	}
+	dodie_errno(filename);
       if (l == 0)
 	break;
       hash_write(ctx, buf,  l);
@@ -265,10 +250,7 @@ sign(char *filename, int isfilter, int mode)
     {
       force = 0;
       if (isfilter)
-        {
-	  fprintf(stderr, "please specify a mode for filter usage (see sign --help).\n");
-	  exit(1);
-        }
+	dodie("please specify a mode for filter usage (see sign --help)");
       l = strlen(filename);
       if (l > 4 && (!strcmp(filename + l - 4, ".rpm") || !strcmp(filename + l - 4, ".spm")))
 	mode = MODE_RPMSIGN;
@@ -281,10 +263,7 @@ sign(char *filename, int isfilter, int mode)
     }
 
   if (mode == MODE_APPIMAGESIGN && isfilter)
-    {
-      fprintf(stderr, "appimage sign cannot work as filter.\n");
-      exit(1);
-    }
+    dodie("appimage sign cannot work as filter");
 
   /* make sure we have a cert for appx/cms sign */
   if (mode == MODE_APPXSIGN || mode == MODE_CMSSIGN || mode == MODE_PESIGN || mode == MODE_KOSIGN)
@@ -299,20 +278,14 @@ sign(char *filename, int isfilter, int mode)
       if (assertpubalgo < 0)
 	assertpubalgo = pubalgo;
       if (assertpubalgo != pubalgo)
-	{
-	  fprintf(stderr, "pubkey algorithm does not match cert\n");
-	  exit(1);
-	}
+	dodie("pubkey algorithm does not match cert");
     }
 
   /* open input file */
   if (isfilter)
     fd = 0;
   else if ((fd = open(filename, O_RDONLY)) == -1)
-    {
-      perror(filename);
-      exit(1);
-    }
+    dodie_errno(filename);
 
   /* calculate output file name (but do not open yet) */
   if (!isfilter && mode != MODE_APPIMAGESIGN)
@@ -347,15 +320,9 @@ sign(char *filename, int isfilter, int mode)
     {
       struct stat stb;
       if (fstat(fd, &stb))
-	{
-	  perror("fstat");
-	  exit(1);
-	}
+        dodie_errno("fstat");
       if (S_ISFIFO(stb.st_mode))
-	{
-	  fprintf(stderr, "cannot use mtime on pipes\n");
-	  exit(1);
-	}
+	dodie("cannot use mtime on pipes");
       signtime = stb.st_mtime;
     }
 
@@ -534,10 +501,7 @@ sign(char *filename, int isfilter, int mode)
     {
       int sigpubalgo = pkg2sigpubalgo(buf + 6, outl);
       if (sigpubalgo < 0)
-	{
-	  fprintf(stderr, "unknown public key algorithm in signature\n");
-	  exit(1);
-	}
+	dodie("unknown public key algorithm in signature");
       if (assertpubalgo != sigpubalgo)
 	{
 	  fprintf(stderr, "unexpected public key algorithm: wanted %s, got %s\n", pubalgoname[assertpubalgo], pubalgoname[sigpubalgo]);
@@ -551,10 +515,7 @@ sign(char *filename, int isfilter, int mode)
       byte *sig = pkg2sig(buf + 6, outl, &sigl);
       byte *issuer = findsigissuer(sig, sigl);
       if (!issuer)
-	{
-	  fprintf(stderr, "issuer not found in signature\n");
-	  exit(1);
-	}
+	dodie("issuer not found in signature");
       printf("%02X%02X%02X%02X\n", issuer[4], issuer[5], issuer[6], issuer[7]);
       exit(0);
     }
@@ -574,10 +535,7 @@ sign(char *filename, int isfilter, int mode)
   else if (mode != MODE_CLEARSIGN && mode != MODE_APPIMAGESIGN)
     {
       if ((fout = fopen(outfilename, "w")) == 0)
-	{
-	  perror(outfilename);
-	  exit(1);
-	}
+	dodie_errno(outfilename);
     }
 
   /* find raw openssl signature if needed */
@@ -727,50 +685,26 @@ keygen(const char *type, const char *expire, const char *name, const char *email
 
       sprintf(outfilename, "%s.sIgN%d", privkey, getpid());
       if ((fout = open(outfilename, O_WRONLY|O_CREAT|O_TRUNC, 0600)) == -1)
-	{
-	  perror(outfilename);
-	  exit(1);
-	}
+	dodie_errno(outfilename);
       if (write(fout, buf + 6 + publ, privl) != privl)
-	{
-	  perror("privkey write error");
-	  exit(1);
-	}
+	dodie_errno("privkey write error");
       if (write(fout, "\n", 1) != 1)
-	{
-	  perror("privkey write error");
-	  exit(1);
-	}
+	dodie_errno("privkey write error");
       if (close(fout))
-	{
-	  perror("privkey write error");
-	  exit(1);
-	}
+	dodie_errno("privkey write error");
       if (rename(outfilename, privkey))
-	{
-	  perror(privkey);
-	  exit(1);
-	}
+	dodie_errno(privkey);
     }
   else
     {
       if (fwrite(buf + 6 + publ, privl, 1, stdout) != 1)
-	{
-	  fprintf(stderr, "privkey write error\n");
-	  exit(1);
-	}
+	dodie_errno("privkey write error");
       printf("\n");
     }
   if (fwrite(buf + 6, publ, 1, stdout) != 1)
-    {
-      fprintf(stderr, "pubkey write error\n");
-      exit(1);
-    }
+    dodie_errno("pubkey write error");
   if (fflush(stdout))
-    {
-      fprintf(stderr, "pubkey write error\n");
-      exit(1);
-    }
+    dodie_errno("pubkey write error");
   exit(0);
 }
 
@@ -809,37 +743,22 @@ keyextend(char *expire, char *pubkey)
   int rsigl, rsighl, rl;
 
   if (uid && !privkey)
-    {
-      fprintf(stderr, "need -P option for non-root operation\n");
-      exit(1);
-    }
+    dodie("need -P option for non-root operation");
   expdays = atoi(expire);
   if (expdays <= 0 || expdays >= 10000)
-    {
-      fprintf(stderr, "bad expire argument\n");
-      exit(1);
-    }
+    dodie("bad expire argument");
   slurp(pubkey, buf, sizeof(buf));
   pubk = unarmor_pubkey(buf, &pubkl);
   if (!pubk)
-    {
-      fprintf(stderr, "could not parse pubkey armor\n");
-      exit(1);
-    }
+    dodie("could not parse pubkey armor");
   p = pubk;
   l = pubkl;
 
   pp = nextpkg(&tag, &pl, &p, &l);
   if (tag != 6)
-    {
-      fprintf(stderr, "pubkey does not start with a pubkey paket\n");
-      exit(1);
-    }
+    dodie("pubkey does not start with a pubkey paket");
   if (*pp != 4)
-    {
-      fprintf(stderr, "pubkey is not type 4\n");
-      exit(1);
-    }
+    dodie("pubkey is not type 4");
   pkcreat = pp[1] << 24 | pp[2] << 16 | pp[3] << 8 | pp[4];
   pk = pp;
   pkl = pl;
@@ -847,36 +766,26 @@ keyextend(char *expire, char *pubkey)
 
   pp = nextpkg(&tag, &pl, &p, &l);
   if (tag != 13)
-    {
-      fprintf(stderr, "missing userid\n");
-      exit(1);
-    }
+    dodie("missing userid");
   userid = pp;
   useridl = pl;
 
   selfsigpkg = p;
   pp = nextpkg(&tag, &pl, &p, &l);
   if (tag != 2)
-    {
-      fprintf(stderr, "missing self-sig\n");
-      exit(1);
-    }
+    dodie("missing self-sig");
   if (pp[0] != 4)
-    {
-      fprintf(stderr, "self-sig is not type 4\n");
-      exit(1);
-    }
+    dodie("self-sig is not type 4");
   if (pp[1] != 0x13)
-    {
-      fprintf(stderr, "self-sig is not class 0x13\n");
-      exit(1);
-    }
-  if (pp[3] == 9 || pp[3] == 10 || pp[3] == 11)
-    pp[3] = 8;	/* change sha384/512/224 to sha256 for now */
+    dodie("self-sig is not class 0x13");
+  if (pp[3] == 9 || pp[3] == 11)
+    pp[3] = 8;	/* change sha384/224 to sha256 for now */
   if (pp[3] == 2)
     hashalgo = HASH_SHA1;
   else if (pp[3] == 8)
     hashalgo = HASH_SHA256;
+  else if (pp[3] == 10)
+    hashalgo = HASH_SHA512;
   else
     {
       fprintf(stderr, "self-sig hash type is unsupported (algo %d)\n", pp[3]);
@@ -892,16 +801,10 @@ keyextend(char *expire, char *pubkey)
       sprintf(algouser, "%s:%s", hashname[hashalgo], user);
     }
   if (pl < 6)
-    {
-      fprintf(stderr, "self-sig is too short\n");
-      exit(1);
-    }
+    dodie("self-sig is too short");
   ex = findsubpkg(pp + 4, pl - 4, 2);
   if (!ex)
-    {
-      fprintf(stderr, "self-sig has no creation time\n");
-      exit(1);
-    }
+    dodie("self-sig has no creation time");
   now = (u32)time((time_t)0);
   ex[0] = now >> 24;
   ex[1] = now >> 16;
@@ -910,15 +813,9 @@ keyextend(char *expire, char *pubkey)
 
   ex = findsubpkg(pp + 4, pl - 4, 9);
   if (!ex)
-    {
-      fprintf(stderr, "self-sig does not expire\n");
-      exit(1);
-    }
+    dodie("self-sig does not expire");
   if (now < pkcreat)
-    {
-      fprintf(stderr, "pubkey was created in the future\n");
-      exit(1);
-    }
+    dodie("pubkey was created in the future");
   now = (now - pkcreat) + expdays * (24 * 3600);
   ex[0] = now >> 24;
   ex[1] = now >> 16;
@@ -943,10 +840,7 @@ keyextend(char *expire, char *pubkey)
   hash_write(&dig, userid, useridl);
   hl = 4 + 2 + ((pp[4] << 8) | pp[5]);
   if (hl > pl)
-    {
-      fprintf(stderr, "self-sig has bad hashed-length\n");
-      exit(1);
-    }
+    dodie("self-sig has bad hashed-length");
   hash_write(&dig, pp, hl);
   b[0] = 4;
   b[1] = 0xff;
@@ -960,10 +854,7 @@ keyextend(char *expire, char *pubkey)
 
   hl += 2 + (pp[hl] << 8 | pp[hl + 1]);
   if (hl > pl)
-    {
-      fprintf(stderr, "self-sig has bad length\n");
-      exit(1);
-    }
+    dodie("self-sig has bad length");
 
   now = (u32)time((time_t)0);
   b[0] = 0;
@@ -994,15 +885,9 @@ keyextend(char *expire, char *pubkey)
   rsig = pkg2sig(rbuf + 4, rbuf[2] << 8 | rbuf[3], &rsigl);
   sigissuer = findsigissuer(rsig, rsigl);
   if (issuer && sigissuer && memcmp(issuer, sigissuer, 8))
-    {
-      fprintf(stderr, "issuer does not match, did you forget -P?\n");
-      exit(1);
-    }
+    dodie("issuer does not match, did you forget -P?");
   if (memcmp(fingerprint + 12, sigissuer, 8))
-    {
-      fprintf(stderr, "fingerprint does not match self sig\n");
-      exit(1);
-    }
+    dodie("fingerprint does not match self sig");
   rsighl = findsigmpioffset(rsig, rsigl) - 2;	/* subtract 2 for hash bits */
   /*
    * pp: self-sig
@@ -1073,33 +958,21 @@ createcert(char *pubkey)
   byte *sig;
 
   if (uid && !privkey)
-    {
-      fprintf(stderr, "need -P option for non-root operation\n");
-      exit(1);
-    }
+    dodie("need -P option for non-root operation");
   if (privkey)
     readprivkey();
   slurp(pubkey, buf, sizeof(buf));
   pubk = unarmor_pubkey(buf, &pubkl);
   if (!pubk)
-    {
-      fprintf(stderr, "could not parse pubkey armor\n");
-      exit(1);
-    }
+    dodie("could not parse pubkey armor");
   p = pubk;
   l = pubkl;
 
   pp = nextpkg(&tag, &pl, &p, &l);
   if (tag != 6)
-    {
-      fprintf(stderr, "pubkey does not start with a pubkey paket\n");
-      exit(1);
-    }
+    dodie("pubkey does not start with a pubkey paket");
   if (pp[0] != 4)
-    {
-      fprintf(stderr, "pubkey is not type 4\n");
-      exit(1);
-    }
+    dodie("pubkey is not type 4");
   if (pp[5] == 1)
     pubalgo = PUB_RSA;
   else if (pp[5] == 17)
@@ -1112,20 +985,14 @@ createcert(char *pubkey)
       exit(1);
     }
   if (assertpubalgo == -1 && pubalgo != PUB_RSA)
-    {
-      fprintf(stderr, "not a RSA pubkey\n");
-      exit(1);
-    }
+    dodie("not a RSA pubkey");
   if (assertpubalgo >= 0 && assertpubalgo != pubalgo)
     {
       fprintf(stderr, "unexpected public key algorithm: wanted %s, got %s\n", pubalgoname[assertpubalgo], pubalgoname[pubalgo]);
       exit(1);
     }
   if (pubalgo == PUB_EDDSA)
-    {
-      fprintf(stderr, "EdDSA certs are unsupported\n");
-      exit(1);
-    }
+    dodie("EdDSA certs are unsupported");
   calculatefingerprint(pp, pl, fingerprint);
 
   /* get creattion time */
@@ -1140,73 +1007,43 @@ createcert(char *pubkey)
     setmpis(pp + 6, pl - 6, 2, mpi, mpil, 1);
   pp = nextpkg(&tag, &pl, &p, &l);
   if (tag != 13)
-    {
-      fprintf(stderr, "missing userid\n");
-      exit(1);
-    }
+    dodie("missing userid packet");
   userid = pp;
   useridl = pl;
 
   pp = nextpkg(&tag, &pl, &p, &l);
   if (tag != 2)
-    {
-      fprintf(stderr, "missing self-sig\n");
-      exit(1);
-    }
+    dodie("missing self-sig");
   if (pp[0] != 4)
-    {
-      fprintf(stderr, "self-sig is not type 4\n");
-      exit(1);
-    }
+    dodie("self-sig is not type 4");
   if (pp[1] != 0x13)
-    {
-      fprintf(stderr, "self-sig is not class 0x13\n");
-      exit(1);
-    }
+    dodie("self-sig is not class 0x13");
   if (pl < 6)
-    {
-      fprintf(stderr, "self-sig is too short\n");
-      exit(1);
-    }
+    dodie("self-sig is too short");
   ex = findsubpkg(pp + 4, pl - 4, 2);
   if (!ex)
-    {
-      fprintf(stderr, "self-sig has no creation time\n");
-      exit(1);
-    }
+    dodie("self-sig has no creation time");
   beg = (ex[0] << 24 | ex[1] << 16 | ex[2] << 8 | ex[3]);
   now = (u32)time((time_t)0);
   if (beg > now)
     beg = now;
   ex = findsubpkg(pp + 4, pl - 4, 9);
   if (!ex)
-    {
-      fprintf(stderr, "self-sig does not expire\n");
-      exit(1);
-    }
+    dodie("self-sig does not expire");
   exp = pkcreat + (ex[0] << 24 | ex[1] << 16 | ex[2] << 8 | ex[3]);
   if (exp < now)
-    {
-      fprintf(stderr, "pubkey is already expired\n");
-      exit(1);
-    }
+    dodie("pubkey is already expired");
   
   /* split user id into name and email */
   name = doalloc(useridl + 1);
   strncpy(name, (char *)userid, useridl);
   name[useridl] = 0;
   if (!useridl || name[useridl - 1] != '>')
-    {
-      fprintf(stderr, "userid does not end with email\n");
-      exit(1);
-    }
+    dodie("userid does not end with email");
   name[useridl - 1] = 0;
   email = strrchr(name, '<');
   if (!email || email == name)
-    {
-      fprintf(stderr, "userid does not end with email\n");
-      exit(1);
-    }
+    dodie("userid does not end with email");
   nameend = email;
   *email++ = 0;
   while (nameend > name && (nameend[-1] == ' ' || nameend[-1] == '\t'))
@@ -1244,15 +1081,9 @@ createcert(char *pubkey)
   sig = pkg2sig(rbuf + 4, rbuf[2] << 8 | rbuf[3], &sigl);
   sigissuer = findsigissuer(sig, sigl);
   if (sigissuer && memcmp(sigissuer, fingerprint + 12, 8))
-    {
-      fprintf(stderr, "signature issuer does not match fingerprint\n");
-      exit(1);
-    }
+    dodie("signature issuer does not match fingerprint");
   if (pubalgo != findsigpubalgo(sig, sigl))
-    {
-      fprintf(stderr, "signature pubkey algorithm does not match pubkey\n");
-      exit(1);
-    }
+    dodie("signature pubkey algorithm does not match pubkey");
 
   /* get signnature */
   assertpubalgo = pubalgo;
@@ -1276,17 +1107,11 @@ getpubkey()
   int outl;
   int ulen = strlen(user);
   if (privkey)
-    {
-      fprintf(stderr, "pubkey fetching does not work with a private key\n");
-      exit(1);
-    }
+    dodie("pubkey fetching does not work with a private key");
   opensocket();
   /* we always use old style requests for the pubkey */
   if (ulen + 6 + 4 + 1 + (hashalgo == HASH_SHA1 ? 0 : strlen(hashname[hashalgo]) + 1) > sizeof(buf))
-    {
-      fprintf(stderr, "packet too big\n");
-      exit(1);
-    }
+    dodie("packet too big");
   buf[0] = ulen >> 8;
   buf[1] = ulen;
   buf[2] = 0;
@@ -1382,11 +1207,10 @@ read_sign_conf(const char *conf)
 	    hashalgo = HASH_SHA1;
 	  else if (!strcasecmp(bp, "sha256"))
 	    hashalgo = HASH_SHA256;
+	  else if (!strcasecmp(bp, "sha512"))
+	    hashalgo = HASH_SHA512;
 	  else
-	    {
-	      fprintf(stderr, "sign: hash: unknown argument\n");
-	      exit(1);
-	    }
+	    dodie("sign: hash: unknown argument");
 	}
       if (uid && !allowuser && !strcmp(buf, "allowuser"))
 	{

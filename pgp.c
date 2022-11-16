@@ -199,14 +199,11 @@ v3tov4(unsigned char *v4sigtrail, unsigned char *v3sig, int v3siglen, int tail, 
 {
   int o;
   int l, nl;
-  int nhl;
+  int nhl = 0;
   unsigned char issuer[8];
 
   if (v3siglen < 17)
-    {
-      fprintf(stderr, "v3 signature too short\n");
-      exit(1);
-    }
+    dodie("v3 signature too short");
   if (v3sig[0] == 0x88)
     o = 2;
   else if (v3sig[0] == 0x89)
@@ -231,40 +228,25 @@ v3tov4(unsigned char *v4sigtrail, unsigned char *v3sig, int v3siglen, int tail, 
 
   /* check that everything matches */
   if (v3sig[o] != 3)
-    {
-      fprintf(stderr, "v3tov4: not a v3 sig\n");
-      exit(1);
-    }
+    dodie("v3tov4: not a v3 sig");
   if (v3sig[o + 2] != v4sigtrail[1])
-    {
-      fprintf(stderr, "v3tov4 type mismatch\n");
-      exit(1);
-    }
+    dodie("v3tov4 type mismatch");
   if (memcmp(v3sig + o + 3, v4sigtrail + 8, 4))
-    {
-      fprintf(stderr, "v3tov4 creation time mismatch\n");
-      exit(1);
-    }
+    dodie("v3tov4 creation time mismatch");
   if (v3sig[o + 15] != v4sigtrail[2])
     {
       fprintf(stderr, "v3tov4 pubkey algo mismatch: %d %d\n", v3sig[o + 15], v4sigtrail[2]);
       exit(1);
     }
   if (v3sig[o + 16] != v4sigtrail[3])
-    {
-      fprintf(stderr, "v3tov4 hash algo mismatch\n");
-      exit(1);
-    }
+    dodie("v3tov4 hash algo mismatch");
 
   /* stash issuer away */
   memcpy(issuer, v3sig + o + 7, 8);
 
   l = v3siglen - (o + 17);	/* signature stuff */
   if (l < 2)
-    {
-      fprintf(stderr, "v3 signature too short\n");
-      exit(1);
-    }
+    dodie("v3 signature too short");
   /* make room */
   memmove(v3sig + left, v3sig, v3siglen + tail);
   nl = l + sizeof(v4sig_skel);
@@ -282,15 +264,9 @@ v3tov4(unsigned char *v4sigtrail, unsigned char *v3sig, int v3siglen, int tail, 
       nhl = 3;
     }
   else
-    {
-      fprintf(stderr, "v4tov3: new length too big\n");
-      exit(1);
-    }
+    dodie("v4tov3: new length too big");
   if (nhl + nl >= v3siglen + left)
-    {
-      fprintf(stderr, "v4tov3: no room left\n");
-      exit(1);
-    }
+    dodie("v4tov3: no room left");
   memmove(v3sig + nhl, v4sigtrail, V4SIG_HASHED);
   memmove(v3sig + nhl + V4SIG_HASHED, v4sig_skel + V4SIG_HASHED, sizeof(v4sig_skel) - V4SIG_HASHED);
 
@@ -460,28 +436,16 @@ pkg2sig(byte *pk, int pkl, int *siglp)
     {
       int ll = 4;
       if (l < ll + 2)
-	{
-	  fprintf(stderr, "signature packet is too small\n");
-	  exit(1);
-	}
+	dodie("signature packet is too small");
       ll += 2 + (sig[ll] << 8) + sig[ll + 1];
       if (l < ll + 2)
-	{
-	  fprintf(stderr, "signature packet is too small\n");
-	  exit(1);
-	}
+	dodie("signature packet is too small");
       ll += 2 + (sig[ll] << 8) + sig[ll + 1];
     }
   else
-    {
-      fprintf(stderr, "not a V3 or V4 signature\n");
-      exit(1);
-    }
+    dodie("not a V3 or V4 signature");
   if (l < ll + 2)
-    {
-      fprintf(stderr, "signature packet is too small\n");
-      exit(1);
-    }
+    dodie("signature packet is too small");
   *siglp = l;
   return sig;
 }
@@ -491,10 +455,7 @@ calculatefingerprint(byte *pub, int publ, byte *fingerprintp)
 {
   byte b[3];
   if (!publ || *pub != 4)
-    {
-      fprintf(stderr, "only know how to calculate the fingerprint of V4 keys\n");
-      exit(1);
-    }
+    dodie("only know how to calculate the fingerprint of V4 keys");
   SHA1_CONTEXT ctx;
   sha1_init(&ctx);
   b[0] = 0x99;
@@ -571,10 +532,7 @@ setmpis(byte *p, int l, int nmpi, byte **mpi, int *mpil, int withcurve)
     {
       int bytes;
       if (l < 2)
-	{
-	  fprintf(stderr, "truncated mpi data\n");
-	  exit(1);
-	}
+	dodie("truncated mpi data");
       if (withcurve)
 	{
 	  withcurve = 0;
@@ -594,10 +552,7 @@ setmpis(byte *p, int l, int nmpi, byte **mpi, int *mpil, int withcurve)
 	  l -= 2;
 	}
       if (l < bytes)
-	{
-	  fprintf(stderr, "truncated mpi data\n");
-	  exit(1);
-	}
+	dodie("truncated mpi data");
       *mpi++ = p;
       *mpil++ = bytes;
       p += bytes;
