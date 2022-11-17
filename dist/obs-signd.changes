@@ -1,7 +1,7 @@
 -------------------------------------------------------------------
 Thu Nov 17 10:44:50 CET 2022 - mls@suse.de
 
-- update to version 2.7.0
+- update to version 2.7.1
   * support kernel module signing
   * support PE file signing
   * support pkcs7/cms signing
