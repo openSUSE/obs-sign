@@ -1,4 +1,13 @@
 -------------------------------------------------------------------
+Thu Nov 17 10:44:50 CET 2022 - mls@suse.de
+
+- update to version 2.7.0
+  * support kernel module signing
+  * support PE file signing
+  * support pkcs7/cms signing
+  * support sha512 hashes
+
+-------------------------------------------------------------------
 Thu Nov  3 13:25:09 CET 2022 - ro@suse.de
 
 - drop the no longer required dependency on gpg2_signd_support 
