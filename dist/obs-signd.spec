@@ -21,7 +21,7 @@ Summary:        The sign daemon
 License:        GPL-2.0-only
 Group:          Productivity/Networking/Web/Utilities
 
-Version:        2.7.1
+Version:        2.7.2
 Release:        0
 
 URL:            http://en.opensuse.org/Build_Service
