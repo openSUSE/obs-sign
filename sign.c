@@ -191,6 +191,33 @@ plainsign_read(int fd, char *filename, HASH_CONTEXT *ctx)
   return 1;
 }
 
+static byte *
+getrawopensslsig(byte *sig, int sigl, int *lenp)
+{
+  struct x509 cb;
+  int sigalgo, off, nmpis = 0;
+  byte *mpi[2];
+  int mpil[2];
+
+  sigalgo = findsigpubalgo(sig, sigl);
+  if (assertpubalgo == -1 && sigalgo != PUB_RSA)
+    dodie("Not a RSA key");
+  if (sigalgo == PUB_RSA)
+    nmpis = 1;
+  else if (sigalgo == PUB_DSA)
+    nmpis = 2;
+  else if (sigalgo == PUB_EDDSA)
+    dodie("EdDSA openssl signing is not supported");
+  else
+    dodie("invalid signature algo");
+  off = findsigmpioffset(sig, sigl);
+  setmpis(sig + off, sigl - off, nmpis, mpi, mpil, 0);
+  x509_init(&cb);
+  x509_signature(&cb, sigalgo, mpi, mpil);
+  *lenp = cb.len;
+  return cb.buf;	/* steal allocated buffer */
+}
+
 static int
 sign(char *filename, int isfilter, int mode)
 {
@@ -467,15 +494,6 @@ sign(char *filename, int isfilter, int mode)
       free(v4sigtrail);
     }
 
-  /* finally open the output file */
-  if (isfilter)
-    fout = stdout;
-  else if (mode != MODE_CLEARSIGN && mode != MODE_APPIMAGESIGN)
-    {
-      if ((fout = fopen(outfilename, "w")) == 0)
-	dodie_errno(outfilename);
-    }
-
   /* find raw openssl signature if needed */
   rawssllen = 0;
   rawssl = 0;
@@ -484,12 +502,15 @@ sign(char *filename, int isfilter, int mode)
       int sigl;
       byte *sig = pkg2sig(buf, outl, &sigl);
       rawssl = getrawopensslsig(sig, sigl, &rawssllen);
-      if (!rawssl)
-	{
-	  if (!isfilter)
-	    unlink(outfilename);
-	  exit(1);
-	}
+    }
+
+  /* finally open the output file */
+  if (isfilter)
+    fout = stdout;
+  else if (mode != MODE_CLEARSIGN && mode != MODE_APPIMAGESIGN)
+    {
+      if ((fout = fopen(outfilename, "w")) == 0)
+	dodie_errno(outfilename);
     }
 
   /* write/incorporate signature */
@@ -1021,13 +1042,9 @@ createcert(char *pubkey)
   if (pubalgo != findsigpubalgo(sig, sigl))
     dodie("signature pubkey algorithm does not match pubkey");
 
-  /* get signnature */
+  /* get signature and finish cert */
   assertpubalgo = pubalgo;
   rawssl = getrawopensslsig(sig, sigl, &rawssllen);
-  if (!rawssl)
-    exit(1);
-
-  /* finish cert */
   x509_finishcert(&cb, pubalgo, rawssl, rawssllen);
   free(rawssl);
 

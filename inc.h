@@ -113,9 +113,9 @@ struct x509 {
 static inline void x509_init(struct x509 *cb) { memset(cb, 0, sizeof(*cb)); }
 static inline void x509_free(struct x509 *cb) { if (cb->buf) free(cb->buf); }
 void x509_insert(struct x509 *cb, int offset, const byte *blob, int blobl);
+void x509_signature(struct x509 *cb, int pubalgo, byte **mpi, int *mpil);
 void x509_tbscert(struct x509 *cb, const char *cn, const char *email, time_t start, time_t end, int pubalgo, byte **mpi, int *mpil);
 void x509_finishcert(struct x509 *cb, int pubalgo, byte *sig, int sigl);
-byte *getrawopensslsig(byte *sig, int sigl, int *lenp);
 void certsizelimit(char *s, int l);
 
 int x509_addpem(struct x509 *cb, char *buf, char *type);

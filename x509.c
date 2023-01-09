@@ -388,6 +388,30 @@ x509_pubkey(struct x509 *cb, int pubalgo, byte **mpi, int *mpil, byte *keyid)
   x509_tag(cb, offset, 0x30);
 }
 
+void
+x509_signature(struct x509 *cb, int pubalgo, byte **mpi, int *mpil)
+{
+  if (pubalgo == PUB_RSA)
+    {
+      /* zero pad to multiple of 16 */
+      int nbytes = (mpil[0] + 15) & ~15;
+      if (nbytes > mpil[0])
+        x509_add(cb, 0, nbytes - mpil[0]);
+      x509_add(cb, mpi[0], mpil[0]);
+    }
+  else if (pubalgo == PUB_DSA)
+    {
+      x509_mpiint(cb, mpi[0], mpil[0]);
+      x509_mpiint(cb, mpi[1], mpil[1]);
+      x509_tag(cb, 0, 0x30);
+    }
+  else
+    {
+      fprintf(stderr, "unsupported signature algo %d\n", pubalgo);
+      exit(1);
+    }
+}
+
 static void
 x509_extensions(struct x509 *cb, byte *keyid)
 {
@@ -432,52 +456,6 @@ x509_finishcert(struct x509 *cb, int pubalgo, byte *sig, int sigl)
   x509_add(cb, sig, sigl);
   x509_tag(cb, cb->len - (sigl + 1), 0x03);
   x509_tag(cb, 0, 0x30);
-}
-
-byte *
-getrawopensslsig(byte *sig, int sigl, int *lenp)
-{
-  int pkalg, off, nbytes;
-  byte *mpi[2];
-  int mpil[2];
-
-  pkalg = sig[0] == 3 ? sig[15] : sig[2];
-  
-  if (assertpubalgo == -1 && pkalg != 1)
-    {
-      fprintf(stderr, "Not a RSA key\n");
-      return 0;
-    }
-  off = findsigmpioffset(sig, sigl);
-  if (pkalg == 1)
-    {
-      byte *ret;
-      setmpis(sig + off, sigl - off, 1, mpi, mpil, 0);
-      /* zero pad to multiple of 16 */
-      ret = doalloc(mpil[0] + 15);
-      memset(ret, 0, 15);
-      nbytes = (mpil[0] + 15) & ~15;
-      memcpy(ret + nbytes - mpil[0], sig + off + 2, mpil[0]);
-      *lenp = nbytes;
-      return ret;
-    }
-  else if (pkalg == 17)
-    {
-      struct x509 cb;
-      setmpis(sig + off, sigl - off, 2, mpi, mpil, 0);
-      x509_init(&cb);
-      x509_mpiint(&cb, mpi[0], mpil[0]);
-      x509_mpiint(&cb, mpi[1], mpil[1]);
-      x509_tag(&cb, 0, 0x30);
-      *lenp = cb.len;
-      return cb.buf;
-    }
-  else if (pkalg == 22)
-    {
-      fprintf(stderr, "EdDSA openssl signing is not supported\n");
-      return 0;
-    }
-  return 0;
 }
 
 void
