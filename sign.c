@@ -665,7 +665,7 @@ keygen(const char *type, const char *expire, const char *name, const char *email
   exit(0);
 }
 
-void
+static void
 keyextend(char *expire, char *pubkey)
 {
   char buf[8192];
@@ -714,8 +714,10 @@ keyextend(char *expire, char *pubkey)
   pp = nextpkg(&tag, &pl, &p, &l);
   if (tag != 6)
     dodie("pubkey does not start with a pubkey paket");
-  if (*pp != 4)
-    dodie("pubkey is not type 4");
+  if (pl < 6)
+    dodie("pubkey is too short");
+  if (pp[0] != 4)
+    dodie("pubkey is not version 4");
   pkcreat = pp[1] << 24 | pp[2] << 16 | pp[3] << 8 | pp[4];
   pk = pp;
   pkl = pl;
@@ -731,8 +733,10 @@ keyextend(char *expire, char *pubkey)
   pp = nextpkg(&tag, &pl, &p, &l);
   if (tag != 2)
     dodie("missing self-sig");
+  if (pl < 6)
+    dodie("self-sig is too short");
   if (pp[0] != 4)
-    dodie("self-sig is not type 4");
+    dodie("self-sig is not version 4");
   if (pp[1] != 0x13)
     dodie("self-sig is not class 0x13");
   if (pp[3] == 9 || pp[3] == 11)
@@ -757,8 +761,6 @@ keyextend(char *expire, char *pubkey)
       algouser = doalloc(strlen(user) + strlen(hashname[hashalgo]) + 2);
       sprintf(algouser, "%s:%s", hashname[hashalgo], user);
     }
-  if (pl < 6)
-    dodie("self-sig is too short");
   ex = findsubpkg(pp + 4, pl - 4, 2);
   if (!ex)
     dodie("self-sig has no creation time");
@@ -871,7 +873,7 @@ keyextend(char *expire, char *pubkey)
   free(pubk);
 }
 
-void
+static void
 initrandom()
 {
   unsigned int seed = 0x23468676;
@@ -883,7 +885,7 @@ initrandom()
   srandom(seed);
 }
 
-void
+static void
 createcert(char *pubkey)
 {
   struct x509 cb;
@@ -928,8 +930,10 @@ createcert(char *pubkey)
   pp = nextpkg(&tag, &pl, &p, &l);
   if (tag != 6)
     dodie("pubkey does not start with a pubkey paket");
+  if (pl < 6)
+    dodie("pubkey is too short");
   if (pp[0] != 4)
-    dodie("pubkey is not type 4");
+    dodie("pubkey is not version 4");
   if (pp[5] == 1)
     pubalgo = PUB_RSA;
   else if (pp[5] == 17)
@@ -971,12 +975,12 @@ createcert(char *pubkey)
   pp = nextpkg(&tag, &pl, &p, &l);
   if (tag != 2)
     dodie("missing self-sig");
-  if (pp[0] != 4)
-    dodie("self-sig is not type 4");
-  if (pp[1] != 0x13)
-    dodie("self-sig is not class 0x13");
   if (pl < 6)
     dodie("self-sig is too short");
+  if (pp[0] != 4)
+    dodie("self-sig is not version 4");
+  if (pp[1] != 0x13)
+    dodie("self-sig is not class 0x13");
   ex = findsubpkg(pp + 4, pl - 4, 2);
   if (!ex)
     dodie("self-sig has no creation time");
@@ -1055,7 +1059,7 @@ createcert(char *pubkey)
   x509_free(&cb);
 }
 
-void
+static void
 getpubkey()
 {
   byte buf[8192];
@@ -1070,7 +1074,7 @@ getpubkey()
   fwrite(buf, 1, outl, stdout);
 }
 
-void
+static void
 ping()
 {
   byte buf[256];
@@ -1082,7 +1086,7 @@ ping()
     exit(-r);
 }
 
-void
+static void
 read_sign_conf(const char *conf)
 {
   FILE *cfp;
@@ -1163,7 +1167,7 @@ read_sign_conf(const char *conf)
   fclose(cfp);
 }
 
-void
+static void
 readcert(struct x509 *cert, char *certfile)
 {
   char buf[32768];
@@ -1176,7 +1180,7 @@ readcert(struct x509 *cert, char *certfile)
     }
 }
 
-void
+static void
 readothercerts(struct x509 *othercerts, char *certfile)
 {
   char buf[65536];
@@ -1191,7 +1195,7 @@ readothercerts(struct x509 *othercerts, char *certfile)
   x509_insert(othercerts, 0, (unsigned char *)buf, l);
 }
 
-void
+static void
 hashfile(char *filename, int isfilter)
 {
   int l, i, fd;
@@ -1216,7 +1220,8 @@ hashfile(char *filename, int isfilter)
     close(fd);
 }
 
-void usage()
+static void
+usage()
 {
     fprintf(stderr, "usage:  sign [-v] [options]\n\n"
             "  sign [-v] -c <file> [-u user] [-h hash]: add clearsign signature\n"
