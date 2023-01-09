@@ -201,7 +201,7 @@ dummydeflate(unsigned char *in, int inlen, int *outlenp)
   unsigned char *out, *p;
   if (inlen > 100000)
     dodie("dummydeflate: file too big");
-  out = p = doalloc(inlen + ((inlen + 65535) / 65535));
+  out = p = doalloc(inlen + ((inlen + 65535) / 65535) * 5);
   while (inlen > 0)
     {
       int chunk = inlen > 65535 ? 65535 : inlen;
