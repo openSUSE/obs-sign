@@ -116,7 +116,8 @@ Verbose mode
 Specify the key to use. Signd should already know about that user.
 .TP
 .BI "\-h " hash
-Either sha1, sha256, or sha512
+Either sha1, sha256, or sha512. The default is sha1, because some old distributions,
+e.g., RHEL 7, cannot handle sha256. On modern systems you should use sha256.
 .TP
 .BI "\-T " unixtime
 Explicit sign time. If RPM mode used (\-r) also accepts the string "buildtime".
@@ -178,13 +179,6 @@ Print the keyid of signd key-pair (root key or defined by \-u)
 .TP
 .BR \-p
 Print pubkey of signd key-pair (root key or defined by \-u)
-.TP
-.BR \-u
-Username, signd should already know about that user
-.TP
-.BR \-h
-Hash: either sha1 or sha256. Default is sha1, because some old distributions,
-e.g., RHEL 7, cannot handle sha256. On modern systems you should use sha256.
 
 
 .SH SECURITY
