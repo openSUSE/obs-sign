@@ -167,7 +167,7 @@ reap_test_signd()
 }
 
 int
-doreq_old(byte *buf, int inbufl, int bufl)
+doreq_raw(byte *buf, int inbufl, int bufl)
 {
   int l, outl, errl;
 
@@ -227,6 +227,32 @@ doreq_old(byte *buf, int inbufl, int bufl)
 }
 
 int
+doreq_old(const char *user, const char *digest, const char *digestalgo, byte *buf, int bufl)
+{
+  size_t userlen = strlen(user);
+  size_t digestlen = strlen(digest);
+  size_t digestalgolen = digestalgo ? strlen(digestalgo) + 1 : 0;
+  if (4 + userlen + digestlen + digestalgolen > bufl)
+    {
+      fprintf(stderr, "request buffer overflow\n");
+      closesocket();
+      return -1;
+    }
+  buf[0] = userlen >> 8;
+  buf[1] = userlen & 255;
+  buf[2] = (digestlen + digestalgolen) >> 8;
+  buf[3] = (digestlen + digestalgolen) & 255;
+  memcpy(buf + 4, user, userlen);
+  if (digestalgolen)
+    {
+      memcpy(buf + 4 + userlen, digestalgo, digestalgolen - 1);
+      buf[4 + userlen + digestalgolen - 1] = ':';
+    }
+  memcpy(buf + 4 + userlen + digestalgolen, digest, digestlen);
+  return doreq_raw(buf, 4 + userlen + digestalgolen + digestlen, bufl);
+}
+
+int
 doreq(int argc, const char **argv, byte *buf, int bufl, int nret)
 {
   byte *bp;
@@ -259,7 +285,7 @@ doreq(int argc, const char **argv, byte *buf, int bufl, int nret)
   buf[0] = v >> 8;
   buf[1] = v & 255;
 
-  outl = doreq_old(buf, (int)(bp - buf), bufl);
+  outl = doreq_raw(buf, (int)(bp - buf), bufl);
   if (outl < 0)
     return outl;
 
@@ -287,3 +313,24 @@ doreq(int argc, const char **argv, byte *buf, int bufl, int nret)
     }
   return outl;
 }
+
+/* do a request with one or two results */
+int
+doreq_12(int argc, const char **argv, byte *buf, int bufl, int *outl2p)
+{
+  int outl = doreq(argc, argv, buf, bufl, outl2p ? 2 : 1);
+  if (outl >= 0)
+    {
+      outl = buf[2] << 8 | buf[3];
+      if (outl2p)
+	{
+	  int outl2 = buf[4] << 8 | buf[5];
+	  memmove(buf, buf + 6, outl + outl2);
+	  *outl2p = outl2;
+	}
+      else
+        memmove(buf, buf + 4, outl);
+    }
+  return outl;
+}
+

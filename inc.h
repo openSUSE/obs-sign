@@ -205,8 +205,10 @@ void appx_free(struct appxdata *appxdata);
 /* sock.c */
 void opensocket(void);
 void closesocket(void);
-int doreq_old(byte *buf, int inbufl, int bufl);
+int doreq_raw(byte *buf, int inbufl, int bufl);
+int doreq_old(const char *user, const char *digest, const char *digestalgo, byte *buf, int bufl);
 int doreq(int argc, const char **argv, byte *buf, int bufl, int nret);
+int doreq_12(int argc, const char **argv, byte *buf, int bufl, int *outl2p);
 
 /* clearsign.c */
 int clearsign(int fd, char *filename, char *outfilename, HASH_CONTEXT *ctx, const char *hname, int isfilter, int force, FILE **foutp);

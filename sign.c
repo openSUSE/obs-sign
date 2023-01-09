@@ -120,55 +120,25 @@ probe_pubalgo()
   char hashhex[1024];
   byte buf[8192], *bp;
   u32 signtime = time(NULL);
-  int i, ulen, outl;
+  int i, outl;
 
   opensocket();
-  ulen = strlen(user);
   bp = (byte *)hashhex;
   for (i = 0; i < hashlen[hashalgo]; i++, bp += 2)
     sprintf((char *)bp, "01");
   sprintf((char *)bp, "@00%08x", (unsigned int)signtime);
 
   if (!privkey)
-    {
-      /* old style sign */
-      if (ulen + strlen(hashhex) + 4 + 1 + (hashalgo == HASH_SHA1 ? 0 : strlen(hashname[hashalgo]) + 1) > sizeof(buf))
-	{
-	  closesocket();
-	  return -1;
-	}
-      buf[0] = ulen >> 8;
-      buf[1] = ulen;
-      buf[2] = 0;
-      buf[3] = 0;
-      memmove(buf + 4, user, ulen);
-      bp = buf + 4 + ulen;
-      if (hashalgo != HASH_SHA1)
-	{
-	  strcpy((char *)bp, hashname[hashalgo]);
-	  bp += strlen((const char *)bp);
-	  *bp++ = ':';
-	}
-      strcpy((char *)bp, hashhex);
-      bp += strlen((char *)bp);
-      buf[3] = bp - (buf + 4 + ulen);
-      outl = doreq_old(buf, (int)(bp - buf), sizeof(buf));
-    }
+    outl = doreq_old(user, hashhex, hashalgo == HASH_SHA1 ? 0 : hashname[hashalgo], buf, sizeof(buf));
   else
     {
       const char *args[5];
-
       readprivkey();
       args[0] = "privsign";
       args[1] = algouser;
       args[2] = privkey;
       args[3] = hashhex;
-      outl = doreq(4, args, buf, sizeof(buf), 1);
-      if (outl >= 0)
-	{
-	  outl = buf[2] << 8 | buf[3];
-	  memmove(buf, buf + 4, outl);
-	}
+      outl = doreq_12(4, args, buf, sizeof(buf), 0);
     }
   return outl > 0 ? pkg2sigpubalgo(buf, outl) : -1;
 }
@@ -426,32 +396,9 @@ sign(char *filename, int isfilter, int mode)
   if (!privkey && !ph)
     {
       /* old style sign */
-      int ulen = strlen(user);
-      byte *bp;
-      if (ulen + hashlen[hashalgo] * 2 + 1 + 5 * 2 + 4 + 1 + (hashalgo == HASH_SHA1 ? 0 : strlen(hashname[hashalgo]) + 1) > sizeof(buf))
-	{
-	  fprintf(stderr, "packet too big\n");
-	  if (mode == MODE_CLEARSIGN && !isfilter)
-	    unlink(outfilename);
-	  exit(1);
-	}
-      buf[0] = ulen >> 8;
-      buf[1] = ulen;
-      buf[2] = 0;
-      buf[3] = 0;
-      memmove(buf + 4, user, ulen);
-      bp = buf + 4 + ulen;
-      if (hashalgo != HASH_SHA1)
-	{
-	  strcpy((char *)bp, hashname[hashalgo]);
-	  bp += strlen((const char *)bp);
-	  *bp++ = ':';
-	}
-      bp = digest2arg(bp, p, sigtrail);
-      buf[3] = bp - (buf + 4 + ulen);
-      outl = doreq_old(buf, (int)(bp - buf), sizeof(buf));
-      if (outl >= 0)
-        memmove(buf + 6, buf, outl);	/* make 1st arg start at offset 6, we know there is room */
+      char hashhex[1024];
+      digest2arg((byte *)hashhex, p, sigtrail);
+      outl = doreq_old(user, hashhex, hashalgo == HASH_SHA1 ? 0 : hashname[hashalgo], buf, sizeof(buf));
     }
   else
     {
@@ -474,20 +421,12 @@ sign(char *filename, int isfilter, int mode)
       args[argc++] = hashhex;
       if (ph)
         args[argc++] = hashhexh;
-      outl = doreq(argc, args, buf, sizeof(buf), ph ? 2 : 1);
-      if (outl >= 0)
-	{
-	  outl = buf[2] << 8 | buf[3];
-	  outlh = ph ? (buf[4] << 8 | buf[5]) : 0;
-	  if (outl == 0 || (ph && outlh == 0))
-	    {
-	      if (mode == MODE_CLEARSIGN && !isfilter)
-		unlink(outfilename);
-	      dodie("server returned empty signature");
-	    }
-	  if (!ph)
-	    memmove(buf + 6, buf + 4, outl);	/* make 1st arg always start at offset 6, we know there is room */
-	}
+      outl = doreq_12(argc, args, buf, sizeof(buf), ph ? &outlh : 0);
+    }
+  if (outl == 0 || (outl > 0 && ph && outlh == 0))
+    {
+      fprintf(stderr, "server returned empty signature");
+      outl = -1;
     }
   if (outl < 0)
     {
@@ -498,7 +437,7 @@ sign(char *filename, int isfilter, int mode)
 
   if (assertpubalgo >= 0)
     {
-      int sigpubalgo = pkg2sigpubalgo(buf + 6, outl);
+      int sigpubalgo = pkg2sigpubalgo(buf, outl);
       if (sigpubalgo < 0)
 	dodie("unknown public key algorithm in signature");
       if (assertpubalgo != sigpubalgo)
@@ -511,7 +450,7 @@ sign(char *filename, int isfilter, int mode)
   if (mode == MODE_KEYID)
     {
       int sigl;
-      byte *sig = pkg2sig(buf + 6, outl, &sigl);
+      byte *sig = pkg2sig(buf, outl, &sigl);
       byte *issuer = findsigissuer(sig, sigl);
       if (!issuer)
 	dodie("issuer not found in signature");
@@ -522,9 +461,9 @@ sign(char *filename, int isfilter, int mode)
   /* transcode v3sigs to v4sigs if requested */
   if (v4sigtrail)
     {
-      outl = v3tov4(v4sigtrail, buf + 6, outl, outlh, sizeof(buf) - 6 - outl - outlh);
+      outl = v3tov4(v4sigtrail, buf, outl, outlh, sizeof(buf) - outl - outlh);
       if (ph)
-        outlh = v3tov4(v4sigtrail, buf + 6 + outl, outlh, 0, sizeof(buf) - 6 - outl - outlh);
+        outlh = v3tov4(v4sigtrail, buf + outl, outlh, 0, sizeof(buf) - outl - outlh);
       free(v4sigtrail);
     }
 
@@ -543,7 +482,7 @@ sign(char *filename, int isfilter, int mode)
   if (mode == MODE_RAWOPENSSLSIGN || mode == MODE_APPXSIGN || mode == MODE_PESIGN || mode == MODE_CMSSIGN || mode == MODE_KOSIGN)
     {
       int sigl;
-      byte *sig = pkg2sig(buf + 6, outl, &sigl);
+      byte *sig = pkg2sig(buf, outl, &sigl);
       rawssl = getrawopensslsig(sig, sigl, &rawssllen);
       if (!rawssl)
 	{
@@ -556,11 +495,11 @@ sign(char *filename, int isfilter, int mode)
   /* write/incorporate signature */
   if (mode == MODE_CLEARSIGN || mode == MODE_DETACHEDSIGN)
     {
-      write_armored_signature(fout, buf + 6, outl);
+      write_armored_signature(fout, buf, outl);
     }
   else if (mode == MODE_RAWDETACHEDSIGN)
     {
-      if (fwrite(buf + 6, outl, 1, fout) != 1)
+      if (fwrite(buf, outl, 1, fout) != 1)
 	{
 	  perror("fwrite");
 	  if (!isfilter)
@@ -580,13 +519,13 @@ sign(char *filename, int isfilter, int mode)
     }
   else if (mode == MODE_RPMSIGN)
     {
-      if (rpm_insertsig(&rpmrd, 0, buf + 6, outl))
+      if (rpm_insertsig(&rpmrd, 0, buf, outl))
 	{
 	  if (!isfilter)
 	    unlink(outfilename);
 	  exit(1);
 	}
-      if (outlh && rpm_insertsig(&rpmrd, 1, buf + 6 + outl, outlh))
+      if (outlh && rpm_insertsig(&rpmrd, 1, buf + outl, outlh))
 	{
 	  if (!isfilter)
 	    unlink(outfilename);
@@ -596,7 +535,7 @@ sign(char *filename, int isfilter, int mode)
       rpm_free(&rpmrd);
     }
   else if (mode == MODE_APPIMAGESIGN)
-    appimage_write_signature(filename, buf + 6, outl);
+    appimage_write_signature(filename, buf, outl);
   else if (mode == MODE_APPXSIGN)
     {
       appx_write(&appxdata, isfilter ? 1 : fileno(fout), fd, &cert, rawssl, rawssllen, &othercerts);
@@ -626,7 +565,7 @@ sign(char *filename, int isfilter, int mode)
       x509_free(&cms_signedattrs);
     }
   else
-    fwrite(buf + 6, 1, outl, fout);
+    fwrite(buf, 1, outl, fout);
 
   if (rawssl)
     free(rawssl);
@@ -663,7 +602,7 @@ keygen(const char *type, const char *expire, const char *name, const char *email
 {
   const char *args[6];
   byte buf[8192];
-  int l, publ, privl;
+  int publ, privl;
 
   opensocket();
   args[0] = "keygen";
@@ -672,11 +611,9 @@ keygen(const char *type, const char *expire, const char *name, const char *email
   args[3] = expire;
   args[4] = name;
   args[5] = email;
-  l = doreq(6, args, buf, sizeof(buf), 2);
-  if (l < 0)
-    exit(-l);
-  publ = buf[2] << 8 | buf[3];
-  privl = buf[4] << 8 | buf[5];
+  publ = doreq_12(6, args, buf, sizeof(buf), &privl);
+  if (publ < 0)
+    exit(-publ);
   if (privkey && strcmp(privkey, "-"))
     {
       int fout;
@@ -685,7 +622,7 @@ keygen(const char *type, const char *expire, const char *name, const char *email
       sprintf(outfilename, "%s.sIgN%d", privkey, getpid());
       if ((fout = open(outfilename, O_WRONLY|O_CREAT|O_TRUNC, 0600)) == -1)
 	dodie_errno(outfilename);
-      if (write(fout, buf + 6 + publ, privl) != privl)
+      if (write(fout, buf + publ, privl) != privl)
 	dodie_errno("privkey write error");
       if (write(fout, "\n", 1) != 1)
 	dodie_errno("privkey write error");
@@ -696,11 +633,11 @@ keygen(const char *type, const char *expire, const char *name, const char *email
     }
   else
     {
-      if (fwrite(buf + 6 + publ, privl, 1, stdout) != 1)
+      if (fwrite(buf + publ, privl, 1, stdout) != 1)
 	dodie_errno("privkey write error");
       printf("\n");
     }
-  if (fwrite(buf + 6, publ, 1, stdout) != 1)
+  if (fwrite(buf, publ, 1, stdout) != 1)
     dodie_errno("pubkey write error");
   if (fflush(stdout))
     dodie_errno("pubkey write error");
@@ -878,10 +815,10 @@ keyextend(char *expire, char *pubkey)
     args[argc++] = privkey;
   args[argc++] = hashhex;
   opensocket();
-  rl = doreq(argc, args, rbuf, sizeof(rbuf), 1);
+  rl = doreq_12(argc, args, rbuf, sizeof(rbuf), 0);
   if (rl < 0)
     exit(-rl);
-  rsig = pkg2sig(rbuf + 4, rbuf[2] << 8 | rbuf[3], &rsigl);
+  rsig = pkg2sig(rbuf, rl, &rsigl);
   sigissuer = findsigissuer(rsig, rsigl);
   if (issuer && sigissuer && memcmp(issuer, sigissuer, 8))
     dodie("issuer does not match, did you forget -P?");
@@ -1073,11 +1010,11 @@ createcert(char *pubkey)
     args[argc++] = privkey;
   args[argc++] = hashhex;
   opensocket();
-  rl = doreq(argc, args, rbuf, sizeof(rbuf), 1);
+  rl = doreq_12(argc, args, rbuf, sizeof(rbuf), 0);
   if (rl < 0)
     exit(-rl);
 
-  sig = pkg2sig(rbuf + 4, rbuf[2] << 8 | rbuf[3], &sigl);
+  sig = pkg2sig(rbuf, rl, &sigl);
   sigissuer = findsigissuer(sig, sigl);
   if (sigissuer && memcmp(sigissuer, fingerprint + 12, 8))
     dodie("signature issuer does not match fingerprint");
@@ -1104,31 +1041,13 @@ createcert(char *pubkey)
 void
 getpubkey()
 {
-  byte buf[8192], *bp;
+  byte buf[8192];
   int outl;
-  int ulen = strlen(user);
   if (privkey)
     dodie("pubkey fetching does not work with a private key");
   opensocket();
   /* we always use old style requests for the pubkey */
-  if (ulen + 6 + 4 + 1 + (hashalgo == HASH_SHA1 ? 0 : strlen(hashname[hashalgo]) + 1) > sizeof(buf))
-    dodie("packet too big");
-  buf[0] = ulen >> 8;
-  buf[1] = ulen;
-  buf[2] = 0;
-  buf[3] = 0;
-  memmove(buf + 4, user, ulen);
-  bp = buf + 4 + ulen;
-  if (hashalgo != HASH_SHA1)
-    {
-      strcpy((char *)bp, hashname[hashalgo]);
-      bp += strlen((const char *)bp);
-      *bp++ = ':';
-    }
-  strcpy((char *)bp, "PUBKEY");
-  bp += 6;
-  buf[3] = bp - (buf + 4 + ulen);
-  outl = doreq_old(buf, (int)(bp - buf), sizeof(buf));
+  outl = doreq_old(user, "PUBKEY", hashalgo == HASH_SHA1 ? 0 : hashname[hashalgo], buf, sizeof(buf));
   if (outl < 0)
     exit(-outl);
   fwrite(buf, 1, outl, stdout);
@@ -1141,7 +1060,7 @@ ping()
   int r;
   memset(buf, 0, 4);
   opensocket();
-  r = doreq_old(buf, 4, sizeof(buf));
+  r = doreq_raw(buf, 4, sizeof(buf));
   if (r)
     exit(-r);
 }
