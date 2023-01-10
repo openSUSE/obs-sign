@@ -449,12 +449,12 @@ x509_tbscert(struct x509 *cb, const char *cn, const char *email, time_t start, t
 }
 
 void
-x509_finishcert(struct x509 *cb, int pubalgo, byte *sig, int sigl)
+x509_finishcert(struct x509 *cb, int pubalgo, struct x509 *sigcb)
 {
   x509_algoid_sig(cb, pubalgo, hashalgo);
   x509_add(cb, 0, 1);
-  x509_add(cb, sig, sigl);
-  x509_tag(cb, cb->len - (sigl + 1), 0x03);
+  x509_add(cb, sigcb->buf, sigcb->len);
+  x509_tag(cb, cb->len - (sigcb->len + 1), 0x03);
   x509_tag(cb, 0, 0x30);
 }
 
@@ -631,7 +631,7 @@ x509_subjectkeyid(struct x509 *cb, unsigned char *cert, int certlen)
 }
 
 static void
-x509_signerinfo(struct x509 *cb, struct x509 *signedattrs, struct x509 *cert, int pubalgo, unsigned char *sig, int siglen, int usekeyid)
+x509_signerinfo(struct x509 *cb, struct x509 *signedattrs, struct x509 *cert, int pubalgo, struct x509 *sigcb, int usekeyid)
 {
   int offset = cb->len;
 
@@ -658,7 +658,7 @@ x509_signerinfo(struct x509 *cb, struct x509 *signedattrs, struct x509 *cert, in
       x509_tag_impl(cb, offset2, 0xa0);	/* CONT | CONS | 0 */
     }
   x509_algoid(cb, pubalgo, 0, 0);
-  x509_octed_string(cb, sig, siglen);
+  x509_octed_string(cb, sigcb->buf, sigcb->len);
   x509_tag(cb, offset, 0x30);
 }
 
@@ -694,7 +694,7 @@ x509_add_othercerts(struct x509 *cb, struct x509 *cert, struct x509 *othercerts)
 }
 
 void
-x509_pkcs7_signed_data(struct x509 *cb, struct x509 *contentinfo, struct x509 *signedattrs, int pubalgo, unsigned char *sig, int siglen, struct x509 *cert, struct x509 *othercerts, int flags)
+x509_pkcs7_signed_data(struct x509 *cb, struct x509 *contentinfo, struct x509 *signedattrs, int pubalgo, struct x509 *sigcb, struct x509 *cert, struct x509 *othercerts, int flags)
 {
   int offset = cb->len, offset2;
   int usekeyid = flags & X509_PKCS7_USE_KEYID ? 1 : 0;
@@ -721,7 +721,7 @@ x509_pkcs7_signed_data(struct x509 *cb, struct x509 *contentinfo, struct x509 *s
     }
   /* signerinfos */
   offset2 = cb->len;
-  x509_signerinfo(cb, signedattrs, cert, pubalgo, sig, siglen, usekeyid);
+  x509_signerinfo(cb, signedattrs, cert, pubalgo, sigcb, usekeyid);
   x509_tag(cb, offset2, 0x31);
   /* finish */
   x509_tag(cb, offset, 0x30);

@@ -191,10 +191,9 @@ plainsign_read(int fd, char *filename, HASH_CONTEXT *ctx)
   return 1;
 }
 
-static byte *
-getrawopensslsig(byte *sig, int sigl, int *lenp)
+static int
+getrawopensslsig(byte *sig, int sigl, struct x509 *cb)
 {
-  struct x509 cb;
   int sigalgo, off, nmpis = 0;
   byte *mpi[2];
   int mpil[2];
@@ -210,10 +209,8 @@ getrawopensslsig(byte *sig, int sigl, int *lenp)
     dodie("invalid signature algo");
   off = findsigmpioffset(sig, sigl);
   setmpis(sig + off, sigl - off, nmpis, mpi, mpil, 0);
-  x509_init(&cb);
-  x509_signature(&cb, sigalgo, mpi, mpil);
-  *lenp = cb.len;
-  return cb.buf;	/* steal allocated buffer */
+  x509_signature(cb, sigalgo, mpi, mpil);
+  return sigalgo;
 }
 
 static int
@@ -238,8 +235,8 @@ sign(char *filename, int isfilter, int mode)
   int v4sigtraillen = 0;
   struct x509 cms_signedattrs;
   int needsign;
-  int rawssllen = 0, rawsslalgo = -1;
-  byte *rawssl = 0;
+  struct x509 sigcb;
+  int sigcbalgo = -1;
 
   if (mode == MODE_UNSET)
     {
@@ -492,17 +489,18 @@ sign(char *filename, int isfilter, int mode)
       free(v4sigtrail);
     }
 
-  /* find raw openssl signature if needed */
+  /* create openssl signature if needed */
+  x509_init(&sigcb);
   if (mode == MODE_RAWOPENSSLSIGN || mode == MODE_APPXSIGN || mode == MODE_PESIGN || mode == MODE_CMSSIGN || mode == MODE_KOSIGN)
     {
       int sigl;
       byte *sig = pkg2sig(buf, outl, &sigl);
-      rawsslalgo = findsigpubalgo(sig, sigl);
-      /* compat: insist on RSA if no -A option is given */
-      if (mode == MODE_RAWOPENSSLSIGN && assertpubalgo == -1 && rawsslalgo != PUB_RSA)
-	dodie("Not a RSA key");
-      rawssl = getrawopensslsig(sig, sigl, &rawssllen);
+      sigcbalgo = getrawopensslsig(sig, sigl, &sigcb);
     }
+
+  /* compat: insist on RSA if no -A option is given */
+  if (mode == MODE_RAWOPENSSLSIGN && assertpubalgo == -1 && sigcbalgo != PUB_RSA)
+    dodie("Not a RSA key");
 
   /* finally open the output file */
   if (isfilter)
@@ -530,7 +528,7 @@ sign(char *filename, int isfilter, int mode)
     }
   else if (mode == MODE_RAWOPENSSLSIGN)
     {
-      if (fwrite(rawssl, rawssllen, 1, fout) != 1)
+      if (fwrite(sigcb.buf, sigcb.len, 1, fout) != 1)
 	{
 	  perror("fwrite");
 	  if (!isfilter)
@@ -559,37 +557,36 @@ sign(char *filename, int isfilter, int mode)
     appimage_write_signature(filename, buf, outl);
   else if (mode == MODE_APPXSIGN)
     {
-      appx_write(&appxdata, isfilter ? 1 : fileno(fout), fd, &cert, rawsslalgo, rawssl, rawssllen, &othercerts);
+      appx_write(&appxdata, isfilter ? 1 : fileno(fout), fd, &cert, sigcbalgo, &sigcb, &othercerts);
       appx_free(&appxdata);
     }
   else if (mode == MODE_PESIGN)
     {
-      pe_write(&pedata, isfilter ? 1 : fileno(fout), fd, &cert, rawsslalgo, rawssl, rawssllen, &othercerts);
+      pe_write(&pedata, isfilter ? 1 : fileno(fout), fd, &cert, sigcbalgo, &sigcb, &othercerts);
       pe_free(&pedata);
     }
   else if (mode == MODE_CMSSIGN)
     {
       struct x509 cb;
       x509_init(&cb);
-      x509_pkcs7_signed_data(&cb, 0, (cms_signedattrs.len ? &cms_signedattrs : 0), rawsslalgo, rawssl, rawssllen, &cert, &othercerts, cms_flags);
-      fwrite(cb.buf, 1, cb.len, fout);
+      x509_pkcs7_signed_data(&cb, 0, (cms_signedattrs.len ? &cms_signedattrs : 0), sigcbalgo, &sigcb, &cert, &othercerts, cms_flags);
+      fwrite(cb.buf, cb.len, 1, fout);
       x509_free(&cb);
-      x509_free(&cms_signedattrs);
     }
   else if (mode == MODE_KOSIGN)
     {
       struct x509 cb;
       x509_init(&cb);
-      x509_pkcs7_signed_data(&cb, 0, (cms_signedattrs.len ? &cms_signedattrs : 0), rawsslalgo, rawssl, rawssllen, &cert, &othercerts, cms_flags | X509_PKCS7_NO_CERTS);
+      x509_pkcs7_signed_data(&cb, 0, (cms_signedattrs.len ? &cms_signedattrs : 0), sigcbalgo, &sigcb, &cert, &othercerts, cms_flags | X509_PKCS7_NO_CERTS);
       ko_write(isfilter ? 1 : fileno(fout), fd, &cb);
       x509_free(&cb);
-      x509_free(&cms_signedattrs);
     }
   else
-    fwrite(buf, 1, outl, fout);
+    fwrite(buf, outl, 1, fout);
 
-  if (rawssl)
-    free(rawssl);
+  x509_free(&sigcb);
+  if (mode == MODE_CMSSIGN || mode == MODE_KOSIGN)
+    x509_free(&cms_signedattrs);
 
   /* close and rename output file */
   if (!isfilter)
@@ -917,8 +914,8 @@ createcert(char *pubkey)
   byte *mpi[4];
   int mpil[4];
   int pubalgo, off;
-  byte *rawssl;
-  int rawssllen;
+  struct x509 sigcb;
+  int sigcbalgo;
   HASH_CONTEXT ctx;
   byte *sigissuer, fingerprint[20];
   int sigl;
@@ -1048,17 +1045,17 @@ createcert(char *pubkey)
   if (rl < 0)
     exit(-rl);
 
+  /* get signature and finish cert */
   sig = pkg2sig(rbuf, rl, &sigl);
   sigissuer = findsigissuer(sig, sigl);
   if (sigissuer && memcmp(sigissuer, fingerprint + 12, 8))
     dodie("signature issuer does not match fingerprint");
-  if (pubalgo != findsigpubalgo(sig, sigl))
+  x509_init(&sigcb);
+  sigcbalgo = getrawopensslsig(sig, sigl, &sigcb);
+  if (pubalgo != sigcbalgo)
     dodie("signature pubkey algorithm does not match pubkey");
-
-  /* get signature and finish cert */
-  rawssl = getrawopensslsig(sig, sigl, &rawssllen);
-  x509_finishcert(&cb, pubalgo, rawssl, rawssllen);
-  free(rawssl);
+  x509_finishcert(&cb, sigcbalgo, &sigcb);
+  x509_free(&sigcb);
 
   /* print as PEM */
   printf("-----BEGIN CERTIFICATE-----\n");
@@ -1234,11 +1231,11 @@ usage()
     fprintf(stderr, "usage:  sign [-v] [options]\n\n"
             "  sign [-v] -c <file> [-u user] [-h hash]: add clearsign signature\n"
             "  sign [-v] -d <file> [-u user] [-h hash]: create detached signature\n"
-            "  sign [-v] -r <file> [-u user] [-h hash]: add signature block to rpm\n"
-            "  sign [-v] -a <file> [-u user] [-h hash]: add signature block to appimage\n"
+            "  sign [-v] -r <file> [-u user] [-h hash]: add signature to rpm\n"
+            "  sign [-v] -a <file> [-u user] [-h hash]: add signature to appimage\n"
             "  sign [-v] -k [-u user] [-h hash]: print key id\n"
             "  sign [-v] -p [-u user] [-h hash]: print public key\n"
-            "  sign [-v] -g <type> <expire> <name> <email>: generate keys\n"
+            "  sign [-v] -g <type> <expire> <name> <email>: generate key\n"
             "  sign [-v] -x <expire> <pubkey>: extend pubkey\n"
             "  sign [-v] -C <pubkey>: create certificate\n"
             "  sign [-v] -t: test connection to signd server\n"

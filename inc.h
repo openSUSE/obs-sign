@@ -116,12 +116,12 @@ static inline void x509_free(struct x509 *cb) { if (cb->buf) free(cb->buf); }
 void x509_insert(struct x509 *cb, int offset, const byte *blob, int blobl);
 void x509_signature(struct x509 *cb, int pubalgo, byte **mpi, int *mpil);
 void x509_tbscert(struct x509 *cb, const char *cn, const char *email, time_t start, time_t end, int pubalgo, byte **mpi, int *mpil);
-void x509_finishcert(struct x509 *cb, int pubalgo, byte *sig, int sigl);
+void x509_finishcert(struct x509 *cb, int pubalgo, struct x509 *sigcb);
 void certsizelimit(char *s, int l);
 
 int x509_addpem(struct x509 *cb, char *buf, char *type);
 void x509_signedattrs(struct x509 *cb, unsigned char *digest, int digestlen, time_t signtime);
-void x509_pkcs7_signed_data(struct x509 *cb, struct x509 *contentinfo, struct x509 *signedattrs, int pubalgo, unsigned char *sig, int siglen, struct x509 *cert, struct x509 *othercerts, int flags);
+void x509_pkcs7_signed_data(struct x509 *cb, struct x509 *contentinfo, struct x509 *signedattrs, int pubalgo, struct x509 *sigcb, struct x509 *cert, struct x509 *othercerts, int flags);
 int x509_cert2pubalgo(struct x509 *cert);
 
 int x509_appx_contentinfo(struct x509 *cb, unsigned char *digest, int digestlen);
@@ -200,7 +200,7 @@ struct appxdata {
 };
 
 int appx_read(struct appxdata *appxdata, int fd, char *filename, HASH_CONTEXT *ctx, time_t t);
-void appx_write(struct appxdata *appxdata, int outfd, int fd, struct x509 *cert, int pubalgo, unsigned char *sig, int siglen, struct x509 *othercerts);
+void appx_write(struct appxdata *appxdata, int outfd, int fd, struct x509 *cert, int pubalgo, struct x509 *sigcb, struct x509 *othercerts);
 void appx_free(struct appxdata *appxdata);
 
 /* sock.c */
@@ -228,7 +228,7 @@ struct pedata {
 };
 
 int pe_read(struct pedata *pedata, int fd, char *filename, HASH_CONTEXT *hctx, time_t t);
-void pe_write(struct pedata *pedata, int outfd, int fd, struct x509 *cert, int pubalgo, unsigned char *sig, int siglen, struct x509 *othercerts);
+void pe_write(struct pedata *pedata, int outfd, int fd, struct x509 *cert, int pubalgo, struct x509 *sigcb, struct x509 *othercerts);
 void pe_free(struct pedata *pedata);
 
 /* ko.c */
