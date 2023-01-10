@@ -631,10 +631,9 @@ x509_subjectkeyid(struct x509 *cb, unsigned char *cert, int certlen)
 }
 
 static void
-x509_signerinfo(struct x509 *cb, struct x509 *signedattrs, struct x509 *cert, unsigned char *sig, int siglen, int usekeyid)
+x509_signerinfo(struct x509 *cb, struct x509 *signedattrs, struct x509 *cert, int pubalgo, unsigned char *sig, int siglen, int usekeyid)
 {
   int offset = cb->len;
-  int pubalgo = assertpubalgo >= 0 ? assertpubalgo : PUB_RSA;
 
   if (usekeyid)
     {
@@ -695,7 +694,7 @@ x509_add_othercerts(struct x509 *cb, struct x509 *cert, struct x509 *othercerts)
 }
 
 void
-x509_pkcs7_signed_data(struct x509 *cb, struct x509 *contentinfo, struct x509 *signedattrs, unsigned char *sig, int siglen, struct x509 *cert, struct x509 *othercerts, int flags)
+x509_pkcs7_signed_data(struct x509 *cb, struct x509 *contentinfo, struct x509 *signedattrs, int pubalgo, unsigned char *sig, int siglen, struct x509 *cert, struct x509 *othercerts, int flags)
 {
   int offset = cb->len, offset2;
   int usekeyid = flags & X509_PKCS7_USE_KEYID ? 1 : 0;
@@ -722,7 +721,7 @@ x509_pkcs7_signed_data(struct x509 *cb, struct x509 *contentinfo, struct x509 *s
     }
   /* signerinfos */
   offset2 = cb->len;
-  x509_signerinfo(cb, signedattrs, cert, sig, siglen, usekeyid);
+  x509_signerinfo(cb, signedattrs, cert, pubalgo, sig, siglen, usekeyid);
   x509_tag(cb, offset2, 0x31);
   /* finish */
   x509_tag(cb, offset, 0x30);

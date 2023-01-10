@@ -18,7 +18,6 @@ typedef unsigned char byte;
 
 /* sign.c */
 extern int hashalgo;
-extern int assertpubalgo;
 
 /* hash.c */
 typedef struct {
@@ -96,10 +95,12 @@ unsigned char *nextpkg(int *tagp, int *pkgl, unsigned char **pp, int *ppl);
 unsigned char *findsubpkg(unsigned char *q, int l, int type);
 unsigned char *addpkg(unsigned char *to, unsigned char *p, int l, int tag, int newformat);
 byte *pkg2sig(byte *pk, int pkl, int *siglp);
-void calculatefingerprint(byte *pub, int publ, byte *fingerprintp);
 byte *findsigissuer(byte *sig, int sigl);
 int findsigmpioffset(byte *sig, int sigl);
 int findsigpubalgo(byte *sig, int sigl);
+int findkeympioffset(byte *key, int keyl);
+int findkeypubalgo(byte *key, int keyl);
+void calculatekeyfingerprint(byte *key, int keyl, byte *fingerprintp);
 int pkg2sigpubalgo(byte *pk, int pkl);
 int setmpis(byte *p, int l, int nmpi, byte **mpi, int *mpil, int withcurve);
 
@@ -120,7 +121,7 @@ void certsizelimit(char *s, int l);
 
 int x509_addpem(struct x509 *cb, char *buf, char *type);
 void x509_signedattrs(struct x509 *cb, unsigned char *digest, int digestlen, time_t signtime);
-void x509_pkcs7_signed_data(struct x509 *cb, struct x509 *contentinfo, struct x509 *signedattrs, unsigned char *sig, int siglen, struct x509 *cert, struct x509 *othercerts, int flags);
+void x509_pkcs7_signed_data(struct x509 *cb, struct x509 *contentinfo, struct x509 *signedattrs, int pubalgo, unsigned char *sig, int siglen, struct x509 *cert, struct x509 *othercerts, int flags);
 int x509_cert2pubalgo(struct x509 *cert);
 
 int x509_appx_contentinfo(struct x509 *cb, unsigned char *digest, int digestlen);
@@ -199,7 +200,7 @@ struct appxdata {
 };
 
 int appx_read(struct appxdata *appxdata, int fd, char *filename, HASH_CONTEXT *ctx, time_t t);
-void appx_write(struct appxdata *appxdata, int outfd, int fd, struct x509 *cert, unsigned char *sig, int siglen, struct x509 *othercerts);
+void appx_write(struct appxdata *appxdata, int outfd, int fd, struct x509 *cert, int pubalgo, unsigned char *sig, int siglen, struct x509 *othercerts);
 void appx_free(struct appxdata *appxdata);
 
 /* sock.c */
@@ -227,7 +228,7 @@ struct pedata {
 };
 
 int pe_read(struct pedata *pedata, int fd, char *filename, HASH_CONTEXT *hctx, time_t t);
-void pe_write(struct pedata *pedata, int outfd, int fd, struct x509 *cert, unsigned char *sig, int siglen, struct x509 *othercerts);
+void pe_write(struct pedata *pedata, int outfd, int fd, struct x509 *cert, int pubalgo, unsigned char *sig, int siglen, struct x509 *othercerts);
 void pe_free(struct pedata *pedata);
 
 /* ko.c */

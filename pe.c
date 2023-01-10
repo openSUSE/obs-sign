@@ -216,13 +216,13 @@ pe_read(struct pedata *pedata, int fd, char *filename, HASH_CONTEXT *hctx, time_
 }
 
 void
-pe_write(struct pedata *pedata, int outfd, int fd, struct x509 *cert, unsigned char *sig, int siglen, struct x509 *othercerts)
+pe_write(struct pedata *pedata, int outfd, int fd, struct x509 *cert, int pubalgo, unsigned char *sig, int siglen, struct x509 *othercerts)
 {
   struct x509 cb;
   u32 filesizepad;
 
   x509_init(&cb);
-  x509_pkcs7_signed_data(&cb, &pedata->cb_content, &pedata->cb_signedattrs, sig, siglen, cert, othercerts, 0);
+  x509_pkcs7_signed_data(&cb, &pedata->cb_content, &pedata->cb_signedattrs, pubalgo, sig, siglen, cert, othercerts, 0);
 
   /* add cert header and pad */
   x509_insert(&cb, 0, 0, 8);

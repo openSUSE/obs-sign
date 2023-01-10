@@ -50,7 +50,7 @@ static const int  hashlen[] = {20, 32, 64};
 static const char *const pubalgoname[] = {"DSA", "RSA", "EdDSA"};
 
 int hashalgo = HASH_SHA1;
-int assertpubalgo = -1;
+static int assertpubalgo = -1;
 static const char *timearg;
 static char *privkey;
 static int privkey_read;
@@ -200,8 +200,6 @@ getrawopensslsig(byte *sig, int sigl, int *lenp)
   int mpil[2];
 
   sigalgo = findsigpubalgo(sig, sigl);
-  if (assertpubalgo == -1 && sigalgo != PUB_RSA)
-    dodie("Not a RSA key");
   if (sigalgo == PUB_RSA)
     nmpis = 1;
   else if (sigalgo == PUB_DSA)
@@ -240,8 +238,8 @@ sign(char *filename, int isfilter, int mode)
   int v4sigtraillen = 0;
   struct x509 cms_signedattrs;
   int needsign;
-  int rawssllen;
-  byte *rawssl;
+  int rawssllen = 0, rawsslalgo = -1;
+  byte *rawssl = 0;
 
   if (mode == MODE_UNSET)
     {
@@ -495,12 +493,14 @@ sign(char *filename, int isfilter, int mode)
     }
 
   /* find raw openssl signature if needed */
-  rawssllen = 0;
-  rawssl = 0;
   if (mode == MODE_RAWOPENSSLSIGN || mode == MODE_APPXSIGN || mode == MODE_PESIGN || mode == MODE_CMSSIGN || mode == MODE_KOSIGN)
     {
       int sigl;
       byte *sig = pkg2sig(buf, outl, &sigl);
+      rawsslalgo = findsigpubalgo(sig, sigl);
+      /* compat: insist on RSA if no -A option is given */
+      if (mode == MODE_RAWOPENSSLSIGN && assertpubalgo == -1 && rawsslalgo != PUB_RSA)
+	dodie("Not a RSA key");
       rawssl = getrawopensslsig(sig, sigl, &rawssllen);
     }
 
@@ -559,19 +559,19 @@ sign(char *filename, int isfilter, int mode)
     appimage_write_signature(filename, buf, outl);
   else if (mode == MODE_APPXSIGN)
     {
-      appx_write(&appxdata, isfilter ? 1 : fileno(fout), fd, &cert, rawssl, rawssllen, &othercerts);
+      appx_write(&appxdata, isfilter ? 1 : fileno(fout), fd, &cert, rawsslalgo, rawssl, rawssllen, &othercerts);
       appx_free(&appxdata);
     }
   else if (mode == MODE_PESIGN)
     {
-      pe_write(&pedata, isfilter ? 1 : fileno(fout), fd, &cert, rawssl, rawssllen, &othercerts);
+      pe_write(&pedata, isfilter ? 1 : fileno(fout), fd, &cert, rawsslalgo, rawssl, rawssllen, &othercerts);
       pe_free(&pedata);
     }
   else if (mode == MODE_CMSSIGN)
     {
       struct x509 cb;
       x509_init(&cb);
-      x509_pkcs7_signed_data(&cb, 0, (cms_signedattrs.len ? &cms_signedattrs : 0), rawssl, rawssllen, &cert, &othercerts, cms_flags);
+      x509_pkcs7_signed_data(&cb, 0, (cms_signedattrs.len ? &cms_signedattrs : 0), rawsslalgo, rawssl, rawssllen, &cert, &othercerts, cms_flags);
       fwrite(cb.buf, 1, cb.len, fout);
       x509_free(&cb);
       x509_free(&cms_signedattrs);
@@ -580,7 +580,7 @@ sign(char *filename, int isfilter, int mode)
     {
       struct x509 cb;
       x509_init(&cb);
-      x509_pkcs7_signed_data(&cb, 0, (cms_signedattrs.len ? &cms_signedattrs : 0), rawssl, rawssllen, &cert, &othercerts, cms_flags | X509_PKCS7_NO_CERTS);
+      x509_pkcs7_signed_data(&cb, 0, (cms_signedattrs.len ? &cms_signedattrs : 0), rawsslalgo, rawssl, rawssllen, &cert, &othercerts, cms_flags | X509_PKCS7_NO_CERTS);
       ko_write(isfilter ? 1 : fileno(fout), fd, &cb);
       x509_free(&cb);
       x509_free(&cms_signedattrs);
@@ -679,6 +679,7 @@ keyextend(char *expire, char *pubkey)
   unsigned char *pk;
   int pkl;
   time_t pkcreat;
+  int pubalgo;
   unsigned char *userid;
   int useridl;
 
@@ -718,10 +719,16 @@ keyextend(char *expire, char *pubkey)
     dodie("pubkey is too short");
   if (pp[0] != 4)
     dodie("pubkey is not version 4");
+  pubalgo = findkeypubalgo(pp, pl);
+  if (pubalgo == -1)
+    {
+      fprintf(stderr, "unsupported pubkey algorithm %d\n", pp[5]);
+      exit(1);
+    }
   pkcreat = pp[1] << 24 | pp[2] << 16 | pp[3] << 8 | pp[4];
   pk = pp;
   pkl = pl;
-  calculatefingerprint(pk, pkl, fingerprint);
+  calculatekeyfingerprint(pk, pkl, fingerprint);
 
   pp = nextpkg(&tag, &pl, &p, &l);
   if (tag != 13)
@@ -842,6 +849,8 @@ keyextend(char *expire, char *pubkey)
   if (rl < 0)
     exit(-rl);
   rsig = pkg2sig(rbuf, rl, &rsigl);
+  if (pubalgo != findsigpubalgo(rsig, rsigl))
+    dodie("self-sig pubkey algorithm does not match pubkey");
   sigissuer = findsigissuer(rsig, rsigl);
   if (issuer && sigissuer && memcmp(issuer, sigissuer, 8))
     dodie("issuer does not match, did you forget -P?");
@@ -907,8 +916,7 @@ createcert(char *pubkey)
   char *email;
   byte *mpi[4];
   int mpil[4];
-  int pubalgo;
-
+  int pubalgo, off;
   byte *rawssl;
   int rawssllen;
   HASH_CONTEXT ctx;
@@ -934,13 +942,8 @@ createcert(char *pubkey)
     dodie("pubkey is too short");
   if (pp[0] != 4)
     dodie("pubkey is not version 4");
-  if (pp[5] == 1)
-    pubalgo = PUB_RSA;
-  else if (pp[5] == 17)
-    pubalgo = PUB_DSA;
-  else if (pp[5] == 22)
-    pubalgo = PUB_EDDSA;
-  else
+  pubalgo = findkeypubalgo(pp, pl);
+  if (pubalgo == -1)
     {
       fprintf(stderr, "unsupported pubkey algorithm %d\n", pp[5]);
       exit(1);
@@ -954,24 +957,30 @@ createcert(char *pubkey)
     }
   if (pubalgo == PUB_EDDSA)
     dodie("EdDSA certs are unsupported");
-  calculatefingerprint(pp, pl, fingerprint);
+  calculatekeyfingerprint(pp, pl, fingerprint);
 
   /* get creattion time */
   pkcreat = pp[1] << 24 | pp[2] << 16 | pp[3] << 8 | pp[4];
 
   /* get MPIs */
+  off = findkeympioffset(pp, pl);
   if (pubalgo == PUB_RSA)
-    setmpis(pp + 6, pl - 6, 2, mpi, mpil, 0);
+    setmpis(pp + off, pl - off, 2, mpi, mpil, 0);
   else if (pubalgo == PUB_DSA)
-    setmpis(pp + 6, pl - 6, 4, mpi, mpil, 0);
+    setmpis(pp + off, pl - off, 4, mpi, mpil, 0);
   else if (pubalgo == PUB_EDDSA)
-    setmpis(pp + 6, pl - 6, 2, mpi, mpil, 1);
+    setmpis(pp + off, pl - off, 2, mpi, mpil, 1);
+  else
+    dodie("invalid pubkey algo");
+
+  /* get userid packet */
   pp = nextpkg(&tag, &pl, &p, &l);
   if (tag != 13)
     dodie("missing userid packet");
   userid = pp;
   useridl = pl;
 
+  /* get self-sig packet */
   pp = nextpkg(&tag, &pl, &p, &l);
   if (tag != 2)
     dodie("missing self-sig");
@@ -1047,7 +1056,6 @@ createcert(char *pubkey)
     dodie("signature pubkey algorithm does not match pubkey");
 
   /* get signature and finish cert */
-  assertpubalgo = pubalgo;
   rawssl = getrawopensslsig(sig, sigl, &rawssllen);
   x509_finishcert(&cb, pubalgo, rawssl, rawssllen);
   free(rawssl);

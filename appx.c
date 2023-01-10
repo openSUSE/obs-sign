@@ -125,14 +125,14 @@ appx_read(struct appxdata *appxdata, int fd, char *filename, HASH_CONTEXT *ctx, 
 }
 
 void
-appx_write(struct appxdata *appxdata, int outfd, int fd, struct x509 *cert, unsigned char *sig, int siglen, struct x509 *othercerts)
+appx_write(struct appxdata *appxdata, int outfd, int fd, struct x509 *cert, int pubalgo, unsigned char *sig, int siglen, struct x509 *othercerts)
 {
   static const unsigned char p7xmagic[4] = { 0x50, 0x4b, 0x43, 0x58 };
   struct x509 cb;
   extern int appxdetached;
 
   x509_init(&cb);
-  x509_pkcs7_signed_data(&cb, &appxdata->cb_content, &appxdata->cb_signedattrs, sig, siglen, cert, othercerts, 0);
+  x509_pkcs7_signed_data(&cb, &appxdata->cb_content, &appxdata->cb_signedattrs, pubalgo, sig, siglen, cert, othercerts, 0);
   /* prepend file magic */
   x509_insert(&cb, 0, p7xmagic, sizeof(p7xmagic));
   if (appxdetached)

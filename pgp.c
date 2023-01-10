@@ -450,23 +450,6 @@ pkg2sig(byte *pk, int pkl, int *siglp)
   return sig;
 }
 
-void
-calculatefingerprint(byte *pub, int publ, byte *fingerprintp)
-{
-  byte b[3];
-  if (!publ || *pub != 4)
-    dodie("only know how to calculate the fingerprint of V4 keys");
-  SHA1_CONTEXT ctx;
-  sha1_init(&ctx);
-  b[0] = 0x99;
-  b[1] = publ >> 8;
-  b[2] = publ;
-  sha1_write(&ctx, b, 3);
-  sha1_write(&ctx, pub, publ);
-  sha1_final(&ctx);
-  memcpy(fingerprintp, sha1_read(&ctx), 20);
-}
-
 byte *
 findsigissuer(byte *sig, int sigl)
 {
@@ -489,14 +472,16 @@ findsigissuer(byte *sig, int sigl)
 int
 findsigmpioffset(byte *sig, int sigl)
 {
-  int off;
   if (sig[0] == 3)
     return 19;
-  if (sig[0] != 4)
-    abort();
-  off = 6 + (sig[4] << 8) + sig[5];
-  off += 2 + (sig[off] << 8) + sig[off + 1] + 2;
-  return off;
+  if (sig[0] == 4)
+    {
+      int off = 6 + (sig[4] << 8) + sig[5];
+      off += 2 + (sig[off] << 8) + sig[off + 1] + 2;
+      return off;
+    }
+  dodie("not a v3 or v4 signature");
+  return -1;
 }
 
 int
@@ -520,8 +505,53 @@ int
 pkg2sigpubalgo(byte *pk, int pkl)
 {
   int sigl;
-  byte *sig = pkg2sig(pk, pkl, &sigl);;
+  byte *sig = pkg2sig(pk, pkl, &sigl);
   return findsigpubalgo(sig, sigl);
+}
+
+void
+calculatekeyfingerprint(byte *key, int keyl, byte *fingerprintp)
+{
+  byte b[3];
+  if (!keyl || *key != 4)
+    dodie("only know how to calculate the fingerprint of V4 keys");
+  SHA1_CONTEXT ctx;
+  sha1_init(&ctx);
+  b[0] = 0x99;
+  b[1] = keyl >> 8;
+  b[2] = keyl;
+  sha1_write(&ctx, b, 3);
+  sha1_write(&ctx, key, keyl);
+  sha1_final(&ctx);
+  memcpy(fingerprintp, sha1_read(&ctx), 20);
+}
+
+int
+findkeypubalgo(byte *key, int keyl)
+{
+  int algo = -1;
+  if (keyl >= 8 && key[0] == 3)
+    algo = key[7];
+  else if (keyl >= 6 && key[0] == 4)
+    algo = key[5];
+  if (algo == 1)
+    return PUB_RSA;
+  if (algo == 17)
+    return PUB_DSA;
+  if (algo == 22)
+    return PUB_EDDSA;
+  return -1;
+}
+
+int
+findkeympioffset(byte *key, int keyl)
+{
+  if (keyl >= 8 && key[0] == 3)
+    return 8;
+  if (keyl >= 6 && key[0] == 4)
+    return 6;
+  dodie("not a v3 or v4 key");
+  return -1;
 }
 
 int
