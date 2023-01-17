@@ -47,7 +47,7 @@ uid_t uid;
 static const char *const hashname[] = {"SHA1", "SHA256", "SHA512"};
 static const int  hashlen[] = {20, 32, 64};
 
-static const char *const pubalgoname[] = {"DSA", "RSA", "EdDSA"};
+static const char *const pubalgoname[] = {"DSA", "RSA", "EdDSA", "ECDSA"};
 
 int hashalgo = HASH_SHA1;
 static int assertpubalgo = -1;
@@ -192,7 +192,7 @@ plainsign_read(int fd, char *filename, HASH_CONTEXT *ctx)
 }
 
 static int
-getrawopensslsig(byte *sig, int sigl, struct x509 *cb)
+getrawopensslsig(byte *sig, int sigl, struct x509 *sigcb)
 {
   int sigalgo, off, nmpis = 0;
   byte *mpi[2];
@@ -201,7 +201,7 @@ getrawopensslsig(byte *sig, int sigl, struct x509 *cb)
   sigalgo = findsigpubalgo(sig, sigl);
   if (sigalgo == PUB_RSA)
     nmpis = 1;
-  else if (sigalgo == PUB_DSA)
+  else if (sigalgo == PUB_DSA || sigalgo == PUB_ECDSA)
     nmpis = 2;
   else if (sigalgo == PUB_EDDSA)
     dodie("EdDSA openssl signing is not supported");
@@ -209,7 +209,7 @@ getrawopensslsig(byte *sig, int sigl, struct x509 *cb)
     dodie("invalid signature algo");
   off = findsigmpioffset(sig, sigl);
   setmpis(sig + off, sigl - off, nmpis, mpi, mpil, 0);
-  x509_signature(cb, sigalgo, mpi, mpil);
+  x509_signature(sigcb, sigalgo, mpi, mpil);
   return sigalgo;
 }
 
@@ -634,20 +634,18 @@ keygen(const char *type, const char *expire, const char *name, const char *email
     exit(-publ);
   if (privkey && strcmp(privkey, "-"))
     {
-      int fout;
+      int fd;
       char *outfilename = doalloc(strlen(privkey) + 16);
-
       sprintf(outfilename, "%s.sIgN%d", privkey, getpid());
-      if ((fout = open(outfilename, O_WRONLY|O_CREAT|O_TRUNC, 0600)) == -1)
+      if ((fd = open(outfilename, O_WRONLY|O_CREAT|O_TRUNC, 0600)) == -1)
 	dodie_errno(outfilename);
-      if (write(fout, buf + publ, privl) != privl)
-	dodie_errno("privkey write error");
-      if (write(fout, "\n", 1) != 1)
-	dodie_errno("privkey write error");
-      if (close(fout))
-	dodie_errno("privkey write error");
+      dowrite(fd, buf + publ, privl);
+      dowrite(fd, (const unsigned char *)"\n", 1);
+      if (close(fd))
+	dodie_errno("close");
       if (rename(outfilename, privkey))
 	dodie_errno(privkey);
+      free(outfilename);
     }
   else
     {
@@ -659,7 +657,6 @@ keygen(const char *type, const char *expire, const char *name, const char *email
     dodie_errno("pubkey write error");
   if (fflush(stdout))
     dodie_errno("pubkey write error");
-  exit(0);
 }
 
 static void
@@ -697,7 +694,7 @@ keyextend(char *expire, char *pubkey)
   byte *rsig;
   int rsigl, rsighl, rl;
 
-  if (uid && !privkey)
+  if (uid && !privkey && !test_sign)
     dodie("need -P option for non-root operation");
   expdays = atoi(expire);
   if (expdays <= 0 || expdays >= 10000)
@@ -743,8 +740,10 @@ keyextend(char *expire, char *pubkey)
     dodie("self-sig is not version 4");
   if (pp[1] != 0x13)
     dodie("self-sig is not class 0x13");
-  if (pp[3] == 9 || pp[3] == 11)
-    pp[3] = 8;	/* change sha384/224 to sha256 for now */
+  if (pp[3] == 9)
+    pp[3] = 10;		/* change sha384 to sha512 */
+  else if (pp[3] == 11)
+    pp[3] = 8;		/* change sha224 to sha256 */
   if (pp[3] == 2)
     hashalgo = HASH_SHA1;
   else if (pp[3] == 8)
@@ -921,7 +920,7 @@ createcert(char *pubkey)
   int sigl;
   byte *sig;
 
-  if (uid && !privkey)
+  if (uid && !privkey && !test_sign)
     dodie("need -P option for non-root operation");
   if (privkey)
     readprivkey();
@@ -965,7 +964,7 @@ createcert(char *pubkey)
     setmpis(pp + off, pl - off, 2, mpi, mpil, 0);
   else if (pubalgo == PUB_DSA)
     setmpis(pp + off, pl - off, 4, mpi, mpil, 0);
-  else if (pubalgo == PUB_EDDSA)
+  else if (pubalgo == PUB_EDDSA || pubalgo == PUB_ECDSA)
     setmpis(pp + off, pl - off, 2, mpi, mpil, 1);
   else
     dodie("invalid pubkey algo");
@@ -1334,6 +1333,8 @@ main(int argc, char **argv)
 	    assertpubalgo = PUB_RSA;
 	  else if (!strcasecmp(argv[1], "eddsa"))
 	    assertpubalgo = PUB_EDDSA;
+	  else if (!strcasecmp(argv[1], "ecdsa"))
+	    assertpubalgo = PUB_ECDSA;
 	  else
 	    {
 	      fprintf(stderr, "sign: unknown pubkey algorithm '%s'\n", argv[1]);

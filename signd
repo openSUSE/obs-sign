@@ -199,7 +199,7 @@ sub priv2pub {
     } elsif ($pkalgo == 16 || $pkalgo == 20) {	# Elgamal
       $mpinum = 3;
       $smpinum = 1;
-    } elsif ($pkalgo == 22) {			# EdDSA
+    } elsif ($pkalgo == 19 || $pkalgo == 22) {	# ECDSA + EdDSA
       $mpinum = 1;
       $smpinum = 1;
       my $oidlen = unpack('C', substr($pack, $mpioff));
@@ -965,8 +965,9 @@ sub cmd_keygen {
   checkbadchar($email, 'email');
   my $length;
   if ($type eq 'ed25519' || $type eq 'eddsa@ed25519') {
-    $type = 'eddsa';
-    $length = 'ed25519';
+    ($type, $length) = ('eddsa', 'ed25519');
+  } elsif ($type eq 'nistp256' || $type eq 'ecdsa@nistp256') {
+    ($type, $length) = ('ecdsa', 'nistp256');
   } else {
     die("bad type: $type\n") unless $type =~ /^(dsa|rsa)\@(1024|2048|4096)$/s;
     $length = $2;
@@ -979,7 +980,7 @@ sub cmd_keygen {
 
   # write params file
   my $batch;
-  if ($type eq 'eddsa') {
+  if ($type eq 'ecdsa' || $type eq 'eddsa') {
     $batch = "Key-Type: $type\nKey-Curve: $length\n";
   } else {
     $batch = "Key-Type: $type\nKey-Length: $length\n";
@@ -1271,6 +1272,9 @@ sub sign_with_agent {
     $sigdata = find_in_sexp_gpgmpi($sigval, 's');
   } elsif ($algo eq 'dsa') {
     $pgppubalgo = 17;
+    $sigdata = find_in_sexp_gpgmpi($sigval, 'r').find_in_sexp_gpgmpi($sigval, 's');
+  } elsif ($algo eq 'ecdsa') {
+    $pgppubalgo = 19;
     $sigdata = find_in_sexp_gpgmpi($sigval, 'r').find_in_sexp_gpgmpi($sigval, 's');
   } elsif ($algo eq 'eddsa') {
     $pgppubalgo = 22;
