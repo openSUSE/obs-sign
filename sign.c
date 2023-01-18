@@ -1435,8 +1435,8 @@ main(int argc, char **argv)
 	  exit(1);
 	}
     }
-  if (mode == MODE_CREATECERT)
-    hashalgo = HASH_SHA256;	/* always sign certs with sha256 */
+  if (mode == MODE_CREATECERT && hashalgo != HASH_SHA512)
+    hashalgo = HASH_SHA256;	/* always sign certs with at least sha256 */
   if (mode == MODE_APPXSIGN)
     hashalgo = HASH_SHA256;	/* always sign appx with sha256 */
   if (mode == MODE_PESIGN)

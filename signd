@@ -968,6 +968,8 @@ sub cmd_keygen {
     ($type, $length) = ('eddsa', 'ed25519');
   } elsif ($type eq 'nistp256' || $type eq 'ecdsa@nistp256') {
     ($type, $length) = ('ecdsa', 'nistp256');
+  } elsif ($type eq 'nistp384' || $type eq 'ecdsa@nistp384') {
+    ($type, $length) = ('ecdsa', 'nistp384');
   } else {
     die("bad type: $type\n") unless $type =~ /^(dsa|rsa)\@(1024|2048|4096)$/s;
     $length = $2;
