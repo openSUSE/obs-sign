@@ -20,7 +20,7 @@
 #include "inc.h"
 
 static void
-dosha256hash(int fd, u64 size, unsigned char *out)
+dohash(int fd, u64 size, unsigned char *out)
 {
   unsigned char buf[65536];
   HASH_CONTEXT ctx;
@@ -34,11 +34,11 @@ dosha256hash(int fd, u64 size, unsigned char *out)
       size -= chunk;
     }
   hash_final(&ctx);
-  memcpy(out, hash_read(&ctx), 32);
+  memcpy(out, hash_read(&ctx), hash_len());
 }
 
 static u32
-hashfileentry(struct zip *zip, int fd, char *fn, unsigned char *dig)
+hashfileentry(struct zip *zip, int fd, char *fn, unsigned char *out)
 {
   unsigned char *entry;
   u64 datasize;
@@ -50,43 +50,62 @@ hashfileentry(struct zip *zip, int fd, char *fn, unsigned char *dig)
       exit(1);
     }
   datasize = zip_seekdata(zip, fd, entry);
-  dosha256hash(fd, datasize, dig);
+  dohash(fd, datasize, out);
   return zip_entry_datetime(entry);
 }
 
 static int
 appx_create_contentinfo(struct appxdata *appxdata, int fd)
 {
-  unsigned char digest[4 + (4 + 32) * 5];
   static const unsigned char axmgsig[4] = { 0x41, 0x50, 0x50, 0x58 };
   static const unsigned char axpcsig[4] = { 0x41, 0x58, 0x50, 0x43 };
   static const unsigned char axcdsig[4] = { 0x41, 0x58, 0x43, 0x44 };
   static const unsigned char axctsig[4] = { 0x41, 0x58, 0x43, 0x54 };
   static const unsigned char axbmsig[4] = { 0x41, 0x58, 0x42, 0x4d };
   static const unsigned char axcisig[4] = { 0x41, 0x58, 0x43, 0x49 };
+  unsigned char *digest, *dp;
+  int hlen = hash_len();
+  int offset;
 
   /* rewind */
   doseek(fd, 0);
-  /* create digests */
-  memset(digest, 0, sizeof(digest));
+
+  /* create digest space */
+  digest = doalloc(4 + (4 + hlen) * 5);
+  memset(digest, 0, 4 + (4 + hlen) * 5);
+
+  /* add magic */
   memcpy(digest, axmgsig, 4);
-  memcpy(digest + 4, axpcsig, 4);
+  dp = digest + 4;
+
   /* hash from start to central dir */
-  dosha256hash(fd, appxdata->zip.cd_offset, digest + 8);
+  memcpy(dp, axpcsig, 4);
+  dohash(fd, appxdata->zip.cd_offset, dp + 4);
+  dp += 4 + hlen;
+
   /* hash from central dir to end */
-  memcpy(digest + 40, axcdsig, 4);
-  dosha256hash(fd, appxdata->zip.size - appxdata->zip.cd_offset, digest + 44);
+  memcpy(dp, axcdsig, 4);
+  dohash(fd, appxdata->zip.size - appxdata->zip.cd_offset, dp + 4);
+  dp += 4 + hlen;
+
   /* hash content types */
-  memcpy(digest + 76, axctsig, 4);
-  appxdata->datetime = hashfileentry(&appxdata->zip, fd, "[Content_Types].xml", digest + 80);
+  memcpy(dp, axctsig, 4);
+  appxdata->datetime = hashfileentry(&appxdata->zip, fd, "[Content_Types].xml", dp + 4);
+  dp += 4 + hlen;
+
   /* hash block map */
-  memcpy(digest + 112, axbmsig, 4);
-  hashfileentry(&appxdata->zip, fd, "AppxBlockMap.xml", digest + 116);
+  memcpy(dp, axbmsig, 4);
+  hashfileentry(&appxdata->zip, fd, "AppxBlockMap.xml", dp + 4);
+  dp += 4 + hlen;
+
   /* zero AppxMetadata/CodeIntegrity.cat */
-  memcpy(digest + 148, axcisig, 4);
+  memcpy(dp, axcisig, 4);
+  dp += 4 + hlen;
 
   x509_init(&appxdata->cb_content);
-  return x509_appx_contentinfo(&appxdata->cb_content, digest, sizeof(digest));
+  offset = x509_appx_contentinfo(&appxdata->cb_content, digest, (int)(dp - digest));
+  free(digest);
+  return offset;
 }
 
 static void
@@ -107,8 +126,6 @@ appx_read(struct appxdata *appxdata, int fd, char *filename, HASH_CONTEXT *ctx, 
 {
   int offset;
 
-  if (hashalgo != HASH_SHA256)
-    dodie("can only use sha256 for appx hashing");
   memset(appxdata, 0, sizeof(*appxdata));
   zip_read(&appxdata->zip, fd);
 

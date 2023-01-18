@@ -142,8 +142,6 @@ pe_read(struct pedata *pedata, int fd, char *filename, HASH_CONTEXT *hctx, time_
   pedata->csum_off = stubsize + 24 + 64;
   memcpy(pedata->hdr, hdr, headersize);
 
-  if (hashalgo != HASH_SHA256)
-    dodie("can only use sha256 for PE file hashing");
   hash_init(&ctx);
   hash_write(&ctx, hdr, stubsize + 24 + 64);
   hash_write(&ctx, hdr + (stubsize + 24 + 68), c_off - 68);
