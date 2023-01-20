@@ -47,7 +47,6 @@ my $port = 5167;
 my $proxyport = 5167;
 my $signuser = '';
 my $gpg = '/usr/bin/gpg';
-my $openssl = '/usr/bin/openssl';
 my $phrases = '';
 my $tmpdir = '/run/signd';
 my $patchclasstime;
@@ -242,159 +241,6 @@ sub striptofirst {
   return substr($pkg, 0, $off + $len);
 }
 
-sub packlen {
-  my ($len) = @_; 
-  if ($len >= 128) {
-    my $lenl = $len >> 8 ? $len >> 16 ? $len >> 24 ? 4 : 3 : 2 : 1;
-    return pack("Ca*", $lenl | 0x80,  substr(pack("N", $len), -$lenl));
-  } else {
-    return pack("C", $len);
-  }
-}
-
-sub packtag {
-  return chr($_[0]).packlen(length($_[1])).$_[1];
-}
-
-sub packmpi {
-  my ($mpi) = @_; 
-  $mpi = chr(0).$mpi;
-  $mpi = substr($mpi, 1) while length($mpi) > 1 && ord($mpi) == 0 && (ord(substr($mpi, 1, 1)) & 0x80) == 0;
-  return chr(2).packlen(length($mpi)).$mpi;
-}
-
-sub priv2openssl_ed25519 {
-  my ($q, $s) = @_;
-  die("bad ed25519 Q\n") unless length($q) == 33 && unpack('C', $q) == 0x40;
-  die("bad ed25519 S\n") unless length($s) <= 32;
-  $s = "\0$s" while length($s) < 32;
-  my $asn1 = '';
-  $asn1 .= packtag(0x02, "\x00");			# INTEGER 0
-  $asn1 .= packtag(0x30, "\x06\x03\x2b\x65\x70");	# SEQUENCE(OID 1.3.101.112)
-  $asn1 .= packtag(0x04, packtag(0x04, $s));		# OCTET_STRING(OCTET_STRING(key))
-  $asn1 = packtag(0x30, $asn1);
-  my $base64 = encode_base64($asn1, '');
-  my $pem = "-----BEGIN PRIVATE KEY-----\n";
-  $pem .= "$_\n" for $base64 =~ /(.{1,64})/g;
-  $pem .= "-----END PRIVATE KEY-----\n";
-  return $pem;
-}
-
-sub priv2openssl_dsa {
-  my ($p, $q, $g, $y, $x) = @_;
-  my $asn1 = packtag(0x30, packmpi($p).packmpi($q).packmpi($g));
-  $asn1 = packtag(0x30, "\x06\x07\x2a\x86\x48\xce\x38\x04\x01".$asn1);	# OID 1.2.840.10040.4.1
-  $asn1 = packtag(0x02, "\x00").$asn1;			# INTEGER 0
-  $asn1 .= packtag(0x04, packmpi($x));			# OCTET_STRING(INTEGER Y)
-  $asn1 = packtag(0x30, $asn1);
-  my $base64 = encode_base64($asn1, '');
-  my $pem = "-----BEGIN PRIVATE KEY-----\n";
-  $pem .= "$_\n" for $base64 =~ /(.{1,64})/g;
-  $pem .= "-----END PRIVATE KEY-----\n";
-  return $pem;
-}
-
-sub priv2openssl_rsa {
-  my (@s) = @_;
-  # calculate missing stuff:
-  #        modulus           INTEGER,  -- n
-  #        publicExponent    INTEGER,  -- e
-  #        privateExponent   INTEGER,  -- d    2
-  #        prime1            INTEGER,  -- p    4
-  #        prime2            INTEGER,  -- q    3
-  #        exponent1         INTEGER,  -- d mod (p-1)
-  #        exponent2         INTEGER,  -- d mod (q-1)
-  #        coefficient       INTEGER,  -- (inverse of q) mod p
-  my $d = Math::BigInt->new('0x' . unpack('H*', $s[2]));
-  my $p = Math::BigInt->new('0x' . unpack('H*', $s[4]));
-  my $q = Math::BigInt->new('0x' . unpack('H*', $s[3]));
-  my $ex1 = $d->copy()->bmod($p->copy()->bdec());
-  my $ex2 = $d->copy()->bmod($q->copy()->bdec());
-  $ex1 = pack('H*', substr($ex1->as_hex(), 2));
-  $ex2 = pack('H*', substr($ex2->as_hex(), 2));
-
-  # asn1 encode
-  my $asn1 = '';
-  $asn1 .= packmpi(chr(0));
-  $asn1 .= packmpi($s[0]);
-  $asn1 .= packmpi($s[1]);
-  $asn1 .= packmpi($s[2]);
-  $asn1 .= packmpi($s[4]);
-  $asn1 .= packmpi($s[3]);
-  $asn1 .= packmpi($ex1);
-  $asn1 .= packmpi($ex2);
-  $asn1 .= packmpi($s[5]);
-  $asn1 = packtag(0x30, $asn1);
-
-  # pem encode
-  my $base64 = encode_base64($asn1, '');
-  my $pem = "-----BEGIN RSA PRIVATE KEY-----\n";
-  $pem .= "$_\n" for $base64 =~ /(.{1,64})/g;
-  $pem .= "-----END RSA PRIVATE KEY-----\n";
-  return $pem;
-}
-
-sub priv2openssl {
-  my ($gpgpackets, $search_for) = @_;
-  die("empty privkey\n") unless $gpgpackets;
-  $search_for ||= 5;
-  while ($gpgpackets ne '') {
-    my ($tag, $len, $off) = decodetaglenoff($gpgpackets);
-    my $pack = substr($gpgpackets, $off, $len);
-    $gpgpackets = substr($gpgpackets, $len + $off);
-    next unless $tag == $search_for;
-    my $pkver = unpack('C', $pack);
-    my ($mpioff, $pkalgo);
-    if ($pkver == 3) {
-      my ($t, $v);
-      (undef, $t, $v, $pkalgo) = unpack('CNnC', $pack);
-      $mpioff = 8;
-    } elsif ($pkver == 4) {
-      my $t;
-      (undef, $t, $pkalgo) = unpack('CNC', $pack);
-      $mpioff = 6;
-    } else {
-      die("unknown public key version $pkver\n");
-    }
-    $pack = substr($pack, $mpioff);
-    my ($mpinum, $smpinum, $curve);
-    if ($pkalgo == 22) {
-      my $curvelen = unpack('C', $pack);
-      die("bad EdDSA curve len\n") if $curvelen == 0 || $curvelen == 255 || $curvelen + 1 > length($pack);
-      $curve = substr($pack, 1, $curvelen);
-      $pack = substr($pack, $curvelen + 1);
-      $mpinum = 1;
-      $smpinum = 1;
-    } elsif ($pkalgo == 1) {
-      $mpinum = 2;
-      $smpinum = 4;
-    } elsif ($pkalgo == 17) {
-      $mpinum = 4;
-      $smpinum = 1;
-    } else {
-      die("not an RSA or EdDSA private key\n");
-    }
-    my @s;
-    for my $i (0..($mpinum + $smpinum - 1)) {
-      if ($i == $mpinum) {
-        my $encrypted = unpack('C', $pack);
-        die("private key is encrypted\n") if $encrypted;
-        $pack = substr($pack, 1);
-      }
-      my $ml = unpack('n', $pack);
-      $ml = (($ml + 7) >> 3); 
-      die("pack too small\n") unless length($pack) >= 2 + $ml;
-      push @s, substr($pack, 2, $ml);
-      $pack = substr($pack, 2 + $ml);
-    }
-    return priv2openssl_ed25519(@s) if $pkalgo == 22 && $curve eq "\x2b\x06\x01\x04\x01\xda\x47\x0f\x01";
-    return priv2openssl_rsa(@s) if $pkalgo == 1;
-    return priv2openssl_dsa(@s) if $pkalgo == 17;
-    die("unsupported pubkey algorithm/curve\n");
-  }
-  die("no private key found\n");
-}
-
 sub patchclasstime {
   my ($sig, $t) = @_;
   die("timeclass is not 10 hex nibbles\n") unless $t =~ /^[0-9a-fA-F]{10}$/s;
@@ -534,7 +380,6 @@ while(<F>) {
     next;
   }
   if ($s[0] eq 'openssl:') {
-    $openssl = $s[1];
     next;
   }
   if ($s[0] eq 'phrases:') {
@@ -916,7 +761,7 @@ sub prepare_tmp_gnupghome {
   my $tdir = tempdir('XXXXXXXX', DIR => $tmpdir, CLEANUP => 1);
   chmod 0700, $tdir;
   mkdir("$tdir/gnupg", 0700) || die "Could not create $tdir/gnupg: $!\n";
-  return ($tdir, "$tdir/gnupg");
+  return ($tdir, "$tdir/gnupg", $ENV{'GNUPGHOME'});
 }
 
 sub have_pinentry_mode {
@@ -976,9 +821,7 @@ sub cmd_keygen {
     $type = $1;
   }
 
-  my $org_gnupghome = $ENV{GNUPGHOME};
-  my $tdir;
-  ($tdir, $ENV{GNUPGHOME}) = prepare_tmp_gnupghome($tmpdir);
+  my ($tdir, $gnupghome, $oldgnupghome) = prepare_tmp_gnupghome($tmpdir);
 
   # write params file
   my $batch;
@@ -993,6 +836,9 @@ sub cmd_keygen {
   (syswrite(F, $batch) || 0) == length($batch) || die("keygen parameter write error\n");
   close(F) || die("keygen parameter close error\n");
 
+  switch_gnupghome($gnupghome);
+
+  # create the key
   rungpg_fatal('/dev/null', $tdir, $gpg, '--batch', '--no-secmem-warning', '--gen-key', "$tdir/params");
 
   # get the keyid so we can add a signature
@@ -1005,18 +851,18 @@ sub cmd_keygen {
   }
   $keyid = $keyid[0];
 
+  switch_gnupghome($oldgnupghome);
+
   # add user sig to pubkey
-  $ENV{GNUPGHOME} = $org_gnupghome;
   my $pubring;
-  if (-e "$tdir/gnupg/pubring.kbx") {
-    $pubring = "$tdir/gnupg/pubring.kbx";
-  } elsif ( -e "$tdir/gnupg/pubring.gpg") {
-    $pubring = "$tdir/gnupg/pubring.gpg";
+  if (-e "$gnupghome/pubring.kbx") {
+    $pubring = "$gnupghome/pubring.kbx";
+  } elsif ( -e "$gnupghome/pubring.gpg") {
+    $pubring = "$gnupghome/pubring.gpg";
   } else {
     remove_tree($tdir);
-    die "No valid pubring found in $tdir/gnupg\n";
+    die "No valid pubring found in $gnupghome\n";
   }
-
   rungpg_fatal("$phrases/$user", $tdir, $gpg, '--batch', '--no-secmem-warning',
         @pinentrymode,
         "--passphrase-fd=0", "--yes",
@@ -1027,71 +873,30 @@ sub cmd_keygen {
         'sign',
         'save');
 
-  # export pubkey
-  $ENV{GNUPGHOME} = "$tdir/gnupg";
-  my $pubkey = rungpg_fatal('/dev/null', $tdir, $gpg, '--batch', '--no-secmem-warning', '--no-default-keyring', '--export', '-a');
+  switch_gnupghome($gnupghome);
 
-  # encrypt privkey
+  # export pubkey and privkey
+  my $pubkey = rungpg_fatal('/dev/null', $tdir, $gpg, '--batch', '--no-secmem-warning', '--no-default-keyring', '--export', '-a');
   my $privkey_plain = rungpg_fatal('/dev/null', $tdir, $gpg, '--batch', '--export-secret-keys', '--no-verbose', '--no-secmem-warning', '--trust-model', 'always');
   # newer gpg versions also export the userid and signature, so strip to the bare key
   $privkey_plain = striptofirst($privkey_plain);
+
+  switch_gnupghome($oldgnupghome);
+
+  # encrypt the privkey
   open(F, '>', "$tdir/privkey") || die("$tdir/privkey: $!\n");
   (syswrite(F, $privkey_plain) || 0) == length($privkey_plain) || die("privkey write error\n");
   close(F) || die("privkey close error\n");
-
-  $ENV{GNUPGHOME} = $org_gnupghome;
   my $privkey = rungpg_fatal('/dev/null', $tdir, $gpg, '--batch', '--encrypt', '--no-verbose', '--no-secmem-warning', '--trust-model', 'always', '-o-', '-r', "$user", "$tdir/privkey");
-  remove_tree($tdir);
 
-  # send back
+  # cleanup and send back
+  remove_tree($tdir);
   $privkey = unpack('H*', $privkey);
   return (0, '', $pubkey, $privkey);
 }
 
 sub cmd_certgen {
-  my ($cmd, $user, $hashalgo, @args) = @_;
-  die("certgen: at least five arguments expected\n") if @args < 4;
-  die("bad private key\n") if $args[0] !~ /^(?:[0-9a-fA-F][0-9a-fA-F])+$/s;
-  my $privkey = pack('H*', $args[0]);
-  my $expire = $args[1];
-  die("bad expire format\n") unless $expire =~ /^\d{1,10}$/s;
-  my $real = $args[2];
-  my $email = $args[3];
-  checkbadchar($real, 'real name');
-  checkbadchar($email, 'email');
-  $privkey = do_decode("$phrases/$user", $user, $privkey);
-  my $opensslprivkey = priv2openssl($privkey);
-  my $reqconf = <<"EOL";
-[ req ]
-string_mask = utf8only
-distinguished_name = distinguished_name
-x509_extensions = x509_extensions
-prompt = no
-utf8 = yes
-
-[ distinguished_name ]
-CN = "$real"
-emailAddress = "$email"
-
-[ x509_extensions ]
-basicConstraints = critical,CA:false
-subjectKeyIdentifier=hash
-authorityKeyIdentifier=keyid,issuer
-keyUsage = critical,keyCertSign,digitalSignature
-extendedKeyUsage = codeSigning
-EOL
-  local *F;
-  open(F, ">$tmpdir/sslreq$$.conf") || die("$tmpdir/sslreq$$.conf: $!\n");
-  (syswrite(F, $reqconf) || 0) == length($reqconf) || die("openssl conf write error\n");
-  close(F) || die("openssl conf close error\n");
-  open(F, ">$tmpdir/privkey.$$") || die("$tmpdir/privkey.$$: $!\n");
-  (syswrite(F, $opensslprivkey) || 0) == length($opensslprivkey) || die("openssl privkey write error\n");
-  close(F) || die("openssl privkey close error\n");
-  my $cert = rungpg_fatal('/dev/null', ["$tmpdir/sslreq$$.conf", "$tmpdir/privkey.$$"], $openssl, 'req', '-new', '-x509', '-sha256', '-key', "$tmpdir/privkey.$$", '-days', $expire, '-config', "$tmpdir/sslreq$$.conf");
-  unlink("$tmpdir/privkey.$$");
-  unlink("$tmpdir/sslreq$$.conf");
-  $oldproto = 1;		# FIXME: should not force the old proto here
-  return (0, '', $cert);
+  die("certgen: no longer supported, please update your sign client\n");
 }
 
 sub cmd_pubkey {
@@ -1140,9 +945,11 @@ sub close_agent {
   undef $agent_sock;
 }
 
-sub switch_agent {
+sub switch_gnupghome {
+  my ($gnupghome) = @_;
   close_agent();
   $agentsocket = [];
+  $ENV{'GNUPGHOME'} = $gnupghome;
 }
 
 sub read_passphrase {
@@ -1365,10 +1172,8 @@ sub cmd_privsign {
   open(F, ">$tmpdir/privkey.$$") || die("$tmpdir/privkey.$$: $!\n");
   (syswrite(F, $privkey) || 0) == length($privkey) || die("decoded privkey write error\n");
   close(F) || die("decoded privkey close error\n");
-  my $tdir;
-  my $oldgpghome = $ENV{GNUPGHOME};
-  ($tdir, $ENV{GNUPGHOME}) = prepare_tmp_gnupghome($tmpdir);
-  switch_agent();
+  my ($tdir, $gnupghome, $oldgnupghome) = prepare_tmp_gnupghome($tmpdir);
+  switch_gnupghome($gnupghome);
   rungpg_fatal("$phrases/$user", ["$tmpdir/privkey.$$"], $gpg, '--batch', '--no-verbose', '-q', '--no-secmem-warning', '--allow-non-selfsigned-uid', @pinentrymode, '--passphrase-fd=0', '--import', "$tmpdir/privkey.$$");
   unlink("$tmpdir/privkey.$$");
   my $status = 0;
@@ -1388,9 +1193,8 @@ sub cmd_privsign {
     $err .= $lerr;
     last if $status;
   }
+  switch_gnupghome($oldgnupghome);
   remove_tree($tdir);
-  $ENV{GNUPGHOME} = $oldgpghome;
-  switch_agent();
   return ($status, $err, @out);
 }
 

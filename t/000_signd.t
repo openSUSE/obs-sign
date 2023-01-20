@@ -3,7 +3,7 @@
 use strict;
 use warnings;
 use bytes;
-use Test::More tests => 18;
+use Test::More tests => 16;
 use File::Temp qw/tempdir/;
 use File::Path qw/remove_tree make_path/;
 use Digest::SHA;
@@ -100,15 +100,6 @@ my $importresult = `gpg --batch --allow-non-selfsigned-uid --import $tmppriv_dec
 is($?, 0, "Checking import of decrypted privkey");
 
 $ENV{GNUPGHOME} = "$tmp_dir/gnupg";
-###############################################################################
-### if ($cmd eq 'certgen') {
-my $cmd = "./signd -t certgen $user $keys[1] 800 \"$comment\" \"$prj_user\"";
-my $certgen_result = `$cmd`;
-is($?, 0, "Checking cmd 'certgen' return code");
-my @certs = decode_reply($certgen_result, 1);
-my $end_cert = qr/-----END CERTIFICATE-----$/;
-like($certs[0], $end_cert, "Checking for end of certificate");
-
 
 ###############################################################################
 ### Common vars for sign and privsign
@@ -119,7 +110,7 @@ my $arg = Digest::SHA::sha1_hex("$payload$trailer").'@'.unpack("H*", $trailer);
 ###############################################################################
 ### if ($cmd eq 'privsign') {
 $ENV{SIGN_GCRYPT} = 'disable';
-$cmd = "./signd -t privsign $user $keys[1] $arg";
+my $cmd = "./signd -t privsign $user $keys[1] $arg";
 my $privsign_result = `$cmd`;
 
 is($?, 0, "Checking cmd 'privsign' return code [gpg]");
