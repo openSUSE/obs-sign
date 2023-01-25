@@ -48,6 +48,7 @@ my $proxyport = 5167;
 my $signuser = '';
 my $gpg = '/usr/bin/gpg';
 my $phrases = '';
+my $aliases = '';
 my $tmpdir = '/run/signd';
 my $patchclasstime;
 my $conf = '/etc/sign.conf';
@@ -61,6 +62,14 @@ my $keycache = '';
 # request data
 my $oldproto = 0;
 my $peer = 'unknown';
+
+sub spew {
+  my ($fn, $data) = @_;
+  local *F;
+  open(F, '>', $fn) || die("$fn: $!\n");
+  (syswrite(F, $data) || 0) == length($data) || die("write error: $!\n");
+  close(F) || die("close: $!\n");
+}
 
 sub printlog {
   my ($msg) = @_;
@@ -153,6 +162,16 @@ sub encodetag_oldformat {
   return pack("CN", $tag * 4 + 130, $l).$pack;
 }
 
+sub encodesubpackets {
+  my $su = '';
+  for (@_) {
+    die if length($_) >= 16576;
+    $su .= pack('C', length($_)).$_ if length($_) < 192;
+    $su .= pack('CC', 192 + (length($_) - 192) >> 8, length($_) - 192).$_ if length($_) >= 192;
+  }
+  return $su;
+}
+
 sub priv2pub {
   my ($privkey, $infos) = @_;
   my $pubkey = '';
@@ -186,6 +205,7 @@ sub priv2pub {
     }
     my $info = $infos ? {} : undef;
     push @$infos, $info if $info;
+    $info->{'version'} = $pkver if $info;
     $info->{'algo'} = $pkalgo if $info;
     my $mpinum;
     my $smpinum;
@@ -227,7 +247,7 @@ sub priv2pub {
           $smpinum--;
 	}
       }
-      $info->{'fingerprint'} = Digest::SHA::sha1_hex(pack('Cn', 0x99, $mpioff).substr($pack, 0, $mpioff));
+      $info->{'fingerprint'} = Digest::SHA::sha1_hex(pack('Cn', 0x99, $mpioff).substr($pack, 0, $mpioff)) if $pkver == 4;
     }
     $pack = substr($pack, 0, $mpioff);
     $pubkey .= encodetag($ptag, $pack);
@@ -264,6 +284,19 @@ sub wrap_into_gpgsig_v3 {
   my ($extra, $fingerprint, $pgppubalgo, $pgphashalgo, $hash, $sigdata) = @_;
   my $v3sig = pack('CCH10H16CCH4', 3, 5, $extra, substr($fingerprint, -16), $pgppubalgo, $pgphashalgo, substr($hash, 0, 4)).$sigdata;
   return encodetag_oldformat(2, $v3sig);
+}
+
+sub wrap_into_gpgsig_v4 {
+  my ($extra, $fingerprint, $pgppubalgo, $pgphashalgo, $hash, $sigdata) = @_;
+  die("wrap_into_gpgsig_v4: bad fingerprint length\n") unless length($fingerprint) == 40;
+  my $pubkeyversion = 4;
+  my $hashedsub = encodesubpackets(pack('CCH*', 33, $pubkeyversion, $fingerprint), pack('CH*', 2, substr($extra, 2, 8)));
+  my $unhashedsub = encodesubpackets(pack('CH*', 16, substr($fingerprint, -16)));
+  my $v4sig = pack('CH2CC', 4, substr($extra, 0, 2), $pgppubalgo, $pgphashalgo);
+  $v4sig .= pack('n', length($hashedsub)).$hashedsub;
+  $v4sig .= pack('n', length($unhashedsub)).$unhashedsub;
+  $v4sig .= pack('H4', substr($hash, 0, 4)).$sigdata;
+  return encodetag_oldformat(2, $v4sig);
 }
 
 sub sign_with_gcrypt {
@@ -386,6 +419,10 @@ while(<F>) {
     $phrases = $s[1];
     next;
   }
+  if ($s[0] eq 'aliases:') {
+    $aliases = $s[1];
+    next;
+  }
   if ($s[0] eq 'tmpdir:') {
     $tmpdir = $s[1];
     next;
@@ -417,6 +454,7 @@ while(<F>) {
   if ($s[0] eq 'agentsocket:') {
     shift @s;
     $agentsocket = \@s;
+    next;
   }
 }
 
@@ -798,16 +836,8 @@ sub cmd_ping {
   return (0, '');
 }
 
-sub cmd_keygen {
-  my ($cmd, $user, $hashalgo, @args) = @_;
-  die("keygen: at least five arguments expected\n") if @args < 4;
-  my $type = $args[0];
-  my $expire = $args[1];
-  die("bad expire format\n") unless $expire =~ /^\d{1,10}$/s;
-  my $real = $args[2];
-  my $email = $args[3];
-  checkbadchar($real, 'real name');
-  checkbadchar($email, 'email');
+sub split_length_from_type {
+  my ($type) = @_;
   my $length;
   if ($type eq 'ed25519' || $type eq 'eddsa@ed25519') {
     ($type, $length) = ('eddsa', 'ed25519');
@@ -820,21 +850,29 @@ sub cmd_keygen {
     $length = $2;
     $type = $1;
   }
+  return ($type, $length);
+}
+
+sub cmd_keygen {
+  my ($cmd, $user, $hashalgo, @args) = @_;
+  die("keygen: at least four arguments expected\n") if @args != 4;
+  my $type = $args[0];
+  my $expire = $args[1];
+  die("bad expire format\n") unless $expire =~ /^\d{1,10}$/s;
+  my $real = $args[2];
+  my $email = $args[3];
+  checkbadchar($real, 'real name');
+  checkbadchar($email, 'email');
+  my $length;
+  ($type, $length) = split_length_from_type($type);
 
   my ($tdir, $gnupghome, $oldgnupghome) = prepare_tmp_gnupghome($tmpdir);
 
   # write params file
-  my $batch;
-  if ($type eq 'ecdsa' || $type eq 'eddsa') {
-    $batch = "Key-Type: $type\nKey-Curve: $length\n";
-  } else {
-    $batch = "Key-Type: $type\nKey-Length: $length\n";
-  }
+  my $batch = "Key-Type: $type\n";
+  $batch .= ($type eq 'ecdsa' || $type eq 'eddsa' ? "Key-Curve: " : "Key-Length: "). "$length\n";
   $batch .= "Key-Usage: sign\nName-Real: $real\nName-Email: $email\nExpire-Date: ${expire}d\n%no-protection\n";
-  local *F;
-  open(F, ">$tdir/params") || die("$tdir/params: $!\n");
-  (syswrite(F, $batch) || 0) == length($batch) || die("keygen parameter write error\n");
-  close(F) || die("keygen parameter close error\n");
+  spew("$tdir/params", $batch);
 
   switch_gnupghome($gnupghome);
 
@@ -1223,6 +1261,37 @@ sub cmd_sign {
   return ($status, $err, @out);
 }
 
+################
+
+sub read_alias {
+  my ($aliasdir, $alias) = @_;
+  die("illegal user $alias\n") if $alias eq '' || $alias =~ /[\000-\037\/]/s || $alias =~ /^\./s;
+  my $fd;
+  open($fd, '<', "$aliasdir/$alias") || die("$aliasdir/$alias: $!\n");
+  my $user = <$fd>;
+  close($fd);
+  chomp $user;
+  die("illegal user $user for alias $alias\n") if $user eq '' || $user =~ /[\000-\037\/]/s || $user =~ /^\./s;
+  return $user;
+}
+
+sub write_alias {
+  my ($aliasdir, $user, $alias) = @_;
+  die("illegal user $user\n") if $user eq '' || $user =~ /[\000-\037\/]/s || $user =~ /^\./s;
+  die("illegal alias $alias\n") if $alias eq '' || $alias =~ /[\000-\037\/]/s || $alias =~ /^\./s;
+  spew("$aliasdir/.$alias.$$", "$user\n");
+  rename("$aliasdir/.$alias.$$", "$aliasdir/$alias") || die("rename $aliasdir/.$alias.$$ $aliasdir/$alias: $!\n");
+}
+
+sub list_alias {
+  my ($aliasdir) = @_;
+  my $d;
+  return () unless opendir($d, $aliasdir);
+  my @aliases = grep {!/^\./} readdir($d);
+  closedir $d;
+  return sort(@aliases);
+}
+
 ## read the request, call the handler, reply the result
 @argv = readreq();
 if (($argv[0] eq 'privsign' || $argv[0] eq 'certgen') && @argv > 2) {
@@ -1237,22 +1306,31 @@ if (($argv[0] eq 'privsign' || $argv[0] eq 'certgen') && @argv > 2) {
 testit:
 
 my %cmds = (
-  'ping' => \&cmd_ping,
-  'keygen' => \&cmd_keygen,
-  'certgen' => \&cmd_certgen,
-  'pubkey' => \&cmd_pubkey,
-  'privsign' => \&cmd_privsign,
-  'sign' => \&cmd_sign,
+  'ping'	=> \&cmd_ping,
+  'keygen'	=> \&cmd_keygen,
+  'certgen'	=> \&cmd_certgen,
+  'pubkey'	=> \&cmd_pubkey,
+  'privsign'	=> \&cmd_privsign,
+  'sign'	=> \&cmd_sign,
 );
 
+# verify args contain no control chars and are valid utf8
+for (@argv) {
+  die("bad argument $_\n") if /[\000-\037\177]/;
+  decode('UTF-8', $_, Encode::FB_CROAK | Encode::LEAVE_SRC) if /[\200-\377]/;
+}
+
 # extract command/user/hashalgo
-my $hashalgo = 'SHA1';
+my $hashalgo;
 my ($cmd, $user) = splice(@argv, 0, 2);
 $user = '' unless defined $user;
 if ($user =~ /^(.*?):(.*)$/) {
   $hashalgo = $1;
   $user = $2;
 }
+$hashalgo ||= 'SHA1';	# historic default, maybe die() instead?
+die("illegal user $user\n") if $user ne '' && ($user =~ /[\000-\037\/]/s || $user =~ /^\./s);
+die("illegal hashalgo $hashalgo\n") if $hashalgo ne '' && $hashalgo =~ /[\000-\037]/s;
 if (exists $map{"$hashalgo:$user"}) {
   $user = $map{"$hashalgo:$user"};
 } elsif ($user ne '' && exists($map{$user})) {
@@ -1260,7 +1338,7 @@ if (exists $map{"$hashalgo:$user"}) {
 }
 $user = $signuser if $user eq '' && $signuser ne '';
 die("illegal user $user\n") if $user ne '' && ($user =~ /[\000-\037\/]/s || $user =~ /^\./s);
-die("illegal hashalgo $hashalgo\n") if $hashalgo ne '' && $hashalgo =~ /[\000-\037]/s;
+$user = read_alias($aliases, $user) if $aliases && -e "$aliases/$user";
 
 # proxy unknown users
 if (!$phrases || ($cmd ne 'ping' && $user eq '') || ($user ne '' && ! -e "$phrases/$user")) {
