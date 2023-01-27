@@ -914,9 +914,7 @@ sub cmd_keygen {
   switch_gnupghome($oldgnupghome);
 
   # encrypt the privkey
-  open(F, '>', "$tdir/privkey") || die("$tdir/privkey: $!\n");
-  (syswrite(F, $privkey_plain) || 0) == length($privkey_plain) || die("privkey write error\n");
-  close(F) || die("privkey close error\n");
+  spew("$tdir/privkey", $privkey_plain);
   my $privkey = rungpg_fatal('/dev/null', $tdir, $gpg, '--batch', '--encrypt', '--no-verbose', '--no-secmem-warning', '--trust-model', 'always', '-o-', '-r', "$user", "$tdir/privkey");
 
   # cleanup and send back
@@ -931,7 +929,7 @@ sub cmd_certgen {
 
 sub cmd_pubkey {
   my ($cmd, $user, $hashalgo, @args) = @_;
-  die("pubkey: one argument expected\n") if @args;
+  die("pubkey: no argument expected\n") if @args;
   my $pubkey = rungpg_fatal('/dev/null', undef, $gpg, '--export', '-a', $user);
   return (0, '', $pubkey);
 }
@@ -1123,39 +1121,40 @@ sub sign_with_agent {
   return wrap_into_gpgsig_v3($extra, $fingerprint, $pgppubalgo, $pgphashalgo, $hash, $sigdata);
 }
 
+sub sign_with_files_are_digests {
+  my ($phrasefile, $user, $hashalgo, $hash, $isprivsign) = @_;
+  my @args;
+  if ($isprivsign) {
+    push @args, '--allow-non-selfsigned-uid';
+  } else {
+    push @args, '-u', $user;
+  }
+  my $classtime;
+  if ($patchclasstime && ($hash =~ /\@([0-9a-fA-F]{10})$/s)) {
+    $classtime = $1;
+    substr($hash, -10, 10, '0000000000');
+  }
+  my ($status, $out, $err) = rungpg($phrasefile, undef, $gpg, "--batch", "--force-v3-sigs", "--files-are-digests", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--ignore-time-conflict", @pinentrymode, "--passphrase-fd=0", @args, "-sbo", "-", $hash);
+  $out = patchclasstime($out, $classtime) if $classtime && !$status;
+  return ($status, $out, $err);
+}
+
 sub do_sign {
-  my ($phrasesfile, $user, $hashalgo, $hash, $isprivsign) = @_;
+  my ($phrasefile, $user, $hashalgo, $hash, $isprivsign) = @_;
   if ($use_agent) {
-    my $out;
-    eval { $out = sign_with_agent($phrasesfile, $user, $hashalgo, $hash, $isprivsign) };
-    return 1, '', $@ if $@;
+    my $out = eval { sign_with_agent($phrasefile, $user, $hashalgo, $hash, $isprivsign) };
+    return (1, '', $@) if $@;
     return (0, $out, '');
   } else {
-    my @args;
-    if ($isprivsign) {
-      push @args, '--allow-non-selfsigned-uid';
-    } else {
-      push @args, '-u', $user;
-    }
-    my $classtime;
-    if ($patchclasstime && ($hash =~ /\@([0-9a-fA-F]{10})$/s)) {
-      $classtime = $1;
-      substr($hash, -10, 10, '0000000000');
-    }
-    my ($status, $out, $err) = rungpg($phrasesfile, undef, $gpg, "--batch", "--force-v3-sigs", "--files-are-digests", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--ignore-time-conflict", @pinentrymode, "--passphrase-fd=0", @args, "-sbo", "-", $hash);
-    $out = patchclasstime($out, $classtime) if $classtime && !$status;
-    return ($status, $out, $err);
+    return sign_with_files_are_digests($phrasefile, $user, $hashalgo, $hash, $isprivsign);
   }
 }
 
 sub do_decode {
-  my ($phrasesfile, $user, $encodeddata) = @_;
+  my ($phrasefile, $user, $encodeddata) = @_;
   my $file = "$tmpdir/privkey.$$";
-  local *F;
-  open(F, '>', $file) || die("$file: $!\n");
-  (syswrite(F, $encodeddata) || 0) == length($encodeddata) || die("encoded data write error\n");
-  close(F) || die("encoded data close error\n");
-  my $decoded = rungpg_fatal($phrasesfile, [ $file ], $gpg, '--batch', '--decrypt', '--no-verbose', '-q', '--no-secmem-warning', @pinentrymode, '--passphrase-fd=0', $file);
+  spew($file, $encodeddata);
+  my $decoded = rungpg_fatal($phrasefile, [ $file ], $gpg, '--batch', '--decrypt', '--no-verbose', '-q', '--no-secmem-warning', @pinentrymode, '--passphrase-fd=0', $file);
   unlink($file);
   return $decoded;
 }
@@ -1173,30 +1172,21 @@ sub can_privsign_with_gcrypt {
 
 sub cmd_privsign {
   my ($cmd, $user, $hashalgo, @args) = @_;
-  die("privsign: at least three arguments expected\n") if @args < 2;
+  die("privsign: at least two arguments expected\n") if @args < 2;
   die("bad private key\n") if $args[0] !~ /^(?:[0-9a-fA-F][0-9a-fA-F])+$/s;
-  my $privkey = pack('H*', $args[0]);
-  shift @args;
-  $privkey = do_decode("$phrases/$user", $user, $privkey);
+  my $privkey = do_decode("$phrases/$user", $user, pack('H*', shift @args));
   my @infos;
   my $pubkey = priv2pub($privkey, $have_gcrypt ? \@infos : undef);
   if (can_privsign_with_gcrypt(\@infos)) {
     my $info = $infos[0];
-    my $status = 0;
-    my $err = '';
     my @out;
-    while (@args) {
+    for my $hash (@args) {
       my $lout = '';
-      eval { $lout = sign_with_gcrypt($info, $args[0], $hashalgo) };
-      if ($@) {
-        $err .= $@;
-	$status = 1;
-      }
-      shift @args;
+      eval { $lout = sign_with_gcrypt($info, $hash, $hashalgo) };
       push @out, $lout;
-      last if $status;
+      return (1, $@, @out) if $@;
     }
-    return ($status, $err, @out);
+    return (0, '', @out);
   }
   # create import data: pubkey pkg, user pkg, privkey pkg, user pkg
   $privkey = priv2pub($privkey).encodetag(13, 'privsign').striptofirst($privkey).encodetag(13, 'privsign');
@@ -1207,13 +1197,10 @@ sub cmd_privsign {
   switch_gnupghome($gnupghome);
   rungpg_fatal("$phrases/$user", ["$tmpdir/privkey.$$"], $gpg, '--batch', '--no-verbose', '-q', '--no-secmem-warning', '--allow-non-selfsigned-uid', @pinentrymode, '--passphrase-fd=0', '--import', "$tmpdir/privkey.$$");
   unlink("$tmpdir/privkey.$$");
-  my $status = 0;
-  my $err = '';
-  my @out;
-  while (@args) {
+  my ($status, $err, @out) = (0, '');
+  for my $hash (@args) {
     my ($lout, $lerr);
-    ($status, $lout, $lerr) = do_sign('/dev/null', 'privsign', $hashalgo, $args[0], 1);
-    shift @args;
+    ($status, $lout, $lerr) = do_sign('/dev/null', 'privsign', $hashalgo, $hash, 1);
     push @out, $lout;
     $err .= $lerr;
     last if $status;
@@ -1225,16 +1212,11 @@ sub cmd_privsign {
 
 sub cmd_sign {
   my ($cmd, $user, $hashalgo, @args) = @_;
-  die("sign: two arguments expected (old protocol)\n") if $oldproto && @args != 1;
-  die("sign: at least two arguments expected\n") if @args < 1;
-  my $status = 0;
-  my $err = '';
-  my $out = '';
-  my @out;
-  while (@args) {
+  die("sign: at least one arguments required\n") if @args < 1;
+  my ($status, $err, @out) = (0, '');
+  for my $hash (@args) {
     my ($lout, $lerr);
-    ($status, $lout, $lerr) = do_sign("$phrases/$user", $user, $hashalgo, $args[0]);
-    shift @args;
+    ($status, $lout, $lerr) = do_sign("$phrases/$user", $user, $hashalgo, $hash);
     push @out, $lout;
     $err .= $lerr;
     last if $status;
