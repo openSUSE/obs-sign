@@ -198,27 +198,18 @@ sub priv2pub {
     push @$infos, $info if $info;
     $info->{'version'} = $pkver if $info;
     $info->{'algo'} = $pkalgo if $info;
-    my $mpinum;
-    my $smpinum;
-    if ($pkalgo == 1) {				# RSA
-      $mpinum = 2;
-      $smpinum = 4;
-    } elsif ($pkalgo == 17) {			# DSA
-      $mpinum = 4;
-      $smpinum = 1;
-    } elsif ($pkalgo == 16 || $pkalgo == 20) {	# Elgamal
-      $mpinum = 3;
-      $smpinum = 1;
-    } elsif ($pkalgo == 19 || $pkalgo == 22) {	# ECDSA + EdDSA
-      $mpinum = 1;
-      $smpinum = 1;
+    if ($pkalgo == 19 || $pkalgo == 22) {	# ECDSA + EdDSA have a curve
       my $oidlen = unpack('C', substr($pack, $mpioff));
       die("bad curve len") if $oidlen == 0 || $oidlen == 255;
       $info->{'curve'} = substr($pack, $mpioff + 1, $oidlen) if $info;
       $mpioff += $oidlen + 1;
-    } else {
-      die("unknown public key algorithm $pkalgo\n");
     }
+    my ($mpinum, $smpinum);
+    ($mpinum, $smpinum) = (2, 4) if $pkalgo == 1;	# RSA
+    ($mpinum, $smpinum) = (4, 1) if $pkalgo == 17;	# DSA
+    ($mpinum, $smpinum) = (3, 1) if $pkalgo == 16 || $pkalgo == 20;	# Elgamal
+    ($mpinum, $smpinum) = (1, 1) if $pkalgo == 19 || $pkalgo == 22;	# ECDSA + EdDSA
+    die("unsupported public key algorithm $pkalgo\n") unless defined $mpinum;
     while ($mpinum > 0) {
       my $ml = unpack('n', substr($pack, $mpioff, 2));
       $ml = (($ml + 7) >> 3) + 2;
