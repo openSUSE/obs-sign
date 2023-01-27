@@ -521,13 +521,13 @@ $SIG{'__DIE__'} = sub {
   chomp $err;
   printlog("$peer: $err");
   reply(1, "$err\n");
+  exit(0);
 };
 
 my ($sport, $saddr) = sockaddr_in($clntaddr);
 $peer = inet_ntoa($saddr);
 die("not coming from a reserved port\n") if !$allow_unprivileged_ports && ($sport < 0 || $sport > 1024);
-my $allowed = 0;
-my ($hosterr, $hostname, $servicename) = getnameinfo($clntaddr);
+my $allowed;
 my $hostnameinfo;
 for my $allow (@allows) {
   $hostnameinfo ||= [ getnameinfo($clntaddr) ] if $allow !~ /^[0-9\.]+(:?\/[0-9]+)?$/;
@@ -816,7 +816,6 @@ sub reply {
   my $ret = pack("nnn", $status, length($out), length($err)).$out.$err;
   swrite(*CLNT, $ret);
   close CLNT;
-  exit(0);
 }
 
 ### commands
@@ -845,7 +844,7 @@ sub split_length_from_type {
 
 sub cmd_keygen {
   my ($cmd, $user, $hashalgo, @args) = @_;
-  die("keygen: at least four arguments expected\n") if @args != 4;
+  die("keygen: four arguments expected\n") if @args != 4;
   my $type = $args[0];
   my $expire = $args[1];
   die("bad expire format\n") unless $expire =~ /^\d{1,10}$/s;
@@ -873,10 +872,7 @@ sub cmd_keygen {
   my $keyid = rungpg_fatal('/dev/null', $tdir, $gpg, '--list-keys', '--no-secmem-warning', '--no-default-keyring', '--fixed-list-mode', '--with-colons');
   my @keyid = split("\n", $keyid);
   @keyid = grep {s/^pub:[^:]*:[^:]*:[^:]*:([^:]*):.*$/$1/} @keyid;
-  if (@keyid != 1) {
-    remove_tree($tdir) || die "Could not remove $tdir: $!\n";
-    die("keyid not found\n");
-  }
+  die("keyid not found\n") unless @keyid == 1;
   $keyid = $keyid[0];
 
   switch_gnupghome($oldgnupghome);
@@ -888,8 +884,7 @@ sub cmd_keygen {
   } elsif ( -e "$gnupghome/pubring.gpg") {
     $pubring = "$gnupghome/pubring.gpg";
   } else {
-    remove_tree($tdir);
-    die "No valid pubring found in $gnupghome\n";
+    die "no pubring found in $gnupghome\n";
   }
   rungpg_fatal("$phrases/$user", $tdir, $gpg, '--batch', '--no-secmem-warning',
         @pinentrymode,
@@ -1135,7 +1130,14 @@ sub do_sign {
     } else {
       push @args, '-u', $user;
     }
-    return rungpg($phrasesfile, undef, $gpg, "--batch", "--force-v3-sigs", "--files-are-digests", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--ignore-time-conflict", @pinentrymode, "--passphrase-fd=0", @args, "-sbo", "-", $hash);
+    my $classtime;
+    if ($patchclasstime && ($hash =~ /\@([0-9a-fA-F]{10})$/s)) {
+      $classtime = $1;
+      substr($hash, -10, 10, '0000000000');
+    }
+    my ($status, $out, $err) = rungpg($phrasesfile, undef, $gpg, "--batch", "--force-v3-sigs", "--files-are-digests", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--ignore-time-conflict", @pinentrymode, "--passphrase-fd=0", @args, "-sbo", "-", $hash);
+    $out = patchclasstime($out, $classtime) if $classtime && !$status;
+    return ($status, $out, $err);
   }
 }
 
@@ -1178,17 +1180,11 @@ sub cmd_privsign {
     my @out;
     while (@args) {
       my $lout = '';
-      my $classtime;
-      if ($patchclasstime && ($args[0] =~ /\@([0-9a-fA-F]{10})$/s)) {
-	$classtime = $1;
-	$args[0] = substr($args[0], 0, -10)."0000000000";
-      }
       eval { $lout = sign_with_gcrypt($info, $args[0], $hashalgo) };
       if ($@) {
         $err .= $@;
 	$status = 1;
       }
-      $lout = patchclasstime($lout, $classtime) if $classtime && !$status;
       shift @args;
       push @out, $lout;
       last if $status;
@@ -1209,13 +1205,7 @@ sub cmd_privsign {
   my @out;
   while (@args) {
     my ($lout, $lerr);
-    my $classtime;
-    if ($patchclasstime && ($args[0] =~ /\@([0-9a-fA-F]{10})$/s)) {
-      $classtime = $1;
-      $args[0] = substr($args[0], 0, -10)."0000000000";
-    }
     ($status, $lout, $lerr) = do_sign('/dev/null', 'privsign', $hashalgo, $args[0], 1);
-    $lout = patchclasstime($lout, $classtime) if $classtime && !$status;
     shift @args;
     push @out, $lout;
     $err .= $lerr;
@@ -1236,13 +1226,7 @@ sub cmd_sign {
   my @out;
   while (@args) {
     my ($lout, $lerr);
-    my $classtime;
-    if ($patchclasstime && ($args[0] =~ /\@([0-9a-fA-F]{10})$/s)) {
-      $classtime = $1;
-      $args[0] = substr($args[0], 0, -10)."0000000000";
-    }
     ($status, $lout, $lerr) = do_sign("$phrases/$user", $user, $hashalgo, $args[0]);
-    $lout = patchclasstime($lout, $classtime) if $classtime && !$status;
     shift @args;
     push @out, $lout;
     $err .= $lerr;
