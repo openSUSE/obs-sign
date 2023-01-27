@@ -482,12 +482,7 @@ if (($ARGV[0] || '') eq '-f') {
   my $pid = fork();
   die("fork") if  !defined($pid) || $pid < 0;
   if ($pid > 0) {
-    if ($pidfile) {
-      local *PID;
-      open(PID, '>', $pidfile) || die("$pidfile: $!\n");
-      print PID "$pid\n";
-      close PID;
-    }
+    spew($pidfile, "$pid\n") if $pidfile;
     exit(0);
   }
 }
@@ -590,7 +585,7 @@ sub bindreservedport {
   local *S = $sock;
   my %blacklist;
   local *BL;
-  if (open(BL, "</etc/bindresvport.blacklist")) {
+  if (open(BL, '<', '/etc/bindresvport.blacklist')) {
     while(<BL>) {
       chomp;
       next unless /^\s*(\d+)/;
@@ -1190,9 +1185,7 @@ sub cmd_privsign {
   }
   # create import data: pubkey pkg, user pkg, privkey pkg, user pkg
   $privkey = priv2pub($privkey).encodetag(13, 'privsign').striptofirst($privkey).encodetag(13, 'privsign');
-  open(F, ">$tmpdir/privkey.$$") || die("$tmpdir/privkey.$$: $!\n");
-  (syswrite(F, $privkey) || 0) == length($privkey) || die("decoded privkey write error\n");
-  close(F) || die("decoded privkey close error\n");
+  spew("$tmpdir/privkey.$$", $privkey);
   my ($tdir, $gnupghome, $oldgnupghome) = prepare_tmp_gnupghome($tmpdir);
   switch_gnupghome($gnupghome);
   rungpg_fatal("$phrases/$user", ["$tmpdir/privkey.$$"], $gpg, '--batch', '--no-verbose', '-q', '--no-secmem-warning', '--allow-non-selfsigned-uid', @pinentrymode, '--passphrase-fd=0', '--import', "$tmpdir/privkey.$$");
