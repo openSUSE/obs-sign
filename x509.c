@@ -651,7 +651,7 @@ x509_subjectkeyid(struct x509 *cb, unsigned char *cert, int certlen)
       x509_unpack(b, l, &b2, &l2, &cl, 0x30);
       b += cl;
       l -= cl;
-      if (l2 < 6 || memcmp(b2, "\006\003\125\035\016", 5))
+      if (l2 < 6 || memcmp(b2, "\006\003\125\035\016", 5))	/* oid 2.5.29.14 */
 	continue;
       b2 += 5;
       l2 -= 5;
