@@ -43,6 +43,7 @@ static char *algouser;
 static int allowuser;
 static int verbose;
 uid_t uid;
+int use_unprivileged_ports;
 
 static const char *const hashname[] = {"SHA1", "SHA256", "SHA512"};
 static const int  hashlen[] = {20, 32, 64};
@@ -1141,6 +1142,13 @@ read_sign_conf(const char *conf)
       if (!strcmp(buf, "port"))
 	{
 	  port = atoi(bp);
+	  continue;
+	}
+      if (!strcmp(buf, "use-unprivileged-ports"))
+	{
+	  use_unprivileged_ports = 0;
+	  if (!strcmp(bp, "1") || !strcasecmp(bp, "true"))
+	    use_unprivileged_ports = 1;
 	  continue;
 	}
       if (!strcmp(buf, "hash"))
