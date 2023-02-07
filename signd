@@ -303,24 +303,43 @@ sub sign_with_gcrypt {
     $sigdata = $sv->print(Crypt::GCrypt::MPI::FMT_PGP());
   } elsif ($info->{'algo'} == 17) {
     die("sign_with_gcrypt: missing MPIs\n") unless @{$info->{'mpis'} || []} == 4 && @{$info->{'smpis'} || []} == 1;
+    my $qlen = length($info->{'mpis'}->[1]);
+    my $hashraw = substr(pack('H*', $hash), 0, $qlen < 20 ? 20 : $qlen);
     my ($p, $q, $g, $y, $x) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$info->{'mpis'}}, @{$info->{'smpis'}};
-    my $data = Crypt::GCrypt::Sexp->build("(data (flags raw) (value %b))", pack('H*', $hash));
+    my $data = Crypt::GCrypt::Sexp->build("(data (flags raw) (value %b))", $hashraw);
     my $skey = Crypt::GCrypt::Sexp->build("(private-key (dsa (p %M) (q %M) (g %M) (y %M) (x %M)))", $p, $q, $g, $y, $x);
     my $res = Crypt::GCrypt::pk_sign($data, $skey);
     my $rv = $res->nth_mpi(1, Crypt::GCrypt::MPI::FMT_USG(), 'r');
     my $sv = $res->nth_mpi(1, Crypt::GCrypt::MPI::FMT_USG(), 's');
     $sigdata = $rv->print(Crypt::GCrypt::MPI::FMT_PGP()).$sv->print(Crypt::GCrypt::MPI::FMT_PGP());
-  } elsif ($info->{'algo'} == 22 && $info->{'curve'} eq "\x2b\x06\x01\x04\x01\xda\x47\x0f\x01") {
+  } elsif ($info->{'algo'} == 19) {
     die("sign_with_gcrypt: missing MPIs\n") unless @{$info->{'mpis'} || []} == 1 && @{$info->{'smpis'} || []} == 1;
-    my ($d) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$info->{'smpis'}};
-    my $data = Crypt::GCrypt::Sexp->build("(data (flags eddsa) (hash-algo sha512) (value %b))", pack('H*', $hash));
-    my $skey = Crypt::GCrypt::Sexp->build("(private-key (ecc (curve \"Ed25519\") (d %M)))", $d);
+    my $curve;
+    $curve = 'NIST P-256' if $info->{'curve'} eq "\x2a\x86\x48\xce\x3d\x03\x01\x07";
+    $curve = 'NIST P-384' if $info->{'curve'} eq "\x2b\x81\x04\x00\x22";
+    die("sign_with_gcrypt: unsupported ECDSA curve\n") unless $curve;
+    my $hashraw = pack('H*', $hash);
+    $hashraw = substr($hashraw, 0, 32) if $curve eq 'NIST P-256';
+    $hashraw = substr($hashraw, 0, 48) if $curve eq 'NIST P-384';
+    my ($q, $d) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$info->{'mpis'}}, @{$info->{'smpis'}};
+    my $data = Crypt::GCrypt::Sexp->build("(data (flags raw) (value %b))", $hashraw);
+    my $skey = Crypt::GCrypt::Sexp->build("(private-key (ecc (curve \"$curve\") (q %M) (d %M)))", $q, $d);
     my $res = Crypt::GCrypt::pk_sign($data, $skey);
     my $rv = $res->nth_mpi(1, Crypt::GCrypt::MPI::FMT_USG(), 'r');
     my $sv = $res->nth_mpi(1, Crypt::GCrypt::MPI::FMT_USG(), 's');
     $sigdata = $rv->print(Crypt::GCrypt::MPI::FMT_PGP()).$sv->print(Crypt::GCrypt::MPI::FMT_PGP());
   } elsif ($info->{'algo'} == 22) {
-    die("sign_with_gcrypt: unsupported EdDSA curve\n");
+    my $curve;
+    $curve = 'Ed25519' if $info->{'curve'} eq "\x2b\x06\x01\x04\x01\xda\x47\x0f\x01";
+    die("sign_with_gcrypt: unsupported EdDSA curve\n") unless $curve;
+    die("sign_with_gcrypt: missing MPIs\n") unless @{$info->{'mpis'} || []} == 1 && @{$info->{'smpis'} || []} == 1;
+    my ($d) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$info->{'smpis'}};
+    my $data = Crypt::GCrypt::Sexp->build("(data (flags eddsa) (hash-algo sha512) (value %b))", pack('H*', $hash));
+    my $skey = Crypt::GCrypt::Sexp->build("(private-key (ecc (curve \"$curve\") (d %M)))", $d);
+    my $res = Crypt::GCrypt::pk_sign($data, $skey);
+    my $rv = $res->nth_mpi(1, Crypt::GCrypt::MPI::FMT_USG(), 'r');
+    my $sv = $res->nth_mpi(1, Crypt::GCrypt::MPI::FMT_USG(), 's');
+    $sigdata = $rv->print(Crypt::GCrypt::MPI::FMT_PGP()).$sv->print(Crypt::GCrypt::MPI::FMT_PGP());
   } else {
     die("sign_with_gcrypt: unsupported pubkey algorithm $info->{'algo'}\n");
   }
@@ -1153,6 +1172,8 @@ sub can_privsign_with_gcrypt {
   return 1 if $info->{'algo'} == 1;
   return 1 if $info->{'algo'} == 17;
   return 1 if $info->{'algo'} == 22 && $info->{'curve'} eq "\x2b\x06\x01\x04\x01\xda\x47\x0f\x01";
+  return 1 if $info->{'algo'} == 19 && $info->{'curve'} eq "\x2a\x86\x48\xce\x3d\x03\x01\x07";
+  return 1 if $info->{'algo'} == 19 && $info->{'curve'} eq "\x2b\x81\x04\x00\x22";
   return 0;
 }
 
