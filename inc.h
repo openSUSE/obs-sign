@@ -93,7 +93,7 @@ unsigned char *unarmor_pubkey(char *pubkey, int *pktlp);
 unsigned char *genv4sigtrail(int clearsign, int pubalgo, int hashalgo, u32 signtime, int *v4sigtraillen);
 int fixupsig(unsigned char *sigtrail, unsigned char *v4sigtrail, unsigned char *sigpk, int sigpklen, int tail, int left);
 unsigned char *nextpkg(int *tagp, int *pkgl, unsigned char **pp, int *ppl);
-unsigned char *findsubpkg(unsigned char *q, int l, int type);
+unsigned char *findsubpkg(unsigned char *q, int l, int type, int *slp, int fixedsl);
 unsigned char *addpkg(unsigned char *to, unsigned char *p, int l, int tag, int newformat);
 byte *pkg2sig(byte *pk, int pkl, int *siglp);
 byte *findsigissuer(byte *sig, int sigl);

@@ -766,7 +766,7 @@ keyextend(char *expire, char *pubkey)
       algouser = doalloc(strlen(user) + strlen(hashname[hashalgo]) + 2);
       sprintf(algouser, "%s:%s", hashname[hashalgo], user);
     }
-  ex = findsubpkg(pp + 4, pl - 4, 2);
+  ex = findsubpkg(pp + 4, pl - 4, 2, 0, 4);
   if (!ex)
     dodie("self-sig has no creation time");
   now = (u32)time((time_t)0);
@@ -775,7 +775,7 @@ keyextend(char *expire, char *pubkey)
   ex[2] = now >> 8;
   ex[3] = now;
 
-  ex = findsubpkg(pp + 4, pl - 4, 9);
+  ex = findsubpkg(pp + 4, pl - 4, 9, 0, 4);
   if (!ex)
     dodie("self-sig does not expire");
   if (now < pkcreat)
@@ -988,14 +988,14 @@ createcert(char *pubkey)
     dodie("self-sig is not version 4");
   if (pp[1] != 0x13)
     dodie("self-sig is not class 0x13");
-  ex = findsubpkg(pp + 4, pl - 4, 2);
+  ex = findsubpkg(pp + 4, pl - 4, 2, 0, 4);
   if (!ex)
     dodie("self-sig has no creation time");
   beg = (ex[0] << 24 | ex[1] << 16 | ex[2] << 8 | ex[3]);
   now = (u32)time((time_t)0);
   if (beg > now)
     beg = now;
-  ex = findsubpkg(pp + 4, pl - 4, 9);
+  ex = findsubpkg(pp + 4, pl - 4, 9, 0, 4);
   if (!ex)
     dodie("self-sig does not expire");
   exp = pkcreat + (ex[0] << 24 | ex[1] << 16 | ex[2] << 8 | ex[3]);

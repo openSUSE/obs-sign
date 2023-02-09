@@ -366,7 +366,7 @@ nextpkg(int *tagp, int *pkgl, unsigned char **pp, int *ppl)
 }
 
 unsigned char *
-findsubpkg(unsigned char *q, int l, int type)
+findsubpkg(unsigned char *q, int l, int type, int *slp, int fixedsl)
 {
   int x;
   int ql = q[0] << 8 | q[1];
@@ -395,11 +395,15 @@ findsubpkg(unsigned char *q, int l, int type)
 	  sl = ((x - 192) << 8) + *q++ + 192;
 	  ql--;
 	}
-      if (ql < sl)
+      if (sl == 0 || ql < sl)
 	return 0;
       x = q[0] & 127;
-      if (x == type)
-	return q + 1;
+      if (x == type && (fixedsl < 0 || sl - 1 == fixedsl))
+	{
+	  if (slp)
+	    *slp = sl - 1;
+	  return q + 1;
+	}
       q += sl;
       ql -= sl;
     }
@@ -483,11 +487,11 @@ findsigissuer(byte *sig, int sigl)
     return sigl >= 15 ? sig + 7 : 0;
   if (sig[0] != 4)
     return 0;
-  issuer = findsubpkg(sig + 4, sigl - 4, 16);
+  issuer = findsubpkg(sig + 4, sigl - 4, 16, 0, 8);
   if (issuer)
     return issuer;
   hl = 4 + 2 + ((sig[4] << 8) | sig[5]);
-  return findsubpkg(sig + hl, sigl - hl, 16);
+  return findsubpkg(sig + hl, sigl - hl, 16, 0, 8);
 }
 
 int
