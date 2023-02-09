@@ -170,6 +170,17 @@ v4sig_skel[] = {
   0x09, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* issuer subpkg */
 };
 
+static unsigned char
+v3sig_skel[] = {
+  0x03,		/* version */
+  0x05,		/* size of hashed data */
+  0x00, 	/* type */
+  0x00, 0x00, 0x00, 0x00,	/* sig created */
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* issuer */
+  0x00, 	/* pubalgo */
+  0x00, 	/* hashalgo */
+};
+
 #define V4SIG_HASHED (4 + 2 + 6)
 
 unsigned char *
@@ -194,87 +205,97 @@ genv4sigtrail(int clearsign, int pubalgo, int hashalgo, u32 signtime, int *v4sig
   return v4sigtrail;
 }
 
-int
-v3tov4(unsigned char *v4sigtrail, unsigned char *v3sig, int v3siglen, int tail, int left)
+static int
+fixupsig_fin(unsigned char *sigpk, int sigpklen, int tail, int left, unsigned char *newsig, int newsiglen, unsigned char *mpidata, int mpidatalen)
 {
-  int o;
-  int l, nl;
-  int nhl = 0;
-  unsigned char issuer[8];
-
-  if (v3siglen < 17)
-    dodie("v3 signature too short");
-  if (v3sig[0] == 0x88)
-    o = 2;
-  else if (v3sig[0] == 0x89)
-    o = 3;
-  else if (v3sig[0] == 0x8a)
-    o = 5;
-  else if (v3sig[0] == 0xc2 && (v3sig[1] < 224 || v3sig[1] == 255))
-    {
-      o = 2;
-      if (v3sig[1] >= 192 && v3sig[1] < 224)
-        o = 3;
-      if (v3sig[1] == 255)
-        o = 5;
-    }
-  else
-    {
-      fprintf(stderr, "bad answer package: %02x\n", v3sig[0]);
-      exit(1);
-    }
-  if (v3sig[o] == 4)
-    return v3siglen;	/* already version 4 */
-
-  /* check that everything matches */
-  if (v3sig[o] != 3)
-    dodie("v3tov4: not a v3 sig");
-  if (v3sig[o + 2] != v4sigtrail[1])
-    dodie("v3tov4 type mismatch");
-  if (memcmp(v3sig + o + 3, v4sigtrail + 8, 4))
-    dodie("v3tov4 creation time mismatch");
-  if (v3sig[o + 15] != v4sigtrail[2])
-    {
-      fprintf(stderr, "v3tov4 pubkey algo mismatch: %d %d\n", v3sig[o + 15], v4sigtrail[2]);
-      exit(1);
-    }
-  if (v3sig[o + 16] != v4sigtrail[3])
-    dodie("v3tov4 hash algo mismatch");
-
-  /* stash issuer away */
-  memcpy(issuer, v3sig + o + 7, 8);
-
-  l = v3siglen - (o + 17);	/* signature stuff */
-  if (l < 2)
-    dodie("v3 signature too short");
-  /* make room */
-  memmove(v3sig + left, v3sig, v3siglen + tail);
-  nl = l + sizeof(v4sig_skel);
+  int nhl, nl = newsiglen + mpidatalen;
+  if (mpidatalen < 2)
+    dodie("fixupsig: mpidatalen is too small");
+  if (nl >= 65536)
+    dodie("fixupsig: new signature is too big");
+  if (sigpk + sigpklen != mpidata + mpidatalen)
+    dodie("fixupsig: trailing signature data");
+  memmove(sigpk + left, sigpk, sigpklen + tail);		/* make room, also moves mpidata */
   if (nl < 256)
     {
-      v3sig[0] = 0x88;
-      v3sig[1] = nl;
+      sigpk[0] = 0x88;
+      sigpk[1] = nl;
       nhl = 2;
     }
-  else if (nl < 65536)
+  else
     {
-      v3sig[0] = 0x89;
-      v3sig[1] = nl >> 8;
-      v3sig[2] = nl;
+      sigpk[0] = 0x89;
+      sigpk[1] = nl >> 8;
+      sigpk[2] = nl;
       nhl = 3;
     }
-  else
-    dodie("v4tov3: new length too big");
-  if (nhl + nl >= v3siglen + left)
-    dodie("v4tov3: no room left");
-  memmove(v3sig + nhl, v4sigtrail, V4SIG_HASHED);
-  memmove(v3sig + nhl + V4SIG_HASHED, v4sig_skel + V4SIG_HASHED, sizeof(v4sig_skel) - V4SIG_HASHED);
-
-  memmove(v3sig + nhl + 16, issuer, 8);	/* issuer */
-  memmove(v3sig + nhl + sizeof(v4sig_skel), v3sig + left + v3siglen - l, l);
+  if (nhl + nl >= sigpklen + left)
+    dodie("fixupsig: no room left");
+  memmove(sigpk + nhl, newsig, newsiglen);
+  memmove(sigpk + nhl + newsiglen, mpidata + left, mpidatalen);
   if (tail)
-    memmove(v3sig + nhl + nl, v3sig + left + v3siglen, tail);
+    memmove(sigpk + nhl + nl, sigpk + left + sigpklen, tail);
   return nhl + nl;
+}
+
+int
+fixupsig(unsigned char *sigtrail, unsigned char *v4sigtrail, unsigned char *sigpk, int sigpklen, int tail, int left)
+{
+  unsigned char *sig, *issuer;
+  int sigl, mpioff, alg = 0, halg = 0;
+
+  sig = pkg2sig(sigpk, sigpklen, &sigl);
+
+  if (sig[0] == 3 && !v4sigtrail && sigl >= 19)
+    {
+      memcpy(sig + 2, sigtrail, 5);	/* all is fine, just patch in sigtrail data */
+      return sigpklen;
+    }
+
+  if (sig[0] == 3)
+    {
+      alg = sig[15];
+      halg = sig[16];
+    }
+  else if (sig[0] == 4)
+    {
+      alg = sig[2];
+      halg = sig[3];
+    }
+  else
+    dodie("unsupported signature version");
+  issuer = findsigissuer(sig, sigl);
+  if (!issuer)
+    dodie("could not determine issuer");
+  mpioff = findsigmpioffset(sig, sigl) - 2;
+
+  if (v4sigtrail)
+    {
+      unsigned char newsig4[sizeof(v4sig_skel)];
+      /* we want a v4 sig */
+      if (alg != v4sigtrail[2])
+	{
+	  fprintf(stderr, "v3tov4 pubkey algo mismatch: %d != %d\n", alg, v4sigtrail[2]);
+	  exit(1);
+	}
+      if (halg != v4sigtrail[3])
+	dodie("fixupsig hash algo mismatch");
+      memcpy(newsig4, v4sig_skel, sizeof(v4sig_skel));
+      memcpy(newsig4, v4sigtrail, V4SIG_HASHED);	/* patch sigtrail data */
+      memcpy(newsig4 + 16, issuer, 8);			/* patch issuer */
+      return fixupsig_fin(sigpk, sigpklen, tail, left, newsig4, sizeof(newsig4), sig + mpioff, sigl - mpioff);
+    }
+  else
+    {
+      unsigned char newsig3[sizeof(v3sig_skel)];
+      /* we want a v3 sig */
+      memcpy(newsig3, v3sig_skel, sizeof(v3sig_skel));
+      memcpy(newsig3 + 2, sigtrail, 5);		/* patch sigtrail data */
+      memcpy(newsig3 + 7, issuer, 8);		/* patch issuer */
+      newsig3[15] = alg;
+      newsig3[16] = halg;
+      return fixupsig_fin(sigpk, sigpklen, tail, left, newsig3, sizeof(newsig3), sig + mpioff, sigl - mpioff);
+    }
 }
 
 unsigned char *
@@ -300,7 +321,7 @@ nextpkg(int *tagp, int *pkgl, unsigned char **pp, int *ppl)
       if (x == 3)
 	return 0;
       l = 1 << x;
-      if (pl < l)
+      if (pl < l || (l == 4 && p[0] != 0))
 	return 0;
       x = 0;
       while (l--)
@@ -326,7 +347,7 @@ nextpkg(int *tagp, int *pkgl, unsigned char **pp, int *ppl)
 	}
       else if (x == 255)
 	{
-	  if (pl <= 4)
+	  if (pl <= 4 || p[0] != 0)
 	    return 0;
 	  l = p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3];
 	  p += 4;
@@ -361,7 +382,7 @@ findsubpkg(unsigned char *q, int l, int type)
 	sl = x;
       else if (x == 255)
 	{
-	  if (ql < 4)
+	  if (ql < 4 || q[0] != 0)
 	    return 0;
 	  sl = q[0] << 24 | q[1] << 16 | q[2] << 8 | q[3];
 	  q += 4;

@@ -478,17 +478,18 @@ sign(char *filename, int isfilter, int mode)
       if (!issuer)
 	dodie("issuer not found in signature");
       printf("%02X%02X%02X%02X\n", issuer[4], issuer[5], issuer[6], issuer[7]);
-      exit(0);
+      return 0;
     }
 
-  /* transcode v3sigs to v4sigs if requested */
-  if (v4sigtrail)
+  /* transcode signature version if we need the complete pgp signature */
+  if (!(mode == MODE_RAWOPENSSLSIGN || mode == MODE_APPXSIGN || mode == MODE_PESIGN || mode == MODE_CMSSIGN || mode == MODE_KOSIGN))
     {
-      outl = v3tov4(v4sigtrail, buf, outl, outlh, sizeof(buf) - outl - outlh);
+      outl = fixupsig(sigtrail, v4sigtrail, buf, outl, outlh, sizeof(buf) - outl - outlh);
       if (ph)
-        outlh = v3tov4(v4sigtrail, buf + outl, outlh, 0, sizeof(buf) - outl - outlh);
-      free(v4sigtrail);
+        outlh = fixupsig(sigtrail, v4sigtrail, buf + outl, outlh, 0, sizeof(buf) - outl - outlh);
     }
+  if (v4sigtrail)
+    free(v4sigtrail);
 
   /* create openssl signature if needed */
   x509_init(&sigcb);
