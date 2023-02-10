@@ -1,7 +1,7 @@
 #
 # spec file for package obs-signd
 #
-# Copyright (c) 2022 SUSE LLC
+# Copyright (c) 2023 SUSE LLC
 #
 # All modifications and additions to the file contributed by third parties
 # remain the property of their copyright owners, unless otherwise agreed
@@ -21,7 +21,7 @@ Summary:        The sign daemon
 License:        GPL-2.0-only
 Group:          Productivity/Networking/Web/Utilities
 
-Version:        2.7.2
+Version:        2.7.3
 Release:        0
 
 URL:            http://en.opensuse.org/Build_Service
