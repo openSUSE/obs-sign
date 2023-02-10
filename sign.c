@@ -621,7 +621,7 @@ static void
 keygen(const char *type, const char *expire, const char *name, const char *email)
 {
   const char *args[6];
-  byte buf[8192];
+  byte buf[16384];	/* 8192 pubkey + 8192 privkey */
   int publ, privl;
 
   opensocket();
@@ -664,7 +664,7 @@ keygen(const char *type, const char *expire, const char *name, const char *email
 static void
 keyextend(char *expire, char *pubkey)
 {
-  char buf[8192];
+  char pubkbuf[8192];
   unsigned char rbuf[8192];
   unsigned char *pubk, *p, *pp;
   int i, l, pubkl, tag, pl;
@@ -701,8 +701,8 @@ keyextend(char *expire, char *pubkey)
   expdays = atoi(expire);
   if (expdays <= 0 || expdays >= 10000)
     dodie("bad expire argument");
-  slurp(pubkey, buf, sizeof(buf));
-  pubk = unarmor_pubkey(buf, &pubkl);
+  slurp(pubkey, pubkbuf, sizeof(pubkbuf));
+  pubk = unarmor_pubkey(pubkbuf, &pubkl);
   if (!pubk)
     dodie("could not parse pubkey armor");
   p = pubk;
@@ -896,7 +896,7 @@ static void
 createcert(char *pubkey)
 {
   struct x509 cb;
-  char buf[8192];
+  char pubkbuf[8192];
   unsigned char rbuf[8192];
   char hashhex[1024];
   unsigned char *pubk;
@@ -926,8 +926,8 @@ createcert(char *pubkey)
     dodie("need -P option for non-root operation");
   if (privkey)
     readprivkey();
-  slurp(pubkey, buf, sizeof(buf));
-  pubk = unarmor_pubkey(buf, &pubkl);
+  slurp(pubkey, pubkbuf, sizeof(pubkbuf));
+  pubk = unarmor_pubkey(pubkbuf, &pubkl);
   if (!pubk)
     dodie("could not parse pubkey armor");
   p = pubk;
