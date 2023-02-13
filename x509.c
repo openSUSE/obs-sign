@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 SUSE LLC
+ * Copyright (c) 2018-2023 SUSE LLC
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -49,6 +49,7 @@ static const byte digest_algo_sha1[] = { 0x0b, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0
 static const byte digest_algo_sha256[] = { 0x0f, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00 };
 static const byte digest_algo_sha512[] = { 0x0f, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03, 0x05, 0x00 };
 
+static const byte oid_subject_key_identifier[] = { 0x05, 0x06, 0x03, 0x55, 0x1d, 0x0e };
 static const byte subject_key_identifier[] = { 0x1f, 0x30, 0x1d, 0x06, 0x03, 0x55, 0x1d, 0x0e, 0x04, 0x16, 0x04, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 static const byte authority_key_identifier[] = { 0x21, 0x30, 0x1f, 0x06, 0x03, 0x55, 0x1d, 0x23, 0x04, 0x18, 0x30, 0x16, 0x80, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 static const byte basic_constraints[] = { 0x0e, 0x30, 0x0c, 0x06, 0x03, 0x55, 0x1d, 0x13, 0x01, 0x01, 0xff, 0x04, 0x02, 0x30, 0x00 };
@@ -587,6 +588,19 @@ x509_skip(unsigned char **bpp, int *lp, int expected)
   *lp -= cl;
 }
 
+static void
+x509_skip_optional(unsigned char **bpp, int *lp, int expected)
+{
+  if (x509_unpack_tag(*bpp, *lp) == expected)
+    x509_skip(bpp, lp, expected);
+}
+
+static void
+x509_zoom(unsigned char **bpp, int *lp, int expected)
+{
+  x509_unpack(*bpp, *lp, bpp, lp, 0, expected);
+}
+
 /*
  * pkcs7/CMS stuff, see RFC 2315 and RFC 5652
  *
@@ -602,10 +616,9 @@ x509_issuerandserial(struct x509 *cb, unsigned char *cert, int certlen)
   unsigned char *serial;
   int seriallen;
 
-  x509_unpack(cert, certlen, &cert, &certlen, 0, 0x30);
-  x509_unpack(cert, certlen, &cert, &certlen, 0, 0x30);
-  if (x509_unpack_tag(cert, certlen) == 0xa0)
-    x509_skip(&cert, &certlen, 0xa0);	/* skip version */
+  x509_zoom(&cert, &certlen, 0x30);
+  x509_zoom(&cert, &certlen, 0x30);
+  x509_skip_optional(&cert, &certlen, 0xa0);	/* skip version */
   x509_unpack(cert, certlen, &dp, &dl, &cl, 0x02);
   serial = cert;
   seriallen = cl;
@@ -624,24 +637,21 @@ x509_subjectkeyid(struct x509 *cb, unsigned char *cert, int certlen)
 {
   unsigned char *b = cert;
   int l = certlen;
-  x509_unpack(b, l, &b, &l, 0, 0x30);
-  x509_unpack(b, l, &b, &l, 0, 0x30);
-  if (x509_unpack_tag(b, l) == 0xa0)
-    x509_skip(&b, &l, 0xa0);	/* skip version */
+  x509_zoom(&b, &l, 0x30);
+  x509_zoom(&b, &l, 0x30);
+  x509_skip_optional(&b, &l, 0xa0);	/* skip version */
   x509_skip(&b, &l, 0x02);	/* skip serial */
   x509_skip(&b, &l, 0x30);	/* skip sig algo */
   x509_skip(&b, &l, 0x30);	/* skip issuer */
   x509_skip(&b, &l, 0x30);	/* skip validity */
   x509_skip(&b, &l, 0x30);	/* skip subject */
   x509_skip(&b, &l, 0x30);	/* skip public key */
-  if (x509_unpack_tag(b, l) == 0x81)
-    x509_skip(&b, &l, 0x81);	/* skip optional issuer unique id */
-  if (x509_unpack_tag(b, l) == 0x82)
-    x509_skip(&b, &l, 0x82);	/* skip optional subject unique id */
+  x509_skip_optional(&b, &l, 0x81);	/* skip optional issuer unique id */
+  x509_skip_optional(&b, &l, 0x82);	/* skip optional subject unique id */
   if (x509_unpack_tag(b, l) == 0xa3)
     {
-      x509_unpack(b, l, &b, &l, 0, 0xa3);
-      x509_unpack(b, l, &b, &l, 0, 0x30);
+      x509_zoom(&b, &l, 0xa3);
+      x509_zoom(&b, &l, 0x30);
     }
   else
     l = 0;
@@ -652,14 +662,13 @@ x509_subjectkeyid(struct x509 *cb, unsigned char *cert, int certlen)
       x509_unpack(b, l, &b2, &l2, &cl, 0x30);
       b += cl;
       l -= cl;
-      if (l2 < 6 || memcmp(b2, "\006\003\125\035\016", 5))	/* oid 2.5.29.14 */
+      if (l2 < 6 || memcmp(b2, oid_subject_key_identifier + 1, 5))
 	continue;
       b2 += 5;
       l2 -= 5;
-      if (x509_unpack_tag(b2, l2) == 0x01)
-	x509_skip(&b2, &l2, 0x01);	/* skip critical bit */
-      x509_unpack(b2, l2, &b2, &l2, 0, 0x04);
-      x509_unpack(b2, l2, &b2, &l2, 0, 0x04);
+      x509_skip_optional(&b2, &l2, 0x01);	/* skip critical bit */
+      x509_zoom(&b2, &l2, 0x04);
+      x509_zoom(&b2, &l2, 0x04);
       x509_add(cb, b2, l2);
       return;
     }
@@ -812,32 +821,37 @@ x509_signedattrs(struct x509 *cb, unsigned char *digest, int digestlen, time_t s
   x509_set_of(cb, offset);
 }
 
+static int
+x509_pubkey2pubalgo(unsigned char *pubkey, int pubkeylen)
+{
+  x509_zoom(&pubkey, &pubkeylen, 0x30);
+  x509_zoom(&pubkey, &pubkeylen, 0x30);	/* get public key info */
+  x509_zoom(&pubkey, &pubkeylen, 0x06);	/* get object id */
+  if (pubkeylen == 9 && !memcmp(pubkey, oid_rsa_encryption + 3, 9))
+    return PUB_RSA;
+  if (pubkeylen == 7 && !memcmp(pubkey, oid_dsa_encryption + 3, 7))
+    return PUB_DSA;
+  if (pubkeylen == 7 && !memcmp(pubkey, oid_ec_public_key + 3, 7))
+    return PUB_ECDSA;
+  if (pubkeylen == 3 && !memcmp(pubkey, oid_ed25519 + 3, 3))
+    return PUB_EDDSA;	/* Ed25519 */
+  return -1;
+}
+
 int
 x509_cert2pubalgo(struct x509 *cert)
 {
   unsigned char *b = cert->buf;
   int l = cert->len;
-  x509_unpack(b, l, &b, &l, 0, 0x30);
-  x509_unpack(b, l, &b, &l, 0, 0x30);
-  if (x509_unpack_tag(b, l) == 0xa0)
-    x509_skip(&b, &l, 0xa0);	/* skip version */
+  x509_zoom(&b, &l, 0x30);
+  x509_zoom(&b, &l, 0x30);
+  x509_skip_optional(&b, &l, 0xa0);	/* skip version */
   x509_skip(&b, &l, 0x02);	/* skip serial */
   x509_skip(&b, &l, 0x30);	/* skip sig algo */
   x509_skip(&b, &l, 0x30);	/* skip issuer */
   x509_skip(&b, &l, 0x30);	/* skip validity */
   x509_skip(&b, &l, 0x30);	/* skip subject */
-  x509_unpack(b, l, &b, &l, 0, 0x30);	/* unpack public key */
-  x509_unpack(b, l, &b, &l, 0, 0x30);	/* unpack public key info */
-  x509_unpack(b, l, &b, &l, 0, 0x06);	/* unpack object id */
-  if (l == 9 && !memcmp(b, oid_rsa_encryption + 3, 9))
-    return PUB_RSA;
-  if (l == 7 && !memcmp(b, oid_dsa_encryption + 3, 7))
-    return PUB_DSA;
-  if (l == 7 && !memcmp(b, oid_ec_public_key + 3, 7))
-    return PUB_ECDSA;
-  if (l == 3 && !memcmp(b, oid_ed25519 + 3, 3))
-    return PUB_EDDSA;	/* Ed25519 */
-  return -1;
+  return x509_pubkey2pubalgo(b, l);
 }
 
 

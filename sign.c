@@ -268,10 +268,13 @@ sign(char *filename, int isfilter, int mode)
 	  exit(1);
 	}
       pubalgo = x509_cert2pubalgo(&cert);
-      if (assertpubalgo < 0)
-	assertpubalgo = pubalgo;
-      if (assertpubalgo != pubalgo)
-	dodie("pubkey algorithm does not match cert");
+      if (pubalgo >= 0)
+	{
+	  if (assertpubalgo < 0)
+	    assertpubalgo = pubalgo;
+	  if (assertpubalgo != pubalgo)
+	    dodie("pubkey algorithm does not match cert");
+	}
     }
 
   /* open input file */
