@@ -61,6 +61,7 @@ static char *chksumfile;
 static int chksumfilefd = -1;
 static int dov4sig;
 static int pubalgoprobe = -1;
+static unsigned char fingerprintprobe[33];
 static struct x509 cert;
 static struct x509 othercerts;
 int appxdetached = 0;
@@ -122,11 +123,14 @@ probe_pubalgo()
   byte buf[8192], *bp;
   u32 signtime = time(NULL);
   int i, outl;
+  int sigl, fpl;
+  byte *sig, *fp;
 
   opensocket();
   bp = (byte *)hashhex;
+  /* hack: use 04040404 as hash to tell signd to send a v4 sig as answer */
   for (i = 0; i < hashlen[hashalgo]; i++, bp += 2)
-    sprintf((char *)bp, "01");
+    sprintf((char *)bp, "04");
   sprintf((char *)bp, "@00%08x", (unsigned int)signtime);
 
   if (!privkey)
@@ -141,7 +145,17 @@ probe_pubalgo()
       args[3] = hashhex;
       outl = doreq_12(4, args, buf, sizeof(buf), 0);
     }
-  return outl > 0 ? pkg2sigpubalgo(buf, outl) : -1;
+  if (outl < 0)
+    return -1;
+  sig = pkg2sig(buf, outl, &sigl);
+  if (sigl > 4 && sig[0] == 4 && (fp = findsubpkg(sig + 4, sigl - 4, 33, &fpl, -1)) != 0)
+    {
+      if (fpl == 21 && fp[0] == 4)
+	memcpy(fingerprintprobe, fp, fpl);
+      else if (fpl == 33 && fp[0] == 5)
+	memcpy(fingerprintprobe, fp, fpl);
+    }
+  return findsigpubalgo(sig, sigl);
 }
 
 static byte *
@@ -391,7 +405,7 @@ sign(char *filename, int isfilter, int mode)
   else
     {
       if (dov4sig)
-        v4sigtrail = genv4sigtrail(mode == MODE_CLEARSIGN ? 1 : 0, pubalgoprobe >= 0 ? pubalgoprobe : PUB_RSA, hashalgo, signtime, &v4sigtraillen);
+        v4sigtrail = genv4sigtrail(mode == MODE_CLEARSIGN ? 1 : 0, pubalgoprobe >= 0 ? pubalgoprobe : PUB_RSA, hashalgo, signtime, fingerprintprobe[0] ? fingerprintprobe : 0, &v4sigtraillen);
       sigtrail[0] = mode == MODE_CLEARSIGN ? 0x01 : 0x00; /* class */
       sigtrail[1] = signtime >> 24;
       sigtrail[2] = signtime >> 16;

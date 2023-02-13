@@ -171,6 +171,19 @@ v4sig_skel[] = {
 };
 
 static unsigned char
+v4sig_skel_fpv4[] = {
+  0x04,		/* version */
+  0x00, 	/* type */
+  0x00,		/* pubalgo */
+  0x00,		/* hashalgo */
+  0x00, 0x1d, 	/* octet count hashed */
+  0x16, 0x21, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x05, 0x02, 0x00, 0x00, 0x00, 0x00,	/* sig created subpkg */
+  0x00, 0x0a, 	/* octet count unhashed */
+  0x09, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* issuer subpkg */
+};
+
+static unsigned char
 v3sig_skel[] = {
   0x03,		/* version */
   0x05,		/* size of hashed data */
@@ -182,26 +195,34 @@ v3sig_skel[] = {
 };
 
 #define V4SIG_HASHED (4 + 2 + 6)
+#define V4SIG_HASHED_FPV4 (4 + 2 + 29)
 
 unsigned char *
-genv4sigtrail(int clearsign, int pubalgo, int hashalgo, u32 signtime, int *v4sigtraillen)
+genv4sigtrail(int clearsign, int pubalgo, int hashalgo, u32 signtime, unsigned char *fp, int *v4sigtraillen)
 {
-  unsigned char *v4sigtrail = doalloc(V4SIG_HASHED + 6);
-  memcpy(v4sigtrail, v4sig_skel, V4SIG_HASHED);
+  int hlen;
+  unsigned char *v4sigtrail;
+  if (fp && fp[0] != 4)
+    fp = 0;	/* sorry, only v4 supported */
+  hlen = fp ? V4SIG_HASHED_FPV4 : V4SIG_HASHED;
+  v4sigtrail = doalloc(hlen + 6);
+  memcpy(v4sigtrail, fp ? v4sig_skel_fpv4 : v4sig_skel, hlen);
   v4sigtrail[1] = clearsign ? 0x01 : 0x00;
   v4sigtrail[2] = pubpgpalgo[pubalgo];
   v4sigtrail[3] = hashpgpalgo[hashalgo];
-  v4sigtrail[8] = signtime >> 24;
-  v4sigtrail[9] = signtime >> 16;
-  v4sigtrail[10] = signtime >> 8;
-  v4sigtrail[11] = signtime;
-  v4sigtrail[V4SIG_HASHED] = 4;
-  v4sigtrail[V4SIG_HASHED + 1] = 255;
-  v4sigtrail[V4SIG_HASHED + 2] = 0;
-  v4sigtrail[V4SIG_HASHED + 3] = 0;
-  v4sigtrail[V4SIG_HASHED + 4] = V4SIG_HASHED >> 8;
-  v4sigtrail[V4SIG_HASHED + 5] = V4SIG_HASHED;
-  *v4sigtraillen = V4SIG_HASHED + 6;
+  if (fp)
+    memcpy(v4sigtrail + 8, fp, 20 + 1);
+  v4sigtrail[hlen - 4] = signtime >> 24;
+  v4sigtrail[hlen - 3] = signtime >> 16;
+  v4sigtrail[hlen - 2] = signtime >> 8;
+  v4sigtrail[hlen - 1] = signtime;
+  v4sigtrail[hlen ] = 4;
+  v4sigtrail[hlen + 1] = 255;
+  v4sigtrail[hlen + 2] = 0;
+  v4sigtrail[hlen + 3] = 0;
+  v4sigtrail[hlen + 4] = hlen >> 8;
+  v4sigtrail[hlen + 5] = hlen;
+  *v4sigtraillen = hlen + 6;
   return v4sigtrail;
 }
 
@@ -269,7 +290,23 @@ fixupsig(unsigned char *sigtrail, unsigned char *v4sigtrail, unsigned char *sigp
     dodie("could not determine issuer");
   mpioff = findsigmpioffset(sig, sigl) - 2;
 
-  if (v4sigtrail)
+  if (v4sigtrail && v4sigtrail[5] == 0x1d)
+    {
+      unsigned char newsig4[sizeof(v4sig_skel_fpv4)];
+      /* we want a v4 sig with a v4 fingerprint */
+      if (alg != v4sigtrail[2])
+	{
+	  fprintf(stderr, "v3tov4 pubkey algo mismatch: %d != %d\n", alg, v4sigtrail[2]);
+	  exit(1);
+	}
+      if (halg != v4sigtrail[3])
+	dodie("fixupsig hash algo mismatch");
+      memcpy(newsig4, v4sig_skel_fpv4, sizeof(v4sig_skel_fpv4));
+      memcpy(newsig4, v4sigtrail, V4SIG_HASHED_FPV4);		/* patch sigtrail data */
+      memcpy(newsig4 + V4SIG_HASHED_FPV4 + 4, issuer, 8);	/* patch issuer */
+      return fixupsig_fin(sigpk, sigpklen, tail, left, newsig4, sizeof(newsig4), sig + mpioff, sigl - mpioff);
+    }
+  else if (v4sigtrail)
     {
       unsigned char newsig4[sizeof(v4sig_skel)];
       /* we want a v4 sig */
@@ -281,8 +318,8 @@ fixupsig(unsigned char *sigtrail, unsigned char *v4sigtrail, unsigned char *sigp
       if (halg != v4sigtrail[3])
 	dodie("fixupsig hash algo mismatch");
       memcpy(newsig4, v4sig_skel, sizeof(v4sig_skel));
-      memcpy(newsig4, v4sigtrail, V4SIG_HASHED);	/* patch sigtrail data */
-      memcpy(newsig4 + 16, issuer, 8);			/* patch issuer */
+      memcpy(newsig4, v4sigtrail, V4SIG_HASHED);		/* patch sigtrail data */
+      memcpy(newsig4 + V4SIG_HASHED + 4, issuer, 8);		/* patch issuer */
       return fixupsig_fin(sigpk, sigpklen, tail, left, newsig4, sizeof(newsig4), sig + mpioff, sigl - mpioff);
     }
   else

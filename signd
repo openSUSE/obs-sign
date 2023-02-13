@@ -283,7 +283,7 @@ sub wrap_into_gpgsig_v4 {
 }
 
 sub sign_with_gcrypt {
-  my ($info, $hash, $hashalgo) = @_;
+  my ($info, $hash, $hashalgo, $replyv4) = @_;
   die("sign_with_gcrypt: missing fingerprint\n") unless $info->{'fingerprint'};
   my $issuer = substr($info->{'fingerprint'}, -16);
   die("bad hash $hash\n") unless $hash =~ /^((?:[0-9a-fA-F][0-9a-fA-F])+)\@(0[01][0-9a-fA-F]{8})$/;
@@ -344,6 +344,7 @@ sub sign_with_gcrypt {
   } else {
     die("sign_with_gcrypt: unsupported pubkey algorithm $info->{'algo'}\n");
   }
+  return wrap_into_gpgsig_v4($extra, $info->{'fingerprint'}, $info->{'algo'}, $pgphashalgo, $hash, $sigdata) if $replyv4;
   return wrap_into_gpgsig_v3($extra, $info->{'fingerprint'}, $info->{'algo'}, $pgphashalgo, $hash, $sigdata);
 }
 
@@ -1097,7 +1098,7 @@ sub find_in_sexp_gpgmpi {
 }
 
 sub sign_with_agent {
-  my ($phrasefile, $user, $hashalgo, $hash, $isprivsign) = @_;
+  my ($phrasefile, $user, $hashalgo, $hash, $isprivsign, $replyv4) = @_;
   die("bad hash $hash\n") unless $hash =~ /^((?:[0-9a-fA-F][0-9a-fA-F])+)\@(0[01][0-9a-fA-F]{8})$/;
   my $extra = $2;
   $hash = uc($1);
@@ -1128,11 +1129,12 @@ sub sign_with_agent {
     $sigdata = find_in_sexp_gpgmpi($sigval, 'r').find_in_sexp_gpgmpi($sigval, 's');
   }
   die("unsupported pubkey algorithm $algo\n") unless defined $pgppubalgo;
+  return wrap_into_gpgsig_v4($extra, $fingerprint, $pgppubalgo, $pgphashalgo, $hash, $sigdata) if $replyv4;
   return wrap_into_gpgsig_v3($extra, $fingerprint, $pgppubalgo, $pgphashalgo, $hash, $sigdata);
 }
 
 sub sign_with_files_are_digests {
-  my ($phrasefile, $user, $hashalgo, $hash, $isprivsign) = @_;
+  my ($phrasefile, $user, $hashalgo, $hash, $isprivsign, $replyv4) = @_;
   my @args;
   if ($isprivsign) {
     push @args, '--allow-non-selfsigned-uid';
@@ -1144,19 +1146,23 @@ sub sign_with_files_are_digests {
     $classtime = $1;
     substr($hash, -10, 10, '0000000000');
   }
-  my ($status, $out, $err) = rungpg($phrasefile, undef, $gpg, "--batch", "--force-v3-sigs", "--files-are-digests", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--ignore-time-conflict", @pinentrymode, "--passphrase-fd=0", @args, "-sbo", "-", $hash);
+  my @force_v3_sigs;
+  push @force_v3_sigs, "--force-v3-sigs" unless $replyv4;
+  my ($status, $out, $err) = rungpg($phrasefile, undef, $gpg, "--batch", @force_v3_sigs, "--files-are-digests", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--ignore-time-conflict", @pinentrymode, "--passphrase-fd=0", @args, "-sbo", "-", $hash);
   $out = patchclasstime($out, $classtime) if $classtime && !$status;
   return ($status, $out, $err);
 }
 
 sub do_sign {
   my ($phrasefile, $user, $hashalgo, $hash, $isprivsign) = @_;
+  my $replyv4 = 0;
+  $replyv4 = 1 if $hash =~ /^(?:04040404)+\@/;	# special v4 algo probe
   if ($use_agent) {
-    my $out = eval { sign_with_agent($phrasefile, $user, $hashalgo, $hash, $isprivsign) };
+    my $out = eval { sign_with_agent($phrasefile, $user, $hashalgo, $hash, $isprivsign, $replyv4) };
     return (1, '', $@) if $@;
     return (0, $out, '');
   } else {
-    return sign_with_files_are_digests($phrasefile, $user, $hashalgo, $hash, $isprivsign);
+    return sign_with_files_are_digests($phrasefile, $user, $hashalgo, $hash, $isprivsign, $replyv4);
   }
 }
 
@@ -1193,8 +1199,10 @@ sub cmd_privsign {
     my $info = $infos[0];
     my @out;
     for my $hash (@args) {
+      my $replyv4 = 0;
+      $replyv4 = 1 if $hash =~ /^(?:04040404)+\@/;	# special v4 algo probe
       my $lout = '';
-      eval { $lout = sign_with_gcrypt($info, $hash, $hashalgo) };
+      eval { $lout = sign_with_gcrypt($info, $hash, $hashalgo, $replyv4) };
       push @out, $lout;
       return (1, $@, @out) if $@;
     }
