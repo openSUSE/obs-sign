@@ -290,42 +290,37 @@ fixupsig(unsigned char *sigtrail, unsigned char *v4sigtrail, unsigned char *sigp
     dodie("could not determine issuer");
   mpioff = findsigmpioffset(sig, sigl) - 2;
 
-  if (v4sigtrail && v4sigtrail[5] == 0x1d)
+  if (v4sigtrail)
     {
-      unsigned char newsig4[sizeof(v4sig_skel_fpv4)];
-      /* we want a v4 sig with a v4 fingerprint */
-      if (alg != v4sigtrail[2])
-	{
-	  fprintf(stderr, "v3tov4 pubkey algo mismatch: %d != %d\n", alg, v4sigtrail[2]);
-	  exit(1);
-	}
-      if (halg != v4sigtrail[3])
-	dodie("fixupsig hash algo mismatch");
-      memcpy(newsig4, v4sig_skel_fpv4, sizeof(v4sig_skel_fpv4));
-      memcpy(newsig4, v4sigtrail, V4SIG_HASHED_FPV4);		/* patch sigtrail data */
-      memcpy(newsig4 + V4SIG_HASHED_FPV4 + 4, issuer, 8);	/* patch issuer */
-      return fixupsig_fin(sigpk, sigpklen, tail, left, newsig4, sizeof(newsig4), sig + mpioff, sigl - mpioff);
-    }
-  else if (v4sigtrail)
-    {
-      unsigned char newsig4[sizeof(v4sig_skel)];
       /* we want a v4 sig */
       if (alg != v4sigtrail[2])
-	{
-	  fprintf(stderr, "v3tov4 pubkey algo mismatch: %d != %d\n", alg, v4sigtrail[2]);
-	  exit(1);
-	}
+	dodie("fixupsig pubkey algo mismatch");
       if (halg != v4sigtrail[3])
 	dodie("fixupsig hash algo mismatch");
-      memcpy(newsig4, v4sig_skel, sizeof(v4sig_skel));
-      memcpy(newsig4, v4sigtrail, V4SIG_HASHED);		/* patch sigtrail data */
-      memcpy(newsig4 + V4SIG_HASHED + 4, issuer, 8);		/* patch issuer */
-      return fixupsig_fin(sigpk, sigpklen, tail, left, newsig4, sizeof(newsig4), sig + mpioff, sigl - mpioff);
+      if (v4sigtrail[5] == 0x1d && memcmp(issuer, v4sigtrail + 9 + 20 - 8, 8) != 0)
+	dodie("fixup issuer mismatch");
+      if (v4sigtrail[5] == 0x1d)
+	{
+	  /* we want a v4 sig with a v4 fingerprint */
+	  unsigned char newsig4[sizeof(v4sig_skel_fpv4)];
+	  memcpy(newsig4, v4sig_skel_fpv4, sizeof(v4sig_skel_fpv4));
+	  memcpy(newsig4, v4sigtrail, V4SIG_HASHED_FPV4);		/* patch sigtrail data */
+	  memcpy(newsig4 + V4SIG_HASHED_FPV4 + 4, issuer, 8);		/* patch issuer */
+	  return fixupsig_fin(sigpk, sigpklen, tail, left, newsig4, sizeof(newsig4), sig + mpioff, sigl - mpioff);
+	}
+      else
+	{
+	  unsigned char newsig4[sizeof(v4sig_skel)];
+	  memcpy(newsig4, v4sig_skel, sizeof(v4sig_skel));
+	  memcpy(newsig4, v4sigtrail, V4SIG_HASHED);			/* patch sigtrail data */
+	  memcpy(newsig4 + V4SIG_HASHED + 4, issuer, 8);		/* patch issuer */
+	  return fixupsig_fin(sigpk, sigpklen, tail, left, newsig4, sizeof(newsig4), sig + mpioff, sigl - mpioff);
+	}
     }
   else
     {
-      unsigned char newsig3[sizeof(v3sig_skel)];
       /* we want a v3 sig */
+      unsigned char newsig3[sizeof(v3sig_skel)];
       memcpy(newsig3, v3sig_skel, sizeof(v3sig_skel));
       memcpy(newsig3 + 2, sigtrail, 5);		/* patch sigtrail data */
       memcpy(newsig3 + 7, issuer, 8);		/* patch issuer */
@@ -515,8 +510,8 @@ pkg2sig(byte *pk, int pkl, int *siglp)
 byte *
 findsigissuer(byte *sig, int sigl)
 {
-  byte *issuer;
-  int hl;
+  byte *issuer, *fp;
+  int hl, fplen;
 
   if (!sigl)
     return 0;
@@ -527,6 +522,9 @@ findsigissuer(byte *sig, int sigl)
   issuer = findsubpkg(sig + 4, sigl - 4, 16, 0, 8);
   if (issuer)
     return issuer;
+  fp = findsubpkg(sig + 4, sigl - 4, 33, &fplen, -1);
+  if (fp && fplen > 16 && *fp >= 4)
+    return fp + fplen - 8;
   hl = 4 + 2 + ((sig[4] << 8) | sig[5]);
   return findsubpkg(sig + hl, sigl - hl, 16, 0, 8);
 }
