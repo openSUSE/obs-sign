@@ -60,6 +60,7 @@ my $use_agent;
 my $agentsocket = [];
 my @pinentrymode;
 my $keycache = '';
+my $use_gcrypt;
 
 # request data
 my $oldproto = 0;
@@ -246,7 +247,7 @@ sub striptofirst {
 
 sub patchclasstime {
   my ($sig, $t) = @_;
-  die("timeclass is not 10 hex nibbles\n") unless $t =~ /^[0-9a-fA-F]{10}$/s;
+  die("classtime is not 10 hex nibbles\n") unless $t =~ /^[0-9a-fA-F]{10}$/s;
   my ($tag, $len, $off) = decodetaglenoff($sig);
   die("not a signature\n") unless $tag == 2;
   die("not a v3 signature\n") unless ord(substr($sig, $off, 1)) == 3;
@@ -448,6 +449,10 @@ while(<F>) {
   }
   if ($s[0] eq 'use-agent:') {
     $use_agent = ($s[1] eq '1' || $s[1] =~ /^true$/i) ? 1 : 0;
+    next;
+  }
+  if ($s[0] eq 'use-gcrypt:') {
+    $use_gcrypt = ($s[1] eq '1' || $s[1] =~ /^true$/i) ? 1 : 0;
     next;
   }
   if ($s[0] eq 'logfile:') {
@@ -728,7 +733,7 @@ sub find_key {
   my $fpr;
   my $grp;
   my $keyid;
-  $keyid = lc(substr($user, -16)) if $user =~ /^[0-9a-fA-f]{8,}$/;
+  $keyid = lc(substr($user, -16)) if $purpose eq 's' && $user =~ /^[0-9a-fA-f]{8,}$/;
   my $key;
   for my $line (split("\n", $lines)) {
     next unless $line =~ /^(?:pub|sub|fpr|grp)/;
@@ -803,8 +808,8 @@ sub find_key_keycache {
 }
 
 sub prepare_tmp_gnupghome {
-  my ($tmpdir) = @_;
-  my $tdir = tempdir('XXXXXXXX', DIR => $tmpdir, CLEANUP => 1);
+  my ($dir) = @_;
+  my $tdir = tempdir('XXXXXXXX', DIR => $dir, CLEANUP => 1);
   chmod 0700, $tdir;
   mkdir("$tdir/gnupg", 0700) || die "Could not create $tdir/gnupg: $!\n";
   return ($tdir, "$tdir/gnupg", $ENV{'GNUPGHOME'});
@@ -1097,6 +1102,79 @@ sub find_in_sexp_gpgmpi {
   return pack('n', 8 * length($d) - $bits).$d;
 }
 
+sub parse_gpg_kv {
+  my %kv;
+  my $lastkey;
+  for my $l (split(/[\r\n]+/, $_[0])) {
+    if (defined($lastkey) && ($l eq '' || $l =~ /^[ \t]/)) {
+      # continuation
+      $l =~ s/^[ \t]//;
+      $l =~ s/[ \t]+$//;
+      $l =~ s/^[ \t]+// if $kv{$lastkey} =~ /\n\z/s;
+      $l = "\n" if $l eq '';
+      $kv{$lastkey} .= $l;
+      next;
+    }
+    undef $lastkey;
+    $l =~ s/^[ \t]*//;
+    if ($l =~ /^([^ \t]+):[ \t]?(.*)/) {
+      $lastkey = $1;
+      $kv{$lastkey} = $2;
+    } elsif ($l ne '' && $l !~ /^#/) {
+      die("bad line: $l\n");
+    }
+  }
+  return %kv;
+}
+
+sub gpg_privkey_to_info {
+  my ($key) = @_;
+  my $sexp = Crypt::GCrypt::Sexp->new($key);
+  die("could not parse private key sexp\n") unless defined $sexp;
+  my $pk = $sexp->nth(1, 'private-key');
+  die("sexp is not an unprotected private key\n") unless defined $pk;
+  my $type = $pk->nth_data(0) || '?';
+  my $info;
+  if ($type eq 'rsa') {
+    $info = {'algo' => 1, 'mpis' => ['n', 'e'], 'smpis' => ['d', 'p', 'q', 'u']};
+  } elsif ($type eq 'dsa') {
+    $info = {'algo' => 17, 'mpis' => ['p', 'q', 'g', 'y'], 'smpis' => ['x']};
+  } elsif ($type eq 'ecc') {
+    $info = {'algo' => 19, 'mpis' => ['q'], 'smpis' => ['d']};
+    my $curve = $pk->nth_data(1, 'curve') || '?';
+    $info->{'curve'} = "\x2b\x06\x01\x04\x01\xda\x47\x0f\x01" if $curve eq 'Ed25519';
+    $info->{'curve'} = "\x2a\x86\x48\xce\x3d\x03\x01\x07" if $curve eq 'NIST P-256';
+    $info->{'curve'} = "\x2b\x81\x04\x00\x22" if $curve eq 'NIST P-384';
+    die("unsupported ecc curve $curve\n") unless $info->{'curve'};
+    $info->{'algo'} = 22 if $curve eq 'Ed25519';
+  }
+  die("unsupported private key type $type\n") unless $info;
+  for (@{$info->{'mpis'}}, @{$info->{'smpis'}}) {
+    $_ = $pk->nth_data(1, $_);
+    die("missing mpi in privkey\n") unless $_;
+  }
+  return $info;
+}
+
+sub sign_with_gpg_privkey {
+  my ($keyfile, $fingerprint, $hashalgo, $hash, $replyv4) = @_;
+  my $kfd;
+  return undef unless open($kfd, '<', $keyfile);
+  my $key = '';
+  1 while length($key) < 65536 && sysread($kfd, $key, 4096, length($key)) > 0;
+  close($kfd);
+  return undef if length($key) >= 65536;
+  if (substr($key, 0, 1) ne '(') {
+    my %kv = parse_gpg_kv($key);
+    $key = $kv{'Key'};
+    die("no 'Key' element in privkey?\n") unless $key;
+  }
+  my $info = gpg_privkey_to_info($key);
+  return undef unless $info;
+  $info->{'fingerprint'} = $fingerprint;
+  return sign_with_gcrypt($info, $hash, $hashalgo, $replyv4);
+}
+
 sub sign_with_agent {
   my ($phrasefile, $user, $hashalgo, $hash, $isprivsign, $replyv4) = @_;
   die("bad hash $hash\n") unless $hash =~ /^((?:[0-9a-fA-F][0-9a-fA-F])+)\@(0[01][0-9a-fA-F]{8})$/;
@@ -1106,9 +1184,18 @@ sub sign_with_agent {
   die("sign_with_agent: bad hashalgo $hashalgo\n") unless $pgphashalgo;
   my ($fingerprint, $keygrip) = $isprivsign ? find_key($user) : find_key_keycache($user);
   die("unknown pubkey for $user\n") unless $fingerprint;
+  my $have_phrase = defined($phrasefile) && $phrasefile ne '/dev/null' && -s $phrasefile;
+  if ($have_gcrypt && !$have_phrase && $use_gcrypt) {
+    my $gnupghome = $ENV{'GNUPGHOME'};
+    if ($gnupghome && -s "$gnupghome/private-keys-v1.d/$keygrip.key") {
+      my $sig = eval { sign_with_gpg_privkey("$gnupghome/private-keys-v1.d/$keygrip.key", $fingerprint, $hashalgo, lc($hash)."\@$extra", $replyv4) };
+      warn($@) if $@;
+      return $sig if !$@ && $sig;
+    }
+  }
   agent_rpc("SIGKEY $keygrip");
   agent_rpc("SETHASH $pgphashalgo $hash");
-  agent_rpc("OPTION pinentry-mode=loopback") if defined($phrasefile) && $phrasefile ne '/dev/null' && -s $phrasefile;
+  agent_rpc("OPTION pinentry-mode=loopback") if $have_phrase;
   my $sig = agent_rpc("PKSIGN", $phrasefile);
   ($sig) = parse_sexp($sig);
   my (undef, $sigval) = find_in_sexp($sig, 'sig-val');
@@ -1331,9 +1418,7 @@ if (!$phrases || ($cmd ne 'ping' && $user eq '') || ($user ne '' && ! -e "$phras
 # run the command and reply
 my $handler = $cmds{$cmd};
 die("unknown command: $cmd\n") unless $handler;
-if (! -d $tmpdir) {
-  mkdir($tmpdir, 0700) || die("$tmpdir: $!\n");
-}
+-d $tmpdir || mkdir($tmpdir, 0700) || die("$tmpdir: $!\n");
 my ($status, $err, @out) = $handler->($cmd, $user, $hashalgo, @argv);
 reply($status, $err, @out);
 exit(0);
