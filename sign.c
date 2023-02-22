@@ -66,6 +66,7 @@ static struct x509 cert;
 static struct x509 othercerts;
 int appxdetached = 0;
 static int cms_flags = 0;
+static int bulk_cpio;
 
 #define MODE_UNSET        0
 #define MODE_RPMSIGN      1
@@ -90,6 +91,8 @@ static const char *const modes[] = {
   "raw detached sign", "raw openssl sign", "cert create", "appimage sign", "appx sign", "hashfile",
   "cms sign", "PE sign", "kernel module sign"
 };
+
+static void sign_bulk_cpio(char *filename, int isfilter, int mode);
 
 static void
 readprivkey(void)
@@ -159,7 +162,7 @@ probe_pubalgo()
 }
 
 static byte *
-digest2arg(byte *bp, byte *dig, byte *sigtrail)
+digest2arg(byte *bp, const byte *dig, const byte *sigtrail)
 {
   int i;
   for (i = 0; i < hashlen[hashalgo]; i++, bp += 2)
@@ -228,6 +231,13 @@ getrawopensslsig(byte *sig, int sigl, struct x509 *sigcb)
   return sigalgo;
 }
 
+static void
+dofwrite(FILE *fout, byte *b, size_t l)
+{
+  if (fwrite(b, l, 1, fout) != 1)
+    dodie_errno("fwrite");
+}
+
 static int
 sign(char *filename, int isfilter, int mode)
 {
@@ -252,6 +262,12 @@ sign(char *filename, int isfilter, int mode)
   int needsign;
   struct x509 sigcb;
   int sigcbalgo = -1;
+
+  if (bulk_cpio)
+    {
+      sign_bulk_cpio(filename, isfilter, mode);
+      return 0;
+    }
 
   if (mode == MODE_UNSET)
     {
@@ -589,7 +605,7 @@ sign(char *filename, int isfilter, int mode)
       struct x509 cb;
       x509_init(&cb);
       x509_pkcs7_signed_data(&cb, 0, (cms_signedattrs.len ? &cms_signedattrs : 0), sigcbalgo, &sigcb, &cert, &othercerts, cms_flags);
-      fwrite(cb.buf, cb.len, 1, fout);
+      dofwrite(fout, cb.buf, cb.len);
       x509_free(&cb);
     }
   else if (mode == MODE_KOSIGN)
@@ -601,7 +617,7 @@ sign(char *filename, int isfilter, int mode)
       x509_free(&cb);
     }
   else
-    fwrite(buf, outl, 1, fout);
+    dofwrite(fout, buf, outl);
 
   x509_free(&sigcb);
   if (mode == MODE_CMSSIGN || mode == MODE_KOSIGN)
@@ -633,6 +649,157 @@ sign(char *filename, int isfilter, int mode)
 
   return 0;
 }
+
+#define	BULK_MAX_ARGC	100
+
+static void
+sign_bulk_cpio(char *filename, int isfilter, int mode)
+{
+  int fd;
+  FILE *fout = 0;
+  byte *buf;		/* network buffer */
+  int argc, argsoff;
+  char *args[255 + 3];
+  byte *cpios[255];	/* cpio entries */
+
+  if (mode != MODE_RAWOPENSSLSIGN)
+    dodie("bulk-cpio is only implemented for raw openssl signing");
+
+  if (isfilter)
+    fd = 0;
+  else if ((fd = open(filename, O_RDONLY)) == -1)
+    dodie_errno(filename);
+
+  if (isfilter)
+    fout = stdout;
+  else
+    {
+      char *outfilename = doalloc(strlen(filename) + 16);
+      sprintf(outfilename, "%s.sig", filename);
+      if ((fout = fopen(outfilename, "w")) == 0)
+	dodie_errno(outfilename);
+      free(outfilename);
+    }
+
+  buf = doalloc(65536);
+
+  args[0] = "sign";
+  args[1] = algouser;
+  argsoff = 2;
+  if (privkey)
+    {
+      readprivkey();
+      args[0] = "privsign";
+      args[2] = privkey;
+      argsoff = 3;
+    }
+   
+  argc = 0;
+  for (;;)
+    {
+      byte *cpio;
+      int type;
+      u32 size, pad;
+
+      /* read next cpio entry */
+      cpio = cpio_read(fd, &type, 4);	/* reserve for .sig */
+      /* flush out all the cummulated data if we run into a limit */
+      if (argc && (type == CPIO_TYPE_TRAILER || (type == CPIO_TYPE_FILE && argc == BULK_MAX_ARGC)))
+	{
+	  int i, outl = doreq(argsoff + argc, (const char **)args, buf, 65536, argc);
+	  byte *bp = buf + 2 + 2 * argc;
+	  if (outl < 0)
+	    exit(-outl);
+	  for (i = 0; i < argc; i++)
+	    {
+	      struct x509 sigcb;
+	      int sigl, sigcbalgo;
+	      byte *sig, *scpio;
+
+	      outl = buf[2 + 2 * i] << 8 | buf[2 + 2 * i + 1];
+	      sig = pkg2sig(bp, outl, &sigl);
+	      bp += outl;
+	      x509_init(&sigcb);
+	      sigcbalgo = getrawopensslsig(sig, sigl, &sigcb);
+	      if (assertpubalgo == -1 && sigcbalgo != PUB_RSA)
+		dodie("Not a RSA key");
+	      scpio = cpios[i];
+	      cpio_name_append(scpio, ".sig");		/* add .sig suffix */
+	      pad = cpio_size_set(scpio, sigcb.len);	/* set new size */
+	      dofwrite(fout, scpio, cpio_headnamesize(scpio));
+	      x509_insert(&sigcb, sigcb.len, 0, pad);	/* add padding */
+	      dofwrite(fout, sigcb.buf, sigcb.len);
+	      x509_free(&sigcb);
+	      free(scpio);
+	      free(args[argsoff + i]);
+	    }
+	  argc = 0;
+	}
+
+      if (type == CPIO_TYPE_TRAILER)
+	{
+	  dofwrite(fout, cpio, cpio_headnamesize(cpio));
+	  free(cpio);
+	  break;
+	}
+      else if (type != CPIO_TYPE_FILE)
+	{
+	  /* skip non-file cpio entries */
+	  size = cpio_size_get(cpio, &pad);
+	  size += pad;
+	  while (size > 0)
+	    {
+	      u32 chunk = size > 8192 ? 8192 : size;
+	      doread(fd, buf, chunk);
+	      size -= chunk;
+	    }
+	  free(cpio);
+	}
+      else
+	{
+	  HASH_CONTEXT ctx;
+	  byte *p;
+	  char *arg;
+
+	  size = cpio_size_get(cpio, &pad);
+	  /* hash file content */
+	  hash_init(&ctx);
+	  while (size > 0)
+	    {
+	      u32 chunk = size > 8192 ? 8192 : size;
+	      doread(fd, buf, chunk);
+	      hash_write(&ctx, buf, chunk);
+	      size -= chunk;
+	    }
+	  doread(fd, buf, pad);
+	  hash_final(&ctx);
+	  p = hash_read(&ctx);
+	  /* cummulate */
+	  arg = doalloc(2 * hash_len() + 1 + 10 + 1);
+	  digest2arg((byte *)arg, p, (const byte *)"\0\0\0\0\0");
+	  args[argsoff + argc] = arg;
+	  cpios[argc] = cpio;
+	  argc++;
+	}
+    }
+  if (argc)
+    dodie("internal error");
+  free(buf);
+  if (!isfilter)
+    {
+      if (fclose(fout))
+	{
+	  perror("fclose");
+	  exit(1);
+	}
+    }
+  else
+    {
+      if (fflush(stdout))
+	dodie_errno("fflush");
+    }
+}
+
 
 static void
 keygen(const char *type, const char *expire, const char *name, const char *email)
@@ -1453,6 +1620,8 @@ main(int argc, char **argv)
 	cms_flags |= X509_PKCS7_NO_CERTS;
       else if (!strcmp(opt, "--cms-keyid"))
 	cms_flags |= X509_PKCS7_USE_KEYID;
+      else if (!strcmp(opt, "--bulk-cpio"))
+	bulk_cpio = 1;
       else if (!strcmp(opt, "--"))
 	break;
       else
