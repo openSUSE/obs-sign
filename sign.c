@@ -660,7 +660,7 @@ sign_bulk_cpio(char *filename, int isfilter, int mode)
   byte *buf;		/* network buffer */
   int argc, argsoff;
   char *args[255 + 3];
-  byte *cpios[255];	/* cpio entries */
+  byte *ents[255];	/* cpio entries */
 
   if (mode != MODE_RAWOPENSSLSIGN)
     dodie("bulk-cpio is only implemented for raw openssl signing");
@@ -714,7 +714,7 @@ sign_bulk_cpio(char *filename, int isfilter, int mode)
 	    {
 	      struct x509 sigcb;
 	      int sigl, sigcbalgo;
-	      byte *sig, *scpio;
+	      byte *sig, *ent;
 
 	      outl = buf[2 + 2 * i] << 8 | buf[2 + 2 * i + 1];
 	      sig = pkg2sig(bp, outl, &sigl);
@@ -723,14 +723,14 @@ sign_bulk_cpio(char *filename, int isfilter, int mode)
 	      sigcbalgo = getrawopensslsig(sig, sigl, &sigcb);
 	      if (assertpubalgo == -1 && sigcbalgo != PUB_RSA)
 		dodie("Not a RSA key");
-	      scpio = cpios[i];
-	      cpio_name_append(scpio, ".sig");		/* add .sig suffix */
-	      pad = cpio_size_set(scpio, sigcb.len);	/* set new size */
-	      dofwrite(fout, scpio, cpio_headnamesize(scpio));
+	      ent = ents[i];
+	      cpio_name_append(ent, ".sig");		/* add .sig suffix */
+	      pad = cpio_size_set(ent, sigcb.len);	/* set new size */
+	      dofwrite(fout, ent, cpio_headnamesize(ent));
 	      x509_insert(&sigcb, sigcb.len, 0, pad);	/* add padding */
 	      dofwrite(fout, sigcb.buf, sigcb.len);
 	      x509_free(&sigcb);
-	      free(scpio);
+	      free(ent);
 	      free(args[argsoff + i]);
 	    }
 	  argc = 0;
@@ -758,7 +758,6 @@ sign_bulk_cpio(char *filename, int isfilter, int mode)
       else
 	{
 	  HASH_CONTEXT ctx;
-	  byte *p;
 	  char *arg;
 
 	  size = cpio_size_get(cpio, &pad);
@@ -773,12 +772,11 @@ sign_bulk_cpio(char *filename, int isfilter, int mode)
 	    }
 	  doread(fd, buf, pad);
 	  hash_final(&ctx);
-	  p = hash_read(&ctx);
 	  /* cummulate */
 	  arg = doalloc(2 * hash_len() + 1 + 10 + 1);
-	  digest2arg((byte *)arg, p, (const byte *)"\0\0\0\0\0");
+	  digest2arg((byte *)arg, hash_read(&ctx), (const byte *)"\0\0\0\0\0");
 	  args[argsoff + argc] = arg;
-	  cpios[argc] = cpio;
+	  ents[argc] = cpio;
 	  argc++;
 	}
     }

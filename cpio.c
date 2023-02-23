@@ -24,7 +24,7 @@ cpio_hex(byte *p)
 static void
 cpio_tohex(byte *p, u32 x)
 {
-  static const char hexstr[] = "0123456789abcdef";
+  static const char hexstr[] = "0123456789ABCDEF";
   int i;
   p += 7;
   for (i = 0; i < 8; i++, p--)
