@@ -1156,43 +1156,39 @@ sub gpg_privkey_to_info {
   return $info;
 }
 
-sub sign_with_gpg_privkey {
-  my ($keyfile, $fingerprint, $hashalgo, $hash, $replyv4) = @_;
+sub gpg_keyfile_to_info {
+  my ($keyfile, $fingerprint) = @_;
   my $kfd;
   return undef unless open($kfd, '<', $keyfile);
   my $key = '';
   1 while length($key) < 65536 && sysread($kfd, $key, 4096, length($key)) > 0;
   close($kfd);
   return undef if length($key) >= 65536;
-  if (substr($key, 0, 1) ne '(') {
-    my %kv = parse_gpg_kv($key);
-    $key = $kv{'Key'};
-    die("no 'Key' element in privkey?\n") unless $key;
-  }
-  my $info = gpg_privkey_to_info($key);
-  return undef unless $info;
-  $info->{'fingerprint'} = $fingerprint;
-  return sign_with_gcrypt($info, $hash, $hashalgo, $replyv4);
+  my $info;
+  eval {
+    if (substr($key, 0, 1) ne '(') {
+      my %kv = parse_gpg_kv($key);
+      $key = $kv{'Key'};
+      die("no 'Key' element in privkey?\n") unless $key;
+    }
+    $info = gpg_privkey_to_info($key);
+  };
+  $info->{'fingerprint'} = $fingerprint if $info && $fingerprint;
+  return $info;
 }
 
 sub sign_with_agent {
-  my ($phrasefile, $user, $hashalgo, $hash, $isprivsign, $replyv4) = @_;
+  my ($phrasefile, $user, $fingerprint, $keygrip, $hashalgo, $hash, $isprivsign, $replyv4) = @_;
+  if (!$fingerprint) {
+    ($fingerprint, $keygrip) = $isprivsign ? find_key($user) : find_key_keycache($user);
+    die("unknown pubkey for $user\n") unless $fingerprint;
+  }
   die("bad hash $hash\n") unless $hash =~ /^((?:[0-9a-fA-F][0-9a-fA-F])+)\@(0[01][0-9a-fA-F]{8})$/;
   my $extra = $2;
   $hash = uc($1);
   my $pgphashalgo = get_pgphashalgo($hashalgo);
   die("sign_with_agent: bad hashalgo $hashalgo\n") unless $pgphashalgo;
-  my ($fingerprint, $keygrip) = $isprivsign ? find_key($user) : find_key_keycache($user);
-  die("unknown pubkey for $user\n") unless $fingerprint;
   my $have_phrase = defined($phrasefile) && $phrasefile ne '/dev/null' && -s $phrasefile;
-  if ($have_gcrypt && !$have_phrase && $use_gcrypt) {
-    my $gnupghome = $ENV{'GNUPGHOME'};
-    if ($gnupghome && -s "$gnupghome/private-keys-v1.d/$keygrip.key") {
-      my $sig = eval { sign_with_gpg_privkey("$gnupghome/private-keys-v1.d/$keygrip.key", $fingerprint, $hashalgo, lc($hash)."\@$extra", $replyv4) };
-      warn($@) if $@;
-      return $sig if !$@ && $sig;
-    }
-  }
   agent_rpc("SIGKEY $keygrip");
   agent_rpc("SETHASH $pgphashalgo $hash");
   agent_rpc("OPTION pinentry-mode=loopback") if $have_phrase;
@@ -1240,17 +1236,40 @@ sub sign_with_files_are_digests {
   return ($status, $out, $err);
 }
 
-sub do_sign {
-  my ($phrasefile, $user, $hashalgo, $hash, $isprivsign) = @_;
-  my $replyv4 = 0;
-  $replyv4 = 1 if $hash =~ /^(?:04040404)+\@/;	# special v4 algo probe
-  if ($use_agent) {
-    my $out = eval { sign_with_agent($phrasefile, $user, $hashalgo, $hash, $isprivsign, $replyv4) };
-    return (1, '', $@) if $@;
-    return (0, $out, '');
-  } else {
-    return sign_with_files_are_digests($phrasefile, $user, $hashalgo, $hash, $isprivsign, $replyv4);
+sub do_sign_multiple {
+  my ($phrasefile, $user, $info, $hashalgo, $hashes, $isprivsign) = @_;
+
+  my ($fingerprint, $keygrip);
+  if (!$info && $use_agent) {
+    ($fingerprint, $keygrip) = $isprivsign ? find_key($user) : find_key_keycache($user);
+    die("unknown pubkey for $user\n") unless $fingerprint;
   }
+  if (!$info && $have_gcrypt && $use_gcrypt && $fingerprint && $keygrip) {
+    my $have_phrase = defined($phrasefile) && $phrasefile ne '/dev/null' && -s $phrasefile;
+    my $gnupghome = $ENV{'GNUPGHOME'};
+    if (!$have_phrase && $gnupghome && -s "$gnupghome/private-keys-v1.d/$keygrip.key") {
+      $info = gpg_keyfile_to_info("$gnupghome/private-keys-v1.d/$keygrip.key", $fingerprint);
+    }
+  }
+  my ($status, $err, @out) = (0, '');
+  for my $hash (@$hashes) {
+    my $replyv4 = 0;
+    $replyv4 = 1 if $hash =~ /^(?:04040404)+\@/;	# special v4 algo probe
+    my ($lout, $lerr) = ('', '');
+    if ($info) {
+      $lout = eval { sign_with_gcrypt($info, $hash, $hashalgo, $replyv4) };
+      ($status, $lout, $lerr) = (1, '', $@) if $@;
+    } elsif ($use_agent) {
+      $lout = eval { sign_with_agent($phrasefile, $user, $fingerprint, $keygrip, $hashalgo, $hash, $isprivsign, $replyv4) };
+      ($status, $lout, $lerr) = (1, '', $@) if $@;
+    } else {
+      ($status, $lout, $lerr) = sign_with_files_are_digests($phrasefile, $user, $hashalgo, $hash, $isprivsign, $replyv4);
+    }
+    push @out, $lout;
+    $err .= $lerr;
+    last if $status;
+  }
+  return ($status, $err, @out);
 }
 
 sub do_decode {
@@ -1284,16 +1303,7 @@ sub cmd_privsign {
   my $pubkey = priv2pub($privkey, $have_gcrypt ? \@infos : undef);
   if (can_privsign_with_gcrypt(\@infos)) {
     my $info = $infos[0];
-    my @out;
-    for my $hash (@args) {
-      my $replyv4 = 0;
-      $replyv4 = 1 if $hash =~ /^(?:04040404)+\@/;	# special v4 algo probe
-      my $lout = '';
-      eval { $lout = sign_with_gcrypt($info, $hash, $hashalgo, $replyv4) };
-      push @out, $lout;
-      return (1, $@, @out) if $@;
-    }
-    return (0, '', @out);
+    return do_sign_multiple('/dev/null', undef, $info, $hashalgo, \@args, 1);
   }
   # create import data: pubkey pkg, user pkg, privkey pkg, user pkg
   $privkey = priv2pub($privkey).encodetag(13, 'privsign').striptofirst($privkey).encodetag(13, 'privsign');
@@ -1302,14 +1312,7 @@ sub cmd_privsign {
   switch_gnupghome($gnupghome);
   rungpg_fatal("$phrases/$user", ["$tmpdir/privkey.$$"], $gpg, '--batch', '--no-verbose', '-q', '--no-secmem-warning', '--allow-non-selfsigned-uid', @pinentrymode, '--passphrase-fd=0', '--import', "$tmpdir/privkey.$$");
   unlink("$tmpdir/privkey.$$");
-  my ($status, $err, @out) = (0, '');
-  for my $hash (@args) {
-    my ($lout, $lerr);
-    ($status, $lout, $lerr) = do_sign('/dev/null', 'privsign', $hashalgo, $hash, 1);
-    push @out, $lout;
-    $err .= $lerr;
-    last if $status;
-  }
+  my ($status, $err, @out) = do_sign_multiple('/dev/null', 'privsign', undef, $hashalgo, \@args, 1);
   switch_gnupghome($oldgnupghome);
   remove_tree($tdir);
   return ($status, $err, @out);
@@ -1318,15 +1321,7 @@ sub cmd_privsign {
 sub cmd_sign {
   my ($cmd, $user, $hashalgo, @args) = @_;
   die("sign: at least one arguments required\n") if @args < 1;
-  my ($status, $err, @out) = (0, '');
-  for my $hash (@args) {
-    my ($lout, $lerr);
-    ($status, $lout, $lerr) = do_sign("$phrases/$user", $user, $hashalgo, $hash);
-    push @out, $lout;
-    $err .= $lerr;
-    last if $status;
-  }
-  return ($status, $err, @out);
+  return do_sign_multiple("$phrases/$user", $user, undef, $hashalgo, \@args);
 }
 
 ################
