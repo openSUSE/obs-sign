@@ -419,7 +419,7 @@ sub decrypt_with_gcrypt {
     $blklen = 16;
     $cipher = Crypt::GCrypt->new('type' => 'cipher', 'algorithm' => 'aes256', 'mode' => 'cfb', 'padding' => 'none');
   }
-  die("decrypt_with_gcrypt: unsupported cipher algorithm $cipheralgo\n") unless $cipher;
+  die("decrypt_with_gcrypt: unsupported cipher algorithm $cipheralgo\n") unless $cipher && $blklen;
   $cipher->start('decrypting');
   $cipher->setkey($value);
   $cipher->setiv();
@@ -587,7 +587,7 @@ die("$signhost: unknown host\n") unless $signaddr;
 $use_agent = 1 unless have_files_are_digests();
 
 # we need zlib to decompress gpg's compressed data packet
-require Compress::Zlib if $use_gcrypt_decrypt && $have_gcrypt;
+require Compress::Raw::Zlib if $use_gcrypt_decrypt && $have_gcrypt;
 
 my @argv;
 
@@ -1426,9 +1426,13 @@ sub decode_decrypted_data {
   if ($tag == 8) {
     my $compalgo = unpack('C', $pkg);
     die("unsupported compression algo $compalgo\n") unless $compalgo == 2;
-    ($tag, $pkg, $decrypted) = decodepkg(Compress::Zlib::uncompress(substr($pkg, 1)).$decrypted);
+    my ($compressed, $decompressed) = (substr($pkg, 1), '');
+    my ($zlib, $status) = Compress::Raw::Zlib::Inflate->new(-WindowBits => Compress::Raw::Zlib::MAX_WBITS(), -Bufsize => 65536, -LimitOutput => 1);
+    die("could not create zlib decompressor\n") unless $status == Compress::Raw::Zlib::Z_OK();
+    die("decompression error\n") unless $zlib->inflate($compressed, $decompressed, 1) == Compress::Raw::Zlib::Z_STREAM_END();
+    ($tag, $pkg, $decrypted) = decodepkg($decompressed.$decrypted);
   }
-  die("not a single packet\n") if $decrypted ne '';
+  die("not a single data packet\n") if $decrypted ne '';
   die("not a literal data packet\n") if $tag != 11;
   my ($fmt, $fnl) = unpack('CC', $pkg);
   die("not binary data\n") unless $fmt == 0x62;
@@ -1460,7 +1464,7 @@ sub do_decode {
   }
   my $file = "$tmpdir/privkey.$$";
   spew($file, $encodeddata);
-  my $decoded = rungpg_fatal($phrasefile, [ $file ], $gpg, '--batch', '--decrypt', '--no-verbose', '-q', '--no-secmem-warning', @pinentrymode, '--passphrase-fd=0', $file);
+  my $decoded = rungpg_fatal($phrasefile, [ $file ], $gpg, '--batch', '--decrypt', '--max-output', '65536', '--no-verbose', '-q', '--no-secmem-warning', @pinentrymode, '--passphrase-fd=0', $file);
   unlink($file);
   return $decoded;
 }
