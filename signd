@@ -60,7 +60,9 @@ my $use_agent;
 my $agentsocket = [];
 my @pinentrymode;
 my $keycache = '';
-my $use_gcrypt;
+my $use_gcrypt_sign;
+my $use_gcrypt_privsign;
+my $use_gcrypt_decrypt;
 
 # request data
 my $oldproto = 0;
@@ -137,6 +139,24 @@ sub decodetaglenoff {
   }
   die("unsupported pgp packet length\n") unless defined $off;
   return ($tag, $len, $off);
+}
+
+sub decodepkg {
+  my ($pkg) = @_;
+  my $partial = '';
+  if ((unpack('C', $pkg) & 0xc3) == 0x83) {
+    return ((unpack('C', $pkg) & 60) >> 2, substr($pkg, 1), '');
+  }
+  while ((unpack('C', $pkg) & 0xc0) == 0xc0) {
+    my $len = unpack('@1C', $pkg);
+    last if $len < 224 || $len == 255;
+    $len = 1 << ($len & 0x1f);
+    die("truncated pgp packet\n") if length($pkg) < $len + 2;
+    $partial .= substr($pkg, 2, $len);
+    substr($pkg, 1, $len + 1, '');
+  }
+  my ($tag, $len, $off) = decodetaglenoff($pkg);
+  return ($tag, $partial.substr($pkg, $off, $len), substr($pkg, $off + $len));
 }
 
 sub encodetag {
@@ -349,6 +369,85 @@ sub sign_with_gcrypt {
   return wrap_into_gpgsig_v3($extra, $info->{'fingerprint'}, $info->{'algo'}, $pgphashalgo, $hash, $sigdata);
 }
 
+sub can_sign_with_gcrypt {
+  my ($info) = @_;
+  return 0 unless $have_gcrypt && $info && $info->{'algo'};
+  return 0 unless $info->{'smpis'};
+  return 1 if $info->{'algo'} == 1;
+  return 1 if $info->{'algo'} == 17;
+  return 1 if $info->{'algo'} == 22 && $info->{'curve'} eq "\x2b\x06\x01\x04\x01\xda\x47\x0f\x01";
+  return 1 if $info->{'algo'} == 19 && $info->{'curve'} eq "\x2a\x86\x48\xce\x3d\x03\x01\x07";
+  return 1 if $info->{'algo'} == 19 && $info->{'curve'} eq "\x2b\x81\x04\x00\x22";
+  return 0;
+}
+
+sub decrypt_with_gcrypt {
+  my ($info, $einfo, $encrypted, $encrypted_mdc) = @_;
+  die("decrypt_with_gcrypt: encryption algo mismatch\n") if $info->{'algo'} != $einfo->{'algo'};
+  my $value;
+  if ($info->{'algo'} == 1) {
+    die("sign_with_gcrypt: missing MPIs\n") unless @{$info->{'mpis'} || []} == 2 && @{$info->{'smpis'} || []} == 4;
+    my ($av) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$einfo->{'mpis'}};
+    my ($n, $e, $d, $p, $q, $u) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$info->{'mpis'}}, @{$info->{'smpis'}};
+    my $encval = Crypt::GCrypt::Sexp->build("(enc-val (flags) (rsa (a %M)))", $av);
+    my $skey = Crypt::GCrypt::Sexp->build("(private-key (rsa (n %M) (e %M) (d %M) (p %M) (q %M) (u %M)))", $n, $e, $d, $p, $q, $u);
+    my $res = Crypt::GCrypt::pk_decrypt($encval, $skey);
+    $value = $res->nth_data(1, 'value');
+  } elsif ($info->{'algo'} == 16) {
+    my ($av, $bv) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$einfo->{'mpis'}};
+    my ($p, $g, $y, $x) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$info->{'mpis'}}, @{$info->{'smpis'}};
+    my $encval = Crypt::GCrypt::Sexp->build("(enc-val (flags) (elg (a %M) (b %M)))", $av, $bv);
+    my $skey = Crypt::GCrypt::Sexp->build("(private-key (elg (p %M) (g %M) (y %M) (x %M)))", $p, $g, $y, $x);
+    my $res = Crypt::GCrypt::pk_decrypt($encval, $skey);
+    $value = $res->nth_data(1, 'value');
+  } else {
+    die("decrypt_with_gcrypt: unsupported encryption algorithm $info->{'algo'}\n");
+  }
+  $value = substr($value, 1) if unpack('C', $value) == 0;
+  die("unsupported DEK type\n") unless unpack('C', $value) == 2;
+  my $idx = index($value, "\0");
+  die("missing zero byte in decoded data\n") unless $idx >= 0;
+  $value = substr($value, $idx + 1);
+  my $cipheralgo = unpack('C', substr($value, 0, 1, ''));
+  my $csum = unpack('n', substr($value, -2, 2, ''));
+  my $csum2 = 0;
+  $csum2 += $_ for unpack('C*', $value);
+  die("bad DEK checksum\n") unless $csum == ($csum2 % 65536);
+  my ($cipher, $blklen);
+  if ($cipheralgo == 9) {	# AES256
+    die("bad cipher length\n") unless length($value) == 32;
+    $blklen = 16;
+    $cipher = Crypt::GCrypt->new('type' => 'cipher', 'algorithm' => 'aes256', 'mode' => 'cfb', 'padding' => 'none');
+  }
+  die("decrypt_with_gcrypt: unsupported cipher algorithm $cipheralgo\n") unless $cipher;
+  $cipher->start('decrypting');
+  $cipher->setkey($value);
+  $cipher->setiv();
+  my $plain = '';
+  my $padlen = length($encrypted) % $blklen;
+  my $pad = $padlen ? ("\0" x ($blklen - $padlen)) : '';
+  $plain = $cipher->decrypt("$encrypted$pad");
+  $plain .= $cipher->finish();
+  $plain = substr($plain, 0, length($encrypted)) if $padlen;
+  die("bad DEK data\n") if length($plain) < $blklen + 2;
+  my @chk = unpack('nn', substr($plain, $blklen - 2, 4));
+  die("DEK mismatch\n") if $chk[0] != $chk[1];
+  if ($encrypted_mdc) {
+    die("MDC mismatch\n") if length($plain) < $blklen + 2 + 22 || unpack('n', substr($plain, -22, 2)) != 0xd314;
+    die("MDC mismatch\n") if substr($plain, -20) ne Digest::SHA::sha1(substr($plain, 0, -20));
+    substr($plain, -22, 22, '');
+  }
+  return substr($plain, $blklen + 2);
+}
+
+sub can_decrypt_with_gcrypt {
+  my ($einfo) = @_;
+  return 0 unless $have_gcrypt && $einfo && $einfo->{'algo'};
+  return 1 if $einfo->{'algo'} == 1;
+  return 1 if $einfo->{'algo'} == 16;
+  return 0;
+}
+
 sub swrite {
   my ($sock, $data) = @_;
   local *S = $sock;
@@ -452,7 +551,11 @@ while(<F>) {
     next;
   }
   if ($s[0] eq 'use-gcrypt:') {
-    $use_gcrypt = ($s[1] eq '1' || $s[1] =~ /^true$/i) ? 1 : 0;
+    $s[1] = 1 if $s[1] =~ /^true$/i;
+    @s = split(',', $s[1]);
+    $use_gcrypt_sign = 1 if grep {$_ eq '1' || $_ eq 'sign'} @s;
+    $use_gcrypt_privsign = 1 if grep {$_ eq '1' || $_ eq 'privsign'} @s;
+    $use_gcrypt_decrypt = 1 if grep {$_ eq '1' || $_ eq 'decrypt'} @s;
     next;
   }
   if ($s[0] eq 'logfile:') {
@@ -482,6 +585,9 @@ my $signaddr = inet_aton($signhost);
 die("$signhost: unknown host\n") unless $signaddr;
 @pinentrymode = ( '--pinentry-mode=loopback' ) if have_pinentry_mode();
 $use_agent = 1 unless have_files_are_digests();
+
+# we need zlib to decompress gpg's compressed data packet
+require Compress::Zlib if $use_gcrypt_decrypt && $have_gcrypt;
 
 my @argv;
 
@@ -1137,15 +1243,19 @@ sub gpg_privkey_to_info {
   my $info;
   if ($type eq 'rsa') {
     $info = {'algo' => 1, 'mpis' => ['n', 'e'], 'smpis' => ['d', 'p', 'q', 'u']};
+  } elsif ($type eq 'elg') {
+    $info = {'algo' => 16, 'mpis' => ['p', 'g', 'y'], 'smpis' => ['x']};
   } elsif ($type eq 'dsa') {
     $info = {'algo' => 17, 'mpis' => ['p', 'q', 'g', 'y'], 'smpis' => ['x']};
   } elsif ($type eq 'ecc') {
     $info = {'algo' => 19, 'mpis' => ['q'], 'smpis' => ['d']};
     my $curve = $pk->nth_data(1, 'curve') || '?';
     $info->{'curve'} = "\x2b\x06\x01\x04\x01\xda\x47\x0f\x01" if $curve eq 'Ed25519';
+    $info->{'curve'} = "\x2b\x06\x01\x04\x01\x97\x55\x01\x05\x01" if $curve eq 'Curve25519';
     $info->{'curve'} = "\x2a\x86\x48\xce\x3d\x03\x01\x07" if $curve eq 'NIST P-256';
     $info->{'curve'} = "\x2b\x81\x04\x00\x22" if $curve eq 'NIST P-384';
     die("unsupported ecc curve $curve\n") unless $info->{'curve'};
+    $info->{'algo'} = 18 if $curve eq 'Curve25519';
     $info->{'algo'} = 22 if $curve eq 'Ed25519';
   }
   die("unsupported private key type $type\n") unless $info;
@@ -1244,7 +1354,7 @@ sub do_sign_multiple {
     ($fingerprint, $keygrip) = $isprivsign ? find_key($user) : find_key_keycache($user);
     die("unknown pubkey for $user\n") unless $fingerprint;
   }
-  if (!$info && $have_gcrypt && $use_gcrypt && $fingerprint && $keygrip) {
+  if (!$info && $have_gcrypt && $use_gcrypt_sign && $fingerprint && $keygrip) {
     my $have_phrase = defined($phrasefile) && $phrasefile ne '/dev/null' && -s $phrasefile;
     my $gnupghome = $ENV{'GNUPGHOME'};
     if (!$have_phrase && $gnupghome && -s "$gnupghome/private-keys-v1.d/$keygrip.key") {
@@ -1272,8 +1382,74 @@ sub do_sign_multiple {
   return ($status, $err, @out);
 }
 
+sub parse_encryted_data {
+  my ($encodeddata) = @_;
+
+  my ($tag, $len, $off) = decodetaglenoff($encodeddata);
+  die("encrypted data does not start with a session packet\n") if $tag != 1;
+  my $pkg = substr($encodeddata, $off, $len);
+  my ($version, $keyid, $algo) = unpack('CH16C', $pkg);
+  my @mpis;
+  my $mpinum;
+  $mpinum = 1 if $algo == 1;
+  $mpinum = 2 if $algo == 16;
+  die("unsupported encryption algorithm $algo\n") unless $mpinum;
+  my $einfo = { 'algo' => $algo, 'keyid' => $keyid };
+  my $mpioff = 10;
+  while ($mpinum > 0) {
+    my $ml = unpack('n', substr($pkg, $mpioff, 2));
+    $ml = (($ml + 7) >> 3) + 2;
+    push @{$einfo->{'mpis'}}, substr($pkg, $mpioff + 2, $ml - 2);
+    $mpioff += $ml;
+    $mpinum--;
+  }
+  ($tag, $pkg) = decodepkg(substr($encodeddata, $off + $len));
+  if ($tag == 18) {
+    die("unsupported integrity protected data packet version\n") if unpack('C', substr($pkg, 0, 1, '')) != 1;
+    return ($einfo, $pkg, 1);
+  }
+  die("unsupported protected data tag $tag\n");
+}
+
+sub decode_decrypted_data {
+  my ($decrypted) = @_;
+  my ($tag, $pkg);
+  ($tag, $pkg, $decrypted) = decodepkg($decrypted);
+  if ($tag == 8) {
+    my $compalgo = unpack('C', $pkg);
+    die("unsupported compression algo $compalgo\n") unless $compalgo == 2;
+    ($tag, $pkg, $decrypted) = decodepkg(Compress::Zlib::uncompress(substr($pkg, 1)).$decrypted);
+  }
+  die("not a single packet\n") if $decrypted ne '';
+  die("not a literal data packet\n") if $tag != 11;
+  my ($fmt, $fnl) = unpack('CC', $pkg);
+  die("not binary data\n") unless $fmt == 0x62;
+  die("literal data packet is too small\n") unless length($pkg) >= 2 + $fnl + 4;
+  return substr($pkg, 2 + $fnl + 4);
+}
+
 sub do_decode {
   my ($phrasefile, $user, $encodeddata) = @_;
+  if ($use_gcrypt_decrypt && $have_gcrypt) {
+    my $have_phrase = defined($phrasefile) && $phrasefile ne '/dev/null' && -s $phrasefile;
+    my $gnupghome = $ENV{'GNUPGHOME'};
+    if (!$have_phrase && $gnupghome) {
+      my $decoded;
+      eval {
+	my ($einfo, $encrypted, $encrypted_mdc) = parse_encryted_data($encodeddata);
+	if ($einfo && $encrypted && can_decrypt_with_gcrypt($einfo)) {
+	  my ($fingerprint, $keygrip) = find_key_keycache($einfo->{'keyid'}, 'e');
+	  if ($fingerprint && $keygrip && -s "$gnupghome/private-keys-v1.d/$keygrip.key") {
+	    my $info = gpg_keyfile_to_info("$gnupghome/private-keys-v1.d/$keygrip.key", $fingerprint);
+	    my $decrypted = decrypt_with_gcrypt($info, $einfo, $encrypted, $encrypted_mdc);
+            $decoded = decode_decrypted_data($decrypted);
+	  }
+	}
+      };
+      warn($@) if $@;
+      return $decoded if defined $decoded;
+    }
+  }
   my $file = "$tmpdir/privkey.$$";
   spew($file, $encodeddata);
   my $decoded = rungpg_fatal($phrasefile, [ $file ], $gpg, '--batch', '--decrypt', '--no-verbose', '-q', '--no-secmem-warning', @pinentrymode, '--passphrase-fd=0', $file);
@@ -1281,27 +1457,15 @@ sub do_decode {
   return $decoded;
 }
 
-sub can_privsign_with_gcrypt {
-  my ($infos) = @_;
-  return 0 unless $have_gcrypt && @{$infos ||[]} == 1;
-  my $info = $infos->[0];
-  return 0 unless $info->{'smpis'};
-  return 1 if $info->{'algo'} == 1;
-  return 1 if $info->{'algo'} == 17;
-  return 1 if $info->{'algo'} == 22 && $info->{'curve'} eq "\x2b\x06\x01\x04\x01\xda\x47\x0f\x01";
-  return 1 if $info->{'algo'} == 19 && $info->{'curve'} eq "\x2a\x86\x48\xce\x3d\x03\x01\x07";
-  return 1 if $info->{'algo'} == 19 && $info->{'curve'} eq "\x2b\x81\x04\x00\x22";
-  return 0;
-}
-
 sub cmd_privsign {
   my ($cmd, $user, $hashalgo, @args) = @_;
   die("privsign: at least two arguments expected\n") if @args < 2;
   die("bad private key\n") if $args[0] !~ /^(?:[0-9a-fA-F][0-9a-fA-F])+$/s;
-  my $privkey = do_decode("$phrases/$user", $user, pack('H*', shift @args));
+  my $privkey = pack('H*', shift @args);
+  $privkey = do_decode("$phrases/$user", $user, $privkey);
   my @infos;
-  my $pubkey = priv2pub($privkey, $have_gcrypt ? \@infos : undef);
-  if (can_privsign_with_gcrypt(\@infos)) {
+  my $pubkey = priv2pub($privkey, $use_gcrypt_privsign && $have_gcrypt ? \@infos : undef);
+  if ($use_gcrypt_privsign && @infos == 1 && can_sign_with_gcrypt($infos[0])) {
     my $info = $infos[0];
     return do_sign_multiple('/dev/null', undef, $info, $hashalgo, \@args, 1);
   }
