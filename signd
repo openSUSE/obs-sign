@@ -1393,6 +1393,7 @@ sub parse_encryted_data {
   my $mpinum;
   $mpinum = 1 if $algo == 1;
   $mpinum = 2 if $algo == 16;
+  $mpinum = 1 if $algo == 18;
   die("unsupported encryption algorithm $algo\n") unless $mpinum;
   my $einfo = { 'algo' => $algo, 'keyid' => $keyid };
   my $mpioff = 10;
@@ -1403,6 +1404,13 @@ sub parse_encryted_data {
     $mpioff += $ml;
     $mpinum--;
   }
+  if ($algo == 18) {
+    my $ml = unpack('C', substr($pkg, $mpioff, 1));
+    die("bad ecdh encoded key size\n") if $ml < 2 || $ml == 255;
+    push @{$einfo->{'mpis'}}, substr($pkg, $mpioff, $ml + 1);
+    $mpioff += $ml + 1;
+  }
+  die("truncated mpis\n") if length($pkg) < $mpioff;
   ($tag, $pkg) = decodepkg(substr($encodeddata, $off + $len));
   if ($tag == 18) {
     die("unsupported integrity protected data packet version\n") if unpack('C', substr($pkg, 0, 1, '')) != 1;
