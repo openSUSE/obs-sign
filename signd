@@ -186,77 +186,58 @@ sub encodesubpackets {
 }
 
 sub priv2pub {
-  my ($privkey, $infos) = @_;
+  my ($privkey, $info) = @_;
   my $pubkey = '';
 
-  while ($privkey ne '') {
-    my ($tag, $len, $off) = decodetaglenoff($privkey);
-    #print "tag=$tag, len=$len off=$off\n";
-    my $pack = substr($privkey, $off, $len);
-    $privkey = substr($privkey, $len + $off);
-    my $ptag;
-    if ($tag == 5) {
-      $ptag = 6;
-    } elsif ($tag == 7) {
-      $ptag = 14;
-    } else {
-      next;
-    }
-    my $pkver = unpack('C', $pack);
-    #print "pubkey ver $pkver\n";
-    my ($mpioff, $pkalgo);
-    if ($pkver == 3) {
-      my ($t, $v);
-      (undef, $t, $v, $pkalgo) = unpack('CNnC', $pack);
-      $mpioff = 8;
-    } elsif ($pkver == 4) {
-      my $t;
-      (undef, $t, $pkalgo) = unpack('CNC', $pack);
-      $mpioff = 6;
-    } else {
-      die("unknown public key version $pkver\n");
-    }
-    my $info = $infos ? {} : undef;
-    push @$infos, $info if $info;
-    $info->{'version'} = $pkver if $info;
-    $info->{'algo'} = $pkalgo if $info;
-    if ($pkalgo == 19 || $pkalgo == 22) {	# ECDSA + EdDSA have a curve
-      my $oidlen = unpack('C', substr($pack, $mpioff));
-      die("bad curve len") if $oidlen == 0 || $oidlen == 255;
-      $info->{'curve'} = substr($pack, $mpioff + 1, $oidlen) if $info;
-      $mpioff += $oidlen + 1;
-    }
-    my ($mpinum, $smpinum);
-    ($mpinum, $smpinum) = (2, 4) if $pkalgo == 1;	# RSA
-    ($mpinum, $smpinum) = (4, 1) if $pkalgo == 17;	# DSA
-    ($mpinum, $smpinum) = (3, 1) if $pkalgo == 16 || $pkalgo == 20;	# Elgamal
-    ($mpinum, $smpinum) = (1, 1) if $pkalgo == 19 || $pkalgo == 22;	# ECDSA + EdDSA
-    die("unsupported public key algorithm $pkalgo\n") unless defined $mpinum;
-    while ($mpinum > 0) {
-      my $ml = unpack('n', substr($pack, $mpioff, 2));
-      $ml = (($ml + 7) >> 3) + 2;
-      push @{$info->{'mpis'}}, substr($pack, $mpioff + 2, $ml - 2) if $info;
-      $mpioff += $ml;
-      $mpinum--;
-    }
-    if ($info) {
-      my $s2k = unpack('C', substr($pack, $mpioff, 1));
-      if ($s2k == 0) {
-        my $smpioff = $mpioff + 1;
-        while ($smpinum > 0) {
-          my $ml = unpack('n', substr($pack, $smpioff, 2));
-          $ml = (($ml + 7) >> 3) + 2;
-          push @{$info->{'smpis'}}, substr($pack, $smpioff + 2, $ml - 2);
-          $smpioff += $ml;
-          $smpinum--;
-	}
-      }
-      $info->{'fingerprint'} = Digest::SHA::sha1_hex(pack('Cn', 0x99, $mpioff).substr($pack, 0, $mpioff)) if $pkver == 4;
-    }
-    $pack = substr($pack, 0, $mpioff);
-    $pubkey .= encodetag($ptag, $pack);
+  my ($tag, $len, $off) = decodetaglenoff($privkey);
+  die("not a secret key packet\n") unless $tag == 5;
+  my $pack = substr($privkey, $off, $len);
+  my $pkver = unpack('C', $pack);
+  my ($mpioff, $pkalgo);
+  if ($pkver == 3) {
+    (undef, undef, undef, $pkalgo) = unpack('CNnC', $pack);
+    $mpioff = 8;
+  } elsif ($pkver == 4) {
+    (undef, undef, $pkalgo) = unpack('CNC', $pack);
+    $mpioff = 6;
   }
-  return $pubkey;
+  die("unknown public key version $pkver\n") unless $mpioff;
+  $info->{'version'} = $pkver if $info;
+  $info->{'algo'} = $pkalgo if $info;
+  if ($pkalgo == 19 || $pkalgo == 22) {	# ECDSA + EdDSA have a curve
+    my $oidlen = unpack('C', substr($pack, $mpioff));
+    die("bad curve len") if $oidlen == 0 || $oidlen == 255;
+    $info->{'curve'} = substr($pack, $mpioff + 1, $oidlen) if $info;
+    $mpioff += $oidlen + 1;
+  }
+  my ($mpinum, $smpinum);
+  ($mpinum, $smpinum) = (2, 4) if $pkalgo == 1;	# RSA
+  ($mpinum, $smpinum) = (4, 1) if $pkalgo == 17;	# DSA
+  ($mpinum, $smpinum) = (3, 1) if $pkalgo == 16 || $pkalgo == 20;	# Elgamal
+  ($mpinum, $smpinum) = (1, 1) if $pkalgo == 19 || $pkalgo == 22;	# ECDSA + EdDSA
+  die("unsupported public key algorithm $pkalgo\n") unless defined $mpinum;
+  while ($mpinum > 0) {
+    my $ml = unpack('n', substr($pack, $mpioff, 2));
+    $ml = (($ml + 7) >> 3) + 2;
+    push @{$info->{'mpis'}}, substr($pack, $mpioff + 2, $ml - 2) if $info;
+    $mpioff += $ml;
+    $mpinum--;
+  }
+  if ($info) {
+    my $s2k = unpack('C', substr($pack, $mpioff, 1));
+    if ($s2k == 0) {
+      my $smpioff = $mpioff + 1;
+      while ($smpinum > 0) {
+	my $ml = unpack('n', substr($pack, $smpioff, 2));
+	$ml = (($ml + 7) >> 3) + 2;
+	push @{$info->{'smpis'}}, substr($pack, $smpioff + 2, $ml - 2);
+	$smpioff += $ml;
+	$smpinum--;
+      }
+    }
+    $info->{'fingerprint'} = Digest::SHA::sha1_hex(pack('Cn', 0x99, $mpioff).substr($pack, 0, $mpioff)) if $pkver == 4;
+  }
+  return encodetag(6, substr($pack, 0, $mpioff));
 }
 
 sub striptofirst {
@@ -1490,14 +1471,14 @@ sub cmd_privsign {
   die("bad private key\n") if $args[0] !~ /^(?:[0-9a-fA-F][0-9a-fA-F])+$/s;
   my $privkey = pack('H*', shift @args);
   $privkey = do_decode("$phrases/$user", $user, $privkey);
-  my @infos;
-  my $pubkey = priv2pub($privkey, $use_gcrypt_privsign && $have_gcrypt ? \@infos : undef);
-  if ($use_gcrypt_privsign && @infos == 1 && can_sign_with_gcrypt($infos[0])) {
-    my $info = $infos[0];
+  $privkey = striptofirst($privkey);	# just use the first packet
+  my $info = $use_gcrypt_privsign && $have_gcrypt ? {} : undef;
+  my $pubkey = priv2pub($privkey, $info);
+  if ($use_gcrypt_privsign && can_sign_with_gcrypt($info)) {
     return do_sign_multiple('/dev/null', undef, $info, $hashalgo, \@args, 1);
   }
   # create import data: pubkey pkg, user pkg, privkey pkg, user pkg
-  $privkey = priv2pub($privkey).encodetag(13, 'privsign').striptofirst($privkey).encodetag(13, 'privsign');
+  $privkey = $pubkey.encodetag(13, 'privsign').$privkey.encodetag(13, 'privsign');
   spew("$tmpdir/privkey.$$", $privkey);
   my ($tdir, $gnupghome, $oldgnupghome) = prepare_tmp_gnupghome($tmpdir);
   switch_gnupghome($gnupghome);
