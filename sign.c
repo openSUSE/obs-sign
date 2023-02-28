@@ -85,11 +85,12 @@ static int bulk_cpio;
 #define MODE_CMSSIGN	  14
 #define MODE_PESIGN	  15
 #define MODE_KOSIGN	  16
+#define MODE_FINGERPRINT  17
 
 static const char *const modes[] = {
   "?", "rpm sign", "clear sign", "detached sign", "keyid", "pubkey", "keygen", "keyextend",
   "raw detached sign", "raw openssl sign", "cert create", "appimage sign", "appx sign", "hashfile",
-  "cms sign", "PE sign", "kernel module sign"
+  "cms sign", "PE sign", "kernel module sign", "fingerprint"
 };
 
 static void sign_bulk_cpio(char *filename, int isfilter, int mode);
@@ -1620,6 +1621,8 @@ main(int argc, char **argv)
 	cms_flags |= X509_PKCS7_USE_KEYID;
       else if (!strcmp(opt, "--bulk-cpio"))
 	bulk_cpio = 1;
+      else if (!strcmp(opt, "--fingerprint"))
+	mode = MODE_FINGERPRINT;
       else if (!strcmp(opt, "--"))
 	break;
       else
@@ -1678,6 +1681,23 @@ main(int argc, char **argv)
 	dodie("usage: sign -k [-u user]");
       dov4sig = 0;	/* no need for the extra work */
       sign("<stdin>", 1, mode);
+      exit(0);
+    }
+  if (mode == MODE_FINGERPRINT)
+    {
+      if (argc != 1)
+	dodie("usage: sign --fingerprint [-u user]");
+      if (probe_pubalgo() < 0)
+	exit(1);
+      if (fingerprintprobe[0] == 4)
+        {
+	  int i;
+	  for (i = 0; i < 20; i++)
+	    printf("%02X", fingerprintprobe[i + 1]);
+	  printf("\n");
+        }
+      else
+	dodie("could not determine fingerprint");
       exit(0);
     }
   if (mode == MODE_HASHFILE)
