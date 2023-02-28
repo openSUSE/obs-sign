@@ -1029,15 +1029,20 @@ sub cmd_keygen {
 
   # export pubkey and privkey
   my $pubkey = rungpg_fatal('/dev/null', $tdir, $gpg, '--batch', '--no-secmem-warning', '--no-default-keyring', '--export', '-a');
-  my $privkey_plain = rungpg_fatal('/dev/null', $tdir, $gpg, '--batch', '--export-secret-keys', '--no-verbose', '--no-secmem-warning', '--trust-model', 'always');
+  my $privkey = rungpg_fatal('/dev/null', $tdir, $gpg, '--batch', '--export-secret-keys', '--no-verbose', '--no-secmem-warning', '--trust-model', 'always');
   # newer gpg versions also export the userid and signature, so strip to the bare key
-  $privkey_plain = striptofirst($privkey_plain);
+  $privkey = striptofirst($privkey);
 
   switch_gnupghome($oldgnupghome);
 
+  my $encuser = $user;
+  if ($aliases && -e "$aliases/:enc:$user") {
+    $encuser = read_alias($aliases, ":enc:$user", 1);
+  } elsif ($aliases && -e "$aliases/:enc") {
+    $encuser = read_alias($aliases, ":enc", 1);
+  }
   # encrypt the privkey
-  spew("$tdir/privkey", $privkey_plain);
-  my $privkey = rungpg_fatal('/dev/null', $tdir, $gpg, '--batch', '--encrypt', '--no-verbose', '--no-secmem-warning', '--trust-model', 'always', '-o-', '-r', "$user", "$tdir/privkey");
+  $privkey = do_encode($encuser, $privkey, $tdir);
 
   # cleanup and send back
   remove_tree($tdir);
@@ -1469,6 +1474,16 @@ sub do_decode {
   return $decoded;
 }
 
+sub do_encode {
+  my ($user, $data, $tdir) = @_;
+
+  my $file = $tdir ? "$tdir/privkey" : "$tmpdir/privkey.$$";
+  spew($file, $data);
+  my $encodeddata = rungpg_fatal('/dev/null', $tdir || [ $file ], $gpg, '--batch', '--encrypt', '--no-verbose', '--no-secmem-warning', '--trust-model', 'always', '-o-', '-r', $user, $file);
+  unlink($file);
+  return $encodeddata;
+}
+
 sub cmd_privsign {
   my ($cmd, $user, $hashalgo, @args) = @_;
   die("privsign: at least two arguments expected\n") if @args < 2;
@@ -1503,8 +1518,9 @@ sub cmd_sign {
 ################
 
 sub read_alias {
-  my ($aliasdir, $alias) = @_;
+  my ($aliasdir, $alias, $colonok) = @_;
   die("illegal user $alias\n") if $alias eq '' || $alias =~ /[\000-\037\/]/s || $alias =~ /^\./s;
+  die("illegal user $alias\n") if !$colonok && $alias =~ /^:/;
   my $fd;
   open($fd, '<', "$aliasdir/$alias") || die("$aliasdir/$alias: $!\n");
   my $user = <$fd>;
