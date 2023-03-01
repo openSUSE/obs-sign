@@ -1512,15 +1512,6 @@ sub write_alias {
   rename("$aliasdir/.$alias.$$", "$aliasdir/$alias") || die("rename $aliasdir/.$alias.$$ $aliasdir/$alias: $!\n");
 }
 
-sub list_alias {
-  my ($aliasdir) = @_;
-  my $d;
-  return () unless opendir($d, $aliasdir);
-  my @aliases = grep {!/^\./} readdir($d);
-  closedir $d;
-  return sort(@aliases);
-}
-
 ## read the request, call the handler, reply the result
 @argv = readreq();
 
