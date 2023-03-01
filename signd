@@ -250,8 +250,7 @@ sub patchclasstime {
   my ($sig, $t) = @_;
   die("classtime is not 10 hex nibbles\n") unless $t =~ /^[0-9a-fA-F]{10}$/s;
   my ($tag, $len, $off) = decodetaglenoff($sig);
-  die("not a signature\n") unless $tag == 2;
-  die("not a v3 signature\n") unless ord(substr($sig, $off, 1)) == 3;
+  die("not a v3 signature\n") unless $tag == 2 && ord(substr($sig, $off, 1)) == 3;
   substr($sig, $off + 2, 5, pack('H*', $t));
   return $sig;
 }
@@ -403,11 +402,9 @@ sub decrypt_with_gcrypt {
   die("decrypt_with_gcrypt: unsupported cipher algorithm $cipheralgo\n") unless $cipher && $blklen;
   $cipher->start('decrypting');
   $cipher->setkey($value);
-  $cipher->setiv();
-  my $plain = '';
   my $padlen = length($encrypted) % $blklen;
   my $pad = $padlen ? ("\0" x ($blklen - $padlen)) : '';
-  $plain = $cipher->decrypt("$encrypted$pad");
+  my $plain = $cipher->decrypt("$encrypted$pad");
   $plain .= $cipher->finish();
   $plain = substr($plain, 0, length($encrypted)) if $padlen;
   die("bad DEK data\n") if length($plain) < $blklen + 2;
@@ -1321,7 +1318,7 @@ sub sign_with_files_are_digests {
     push @args, '-u', $user;
   }
   my $classtime;
-  if ($patchclasstime && ($hash =~ /\@([0-9a-fA-F]{10})$/s)) {
+  if ($patchclasstime && !$replyv4 && ($hash =~ /\@([0-9a-fA-F]{10})$/s)) {
     $classtime = $1;
     substr($hash, -10, 10, '0000000000');
   }
@@ -1398,11 +1395,9 @@ sub parse_encryted_data {
   }
   die("truncated mpis\n") if length($pkg) < $mpioff;
   ($tag, $pkg) = decodepkg(substr($encodeddata, $off + $len));
-  if ($tag == 18) {
-    die("unsupported integrity protected data packet version\n") if unpack('C', substr($pkg, 0, 1, '')) != 1;
-    return ($einfo, $pkg, 1);
-  }
-  die("unsupported protected data tag $tag\n");
+  die("unsupported protected data tag $tag\n") unless $tag == 18;
+  die("unsupported integrity protected data packet version\n") if unpack('C', substr($pkg, 0, 1, '')) != 1;
+  return ($einfo, $pkg, 1);
 }
 
 sub decode_decrypted_data {
@@ -1477,13 +1472,12 @@ sub cmd_privsign {
   if ($use_gcrypt_privsign && can_sign_with_gcrypt($info)) {
     return do_sign_multiple('/dev/null', undef, $info, $hashalgo, \@args, 1);
   }
-  # create import data: pubkey pkg, user pkg, privkey pkg, user pkg
-  $privkey = $pubkey.encodetag(13, 'privsign').$privkey.encodetag(13, 'privsign');
-  spew("$tmpdir/privkey.$$", $privkey);
   my ($tdir, $gnupghome, $oldgnupghome) = prepare_tmp_gnupghome($tmpdir);
+  # create import data: pubkey pkg, user pkg, privkey pkg, user pkg
+  spew("$tdir/privkey", $pubkey.encodetag(13, 'privsign').$privkey.encodetag(13, 'privsign'));
   switch_gnupghome($gnupghome);
-  rungpg_fatal("$phrases/$user", ["$tmpdir/privkey.$$"], $gpg, '--batch', '--no-verbose', '-q', '--no-secmem-warning', '--allow-non-selfsigned-uid', @pinentrymode, '--passphrase-fd=0', '--import', "$tmpdir/privkey.$$");
-  unlink("$tmpdir/privkey.$$");
+  rungpg_fatal("$phrases/$user", $tdir, $gpg, '--batch', '--no-verbose', '-q', '--no-secmem-warning', '--allow-non-selfsigned-uid', @pinentrymode, '--passphrase-fd=0', '--import', "$tdir/privkey");
+  unlink("$tdir/privkey");
   my ($status, $err, @out) = do_sign_multiple('/dev/null', 'privsign', undef, $hashalgo, \@args, 1);
   switch_gnupghome($oldgnupghome);
   remove_tree($tdir);
