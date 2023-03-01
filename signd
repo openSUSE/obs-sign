@@ -1251,9 +1251,11 @@ sub gpg_privkey_to_info {
   return $info;
 }
 
-sub gpg_keyfile_to_info {
-  my ($keyfile, $fingerprint) = @_;
-  return undef unless $keyfile && -s $keyfile;
+sub gpg_keygrip_to_info {
+  my ($gnupghome, $keygrip, $fingerprint) = @_;
+  return undef unless $gnupghome && $keygrip;
+  my $keyfile = "$gnupghome/private-keys-v1.d/$keygrip.key";
+  return undef unless -s $keyfile;
   my $kfd;
   return undef unless open($kfd, '<', $keyfile);
   my $key = '';
@@ -1342,10 +1344,7 @@ sub do_sign_multiple {
   }
   if (!$info && $have_gcrypt && $use_gcrypt_sign && $fingerprint && $keygrip) {
     my $have_phrase = defined($phrasefile) && $phrasefile ne '/dev/null' && -s $phrasefile;
-    my $gnupghome = $ENV{'GNUPGHOME'};
-    if (!$have_phrase && $gnupghome) {
-      $info = gpg_keyfile_to_info("$gnupghome/private-keys-v1.d/$keygrip.key", $fingerprint);
-    }
+    $info = gpg_keygrip_to_info($ENV{'GNUPGHOME'}, $keygrip, $fingerprint) unless $have_phrase;
   }
   my ($status, $err, @out) = (0, '');
   for my $hash (@$hashes) {
@@ -1431,8 +1430,7 @@ sub do_decode_gcrypt {
   my ($einfo, $encrypted, $encrypted_mdc) = parse_encryted_data($encodeddata);
   return undef unless $einfo && $encrypted && can_decrypt_with_gcrypt($einfo);
   my ($fingerprint, $keygrip) = find_key_keycache($einfo->{'keyid'}, 'e');
-  return undef unless $fingerprint && $keygrip;
-  my $info = gpg_keyfile_to_info("$gnupghome/private-keys-v1.d/$keygrip.key", $fingerprint);
+  my $info = gpg_keygrip_to_info($gnupghome, $keygrip, $fingerprint);
   return undef unless $info;
   my $decrypted = decrypt_with_gcrypt($info, $einfo, $encrypted, $encrypted_mdc);
   return decode_decrypted_data($decrypted);
