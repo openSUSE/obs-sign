@@ -125,7 +125,6 @@ probe_pubalgo()
 {
   char hashhex[1024];
   byte buf[8192], *bp;
-  u32 signtime = time(NULL);
   int i, outl;
   int sigl, fpl;
   byte *sig, *fp;
@@ -135,7 +134,7 @@ probe_pubalgo()
   /* hack: use 04040404 as hash to tell signd to send a v4 sig as answer */
   for (i = 0; i < hashlen[hashalgo]; i++, bp += 2)
     sprintf((char *)bp, "04");
-  sprintf((char *)bp, "@00%08x", (unsigned int)signtime);
+  sprintf((char *)bp, "@00%08x", 0);
 
   if (!privkey)
     outl = doreq_old(user, hashhex, hashalgo == HASH_SHA1 ? 0 : hashname[hashalgo], buf, sizeof(buf));
