@@ -76,12 +76,29 @@ sub spew {
   close(F) || die("close: $!\n");
 }
 
+sub slurp_first_line {
+  my ($fn) = @_;
+  my $fd;
+  open($fd, '<', $fn) || die("$fn: $!\n");
+  my $data = <$fd>;
+  die("$fn: $!\n") unless defined $data;
+  close $fd;
+  chomp $data;
+  return $data;
+}
+
 sub printlog {
   my ($msg) = @_;
   my @lt = localtime(time);
   my $year = $lt[5] + 1900;
   my $month = $lt[4] + 1;
   printf "%04d-%02d-%02d %02d:%02d:%02d: %s\n", $year, $month, @lt[3,2,1,0], $msg;
+}
+
+sub create_tmpdir {
+  my $tdir = tempdir('XXXXXXXX', DIR => $tmpdir, CLEANUP => 1);
+  chmod 0700, $tdir;
+  return $tdir;
 }
 
 # convert CIDR prefix to netmask array
@@ -745,13 +762,11 @@ sub doproxy {
   }
 }
 
-sub cleanup_tmp_gpg {
+sub rungpg_cleanup {
   my ($unlinks) = @_;
   return unless defined $unlinks;
   if (ref($unlinks) eq 'ARRAY') {
-    for (@{$unlinks || []}) {
-      unlink($_);
-    }
+    unlink($_) for @{$unlinks || []};
   } elsif (-d $unlinks) {
     remove_tree($unlinks);
   }
@@ -768,7 +783,7 @@ sub rungpg {
   pipe RH, WH;
   my $pid = open(KID, "-|");
   if (!defined $pid) {
-    cleanup_tmp_gpg($unlinks) if $unlinks;
+    rungpg_cleanup($unlinks) if $unlinks;
     die("could not fork: $!\n");
     exit(0);
   }
@@ -803,7 +818,7 @@ sub rungpg_fatal {
   if ($status) {
     $err = "Error $status" if $err eq '';
     $err =~ s/\n$//s;
-    cleanup_tmp_gpg($unlinks) if $unlinks;
+    rungpg_cleanup($unlinks) if $unlinks;
     die("$err\n");
   }
   return $out;
@@ -892,10 +907,8 @@ sub find_key_keycache {
 }
 
 sub prepare_tmp_gnupghome {
-  my ($dir) = @_;
-  my $tdir = tempdir('XXXXXXXX', DIR => $dir, CLEANUP => 1);
-  chmod 0700, $tdir;
-  mkdir("$tdir/gnupg", 0700) || die "Could not create $tdir/gnupg: $!\n";
+  my $tdir = create_tmpdir();
+  mkdir("$tdir/gnupg", 0700) || die("mkdir $tdir/gnupg: $!\n");
   return ($tdir, "$tdir/gnupg", $ENV{'GNUPGHOME'});
 }
 
@@ -962,7 +975,7 @@ sub cmd_keygen {
   my $length;
   ($type, $length) = split_length_from_type($type);
 
-  my ($tdir, $gnupghome, $oldgnupghome) = prepare_tmp_gnupghome($tmpdir);
+  my ($tdir, $gnupghome, $oldgnupghome) = prepare_tmp_gnupghome();
 
   # write params file
   my $batch = "Key-Type: $type\n";
@@ -1085,18 +1098,6 @@ sub switch_gnupghome {
   $ENV{'GNUPGHOME'} = $gnupghome;
 }
 
-sub read_passphrase {
-  my ($phrasefile) = @_;
-  die("unknown passphrase\n") unless defined $phrasefile;
-  my $fd;
-  open($fd, '<', $phrasefile) || die("$phrasefile: $!\n");
-  my $passphrase = <$fd>;
-  close $fd;
-  die("unknown passphrase\n") unless defined $passphrase;
-  chomp $passphrase;
-  return $passphrase;
-}
-
 sub agent_rpc {
   my ($cmd, $phrasefile) = @_;
   open_agent() unless defined $agent_sock;
@@ -1127,7 +1128,8 @@ sub agent_rpc {
 	next;
       }
       if ($line eq 'INQUIRE PASSPHRASE') {
-	my $passphrase = read_passphrase($phrasefile);
+	die("unknown passphrase\n") unless defined $phrasefile;
+	my $passphrase = slurp_first_line($phrasefile);
 	$passphrase =~ s/([^a-zA-Z0-9])/sprintf("%%%02X",ord($1))/sge;
 	my $msg = "D $passphrase\nEND\n";
 	syswrite($agent_sock, $msg) == length($msg) || die("syswrite: $!\n");
@@ -1472,7 +1474,7 @@ sub cmd_privsign {
   if ($use_gcrypt_privsign && can_sign_with_gcrypt($info)) {
     return do_sign_multiple('/dev/null', undef, $info, $hashalgo, \@args, 1);
   }
-  my ($tdir, $gnupghome, $oldgnupghome) = prepare_tmp_gnupghome($tmpdir);
+  my ($tdir, $gnupghome, $oldgnupghome) = prepare_tmp_gnupghome();
   # create import data: pubkey pkg, user pkg, privkey pkg, user pkg
   spew("$tdir/privkey", $pubkey.encodetag(13, 'privsign').$privkey.encodetag(13, 'privsign'));
   switch_gnupghome($gnupghome);
@@ -1496,11 +1498,7 @@ sub read_alias {
   my ($aliasdir, $alias, $colonok) = @_;
   die("illegal user $alias\n") if $alias eq '' || $alias =~ /[\000-\037\/]/s || $alias =~ /^\./s;
   die("illegal user $alias\n") if !$colonok && $alias =~ /^:/;
-  my $fd;
-  open($fd, '<', "$aliasdir/$alias") || die("$aliasdir/$alias: $!\n");
-  my $user = <$fd>;
-  close($fd);
-  chomp $user;
+  my $user = slurp_first_line("$aliasdir/$alias");
   die("illegal user $user for alias $alias\n") if $user eq '' || $user =~ /[\000-\037\/]/s || $user =~ /^\./s;
   return $user;
 }
