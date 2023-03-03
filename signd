@@ -378,6 +378,33 @@ sub can_sign_with_gcrypt {
   return 0;
 }
 
+sub decrypt_cipher_with_gcrypt {
+  my ($cipheralgo, $key, $encrypted, $encrypted_mdc) = @_;
+  my ($cipher, $blklen);
+  if ($cipheralgo == 9) {	# AES256
+    die("bad cipher key length\n") unless length($key) == 32;
+    $blklen = 16;
+    $cipher = Crypt::GCrypt->new('type' => 'cipher', 'algorithm' => 'aes256', 'mode' => 'cfb', 'padding' => 'none');
+  }
+  die("decrypt_with_gcrypt: unsupported cipher algorithm $cipheralgo\n") unless $cipher && $blklen;
+  $cipher->start('decrypting');
+  $cipher->setkey($key);
+  my $padlen = length($encrypted) % $blklen;
+  my $pad = $padlen ? ("\0" x ($blklen - $padlen)) : '';
+  my $plain = $cipher->decrypt("$encrypted$pad");
+  $plain .= $cipher->finish();
+  $plain = substr($plain, 0, length($encrypted)) if $padlen;
+  die("bad DEK data\n") if length($plain) < $blklen + 2;
+  my @chk = unpack('nn', substr($plain, $blklen - 2, 4));
+  die("DEK mismatch\n") if $chk[0] != $chk[1];
+  if ($encrypted_mdc) {
+    die("MDC mismatch\n") if length($plain) < $blklen + 2 + 22 || unpack('n', substr($plain, -22, 2)) != 0xd314;
+    die("MDC mismatch\n") if substr($plain, -20) ne Digest::SHA::sha1(substr($plain, 0, -20));
+    substr($plain, -22, 22, '');
+  }
+  return substr($plain, $blklen + 2);
+}
+
 sub decrypt_with_gcrypt {
   my ($info, $einfo, $encrypted, $encrypted_mdc) = @_;
   die("decrypt_with_gcrypt: encryption algo mismatch\n") if $info->{'algo'} != $einfo->{'algo'};
@@ -410,29 +437,7 @@ sub decrypt_with_gcrypt {
   my $csum2 = 0;
   $csum2 += $_ for unpack('C*', $value);
   die("bad DEK checksum\n") unless $csum == ($csum2 % 65536);
-  my ($cipher, $blklen);
-  if ($cipheralgo == 9) {	# AES256
-    die("bad cipher length\n") unless length($value) == 32;
-    $blklen = 16;
-    $cipher = Crypt::GCrypt->new('type' => 'cipher', 'algorithm' => 'aes256', 'mode' => 'cfb', 'padding' => 'none');
-  }
-  die("decrypt_with_gcrypt: unsupported cipher algorithm $cipheralgo\n") unless $cipher && $blklen;
-  $cipher->start('decrypting');
-  $cipher->setkey($value);
-  my $padlen = length($encrypted) % $blklen;
-  my $pad = $padlen ? ("\0" x ($blklen - $padlen)) : '';
-  my $plain = $cipher->decrypt("$encrypted$pad");
-  $plain .= $cipher->finish();
-  $plain = substr($plain, 0, length($encrypted)) if $padlen;
-  die("bad DEK data\n") if length($plain) < $blklen + 2;
-  my @chk = unpack('nn', substr($plain, $blklen - 2, 4));
-  die("DEK mismatch\n") if $chk[0] != $chk[1];
-  if ($encrypted_mdc) {
-    die("MDC mismatch\n") if length($plain) < $blklen + 2 + 22 || unpack('n', substr($plain, -22, 2)) != 0xd314;
-    die("MDC mismatch\n") if substr($plain, -20) ne Digest::SHA::sha1(substr($plain, 0, -20));
-    substr($plain, -22, 22, '');
-  }
-  return substr($plain, $blklen + 2);
+  return decrypt_cipher_with_gcrypt($cipheralgo, $value, $encrypted, $encrypted_mdc);
 }
 
 sub can_decrypt_with_gcrypt {
@@ -828,7 +833,7 @@ sub find_key {
   my ($user, $purpose) = @_;
   $purpose ||= 's';
   $purpose = qr/$purpose/;
-  my $lines = rungpg_fatal('/dev/null', undef, $gpg, '--locate-key', '--with-fingerprint', '--with-fingerprint', '--with-keygrip', '--with-colons', '--', $user);
+  my $lines = rungpg_fatal('/dev/null', undef, $gpg, '--locate-key', '--with-fingerprint', '--with-keygrip', '--with-colons', '--', $user);
   my $fpr;
   my $grp;
   my $keyid;
@@ -1374,6 +1379,7 @@ sub parse_encryted_data {
   die("encrypted data does not start with a session packet\n") if $tag != 1;
   my $pkg = substr($encodeddata, $off, $len);
   my ($version, $keyid, $algo) = unpack('CH16C', $pkg);
+  die("unsupported session packet version\n") unless $version == 3;
   my @mpis;
   my $mpinum;
   $mpinum = 1 if $algo == 1;
