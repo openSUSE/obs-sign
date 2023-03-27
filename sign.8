@@ -113,14 +113,14 @@ metadata generation.
 Verbose mode
 .TP
 .BI "\-u " username
-Specify the key to use. Signd should already know about that user.
+Specify the key to use. The user must be in the keyring used by signd.
 .TP
 .BI "\-h " hash
 Either sha1, sha256, or sha512. The default is sha1, because some old distributions,
 e.g., RHEL 7, cannot handle sha256. On modern systems you should use sha256.
 .TP
 .BI "\-T " unixtime
-Explicit sign time. If RPM mode used (\-r) also accepts the string "buildtime".
+Explicit sign time. If RPM mode (\-r) is used also accepts the string "buildtime".
 .TP
 .BI "\-P " keyfile
 Private key file. This file must contain the encrypted privatekey generated
@@ -133,7 +133,7 @@ Usable only with \-r option: appends checksums into the file.
 Create a pgp v4 signature instead of v3
 .TP
 .BI "\-A " pubkeyalgo
-Enforce that the specified algorithm (rsa or dsa) is used for signing
+Enforce that the specified algorithm (rsa, dsa, ecdsa, eddsa) is used for signing
 .TP
 .BI "\-\-cert " certfile
 Speficy a x509 certificate to use. A certificate is needed by some of the
@@ -144,6 +144,12 @@ Do not include certificates in the pkcs7/cms signature
 .TP
 .B \-\-cms-keyid
 Identify the certificate with the keyid instead of the issuer/serial
+.TP
+.B \-\-bulk-cpio
+The input is a cpio archive in newc format. Each file in the archive is
+signed. All the signatures are packed into a new cpio archive which filenames
+consisting of the original files plus a ".sig" suffix. This mode is
+currently only supported for raw X509 signature creation (-O).
 
 
 .SH KEY GENERATION
@@ -151,7 +157,7 @@ Identify the certificate with the keyid instead of the issuer/serial
 .BR "\-g " "[\-P \fIprivkey\fP] " "\fItype\fP \fIexpire\fP \fIname\fP \fIemail\fP"
 Generate new key-pair. Where:
 .br
-  type: defined as {dsa,rsa}@{1024,2048,4096}
+  type: one of {dsa,rsa}@{1024,2048,4096} ed25519 nistp256 nistp384
   expire: integer, days before expire
   name: real name
   email: email
@@ -165,7 +171,7 @@ to stdout.
 .BI "\-x " expire " \fIpubkey\fP"
 Extend key. Requires a private key to be specified with the \-P option.
 .TP
-.BI "\-C " pubkeyfile
+.BI "\-C " pubkey
 Convert a gpg pubkey to a self-signed X509 certificate
 
 
@@ -175,10 +181,10 @@ Convert a gpg pubkey to a self-signed X509 certificate
 Ping signd. If ping was successful, return exit code 0.
 .TP
 .BR \-k
-Print the keyid of signd key-pair (root key or defined by \-u)
+Print the keyid of the key used for signing (root key or defined by \-u)
 .TP
 .BR \-p
-Print pubkey of signd key-pair (root key or defined by \-u)
+Print the pubkey of of the key used for signing (root key or defined by \-u)
 
 
 .SH SECURITY
