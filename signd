@@ -431,7 +431,7 @@ sub decrypt_with_gcrypt {
   die("decrypt_with_gcrypt: encryption algo mismatch\n") if $info->{'algo'} != $einfo->{'algo'};
   my $value;
   if ($info->{'algo'} == 1) {
-    die("sign_with_gcrypt: missing MPIs\n") unless @{$info->{'mpis'} || []} == 2 && @{$info->{'smpis'} || []} == 4;
+    die("decrypt_with_gcrypt: missing MPIs\n") unless @{$info->{'mpis'} || []} == 2 && @{$info->{'smpis'} || []} == 4 && @{$einfo->{'mpis'} || []} == 1;
     my ($av) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$einfo->{'mpis'}};
     my ($n, $e, $d, $p, $q, $u) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$info->{'mpis'}}, @{$info->{'smpis'}};
     my $encval = Crypt::GCrypt::Sexp->build("(enc-val (flags) (rsa (a %M)))", $av);
@@ -439,6 +439,7 @@ sub decrypt_with_gcrypt {
     my $res = Crypt::GCrypt::pk_decrypt($encval, $skey);
     $value = $res->nth_data(1, 'value');
   } elsif ($info->{'algo'} == 16) {
+    die("decrypt_with_gcrypt: missing MPIs\n") unless @{$info->{'mpis'} || []} == 3 && @{$info->{'smpis'} || []} == 1 && @{$einfo->{'mpis'} || []} == 2;
     my ($av, $bv) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$einfo->{'mpis'}};
     my ($p, $g, $y, $x) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$info->{'mpis'}}, @{$info->{'smpis'}};
     my $encval = Crypt::GCrypt::Sexp->build("(enc-val (flags) (elg (a %M) (b %M)))", $av, $bv);
