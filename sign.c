@@ -129,6 +129,45 @@ probe_pubalgo()
   int sigl, fpl;
   byte *sig, *fp;
 
+  if (privkey)
+    {
+      readprivkey();
+      if (privkey[0] == '0')
+	{
+	  /* symmetric key, decode up to 10 + 256 bytes into buf */
+	  int x = 0;
+	  for (i = 0; i < (10 + 256) * 2; i++)
+	    {
+	      x <<= 4;
+	      if (privkey[i] >= '0' && privkey[i] <= '9')
+		x += privkey[i] - '0';
+	      else if (privkey[i] >= 'a' && privkey[i] <= 'f')
+		x += privkey[i] - 'a' + 10;
+	      else
+		break;
+	      if ((i & 1) != 0)
+	        buf[i / 2] = x;
+	    }
+	  i /= 2;
+	  /* check if we have extra data about the fingerprint and the algo */
+	  if (i > 10 && buf[0] == 1 && i > 10 + buf[9])
+	    {
+	      int xdl = buf[9];
+	      if (xdl == 22 && buf[11] == 4)
+		{
+	          memcpy(fingerprintprobe, buf + 11, 21);
+		  if (buf[10] == 1)
+		    return PUB_RSA;
+		  if (buf[10] == 17)
+		    return PUB_DSA;
+		  if (buf[10] == 19)
+		    return PUB_ECDSA;
+		  if (buf[10] == 22)
+		    return PUB_EDDSA;
+		}
+	    }
+	}
+    }
   opensocket();
   bp = (byte *)hashhex;
   /* hack: use 04040404 as hash to tell signd to send a v4 sig as answer */
@@ -141,7 +180,6 @@ probe_pubalgo()
   else
     {
       const char *args[5];
-      readprivkey();
       args[0] = "privsign";
       args[1] = algouser;
       args[2] = privkey;
