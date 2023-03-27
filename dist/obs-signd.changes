@@ -1,8 +1,17 @@
 -------------------------------------------------------------------
+Mon Mar 27 14:13:39 CEST 2023 - mls@suse.de
+
+- update to version 2.8.0
+  * support of symmetric encryption of project keys
+  * support project key decryption with libgcrypt
+  * support bulk cpio signing
+  * support privileged operations
+
+-------------------------------------------------------------------
 Fri Feb 10 10:33:32 CET 2023 - mls@suse.de
 
 - update to version 2.7.3
-  * suuport ecdsa@nistp256 and ecdsa@nistp384
+  * support ecdsa@nistp256 and ecdsa@nistp384
   * drop obsolete certgen server side support
   * add  use-unprivileged-ports config option
   * increase keygen request buffer size
