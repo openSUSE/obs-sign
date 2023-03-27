@@ -22,6 +22,7 @@ use strict;
 use warnings;
 use Socket qw/IPPROTO_TCP PF_INET PF_UNIX SOCK_STREAM SOL_SOCKET SO_REUSEADDR SO_KEEPALIVE INADDR_ANY inet_aton inet_ntoa sockaddr_in sockaddr_un getnameinfo/;
 use POSIX;
+use Fcntl qw(:DEFAULT :flock);
 use Math::BigInt;
 use MIME::Base64;
 use Encode;
@@ -65,9 +66,28 @@ my $use_gcrypt_sign;
 my $use_gcrypt_privsign;
 my $use_gcrypt_decrypt;
 
+my $restricted_gnupghome = '';
+my $restricted_phrases = '';
+my $restricted_aliases = '';
+my $privileged_gnupghome = '';
+my $privileged_logfile;
+my $system_gnupghome = '';
+my $extranonce = '';
+my $backup_user = '';
+my @backup_locations;
+
 # request data
 my $oldproto = 0;
 my $peer = 'unknown';
+
+sub ls {
+  my ($dir) = @_;
+  my $d;
+  return () unless defined($dir) && opendir($d, $dir);
+  my @d = grep {!/^\./} readdir($d);
+  closedir($d);
+  return sort(@d);
+}
 
 sub spew {
   my ($fn, $data) = @_;
@@ -608,6 +628,43 @@ while(<F>) {
   if ($s[0] eq 'agentsocket:') {
     shift @s;
     $agentsocket = \@s;
+    next;
+  }
+  if ($s[0] eq 'restricted_gnupghome:') {
+    $restricted_gnupghome = $s[1];
+    next;
+  }
+  if ($s[0] eq 'restricted_phrases:') {
+    $restricted_phrases = $s[1];
+    next;
+  }
+  if ($s[0] eq 'restricted_aliases:') {
+    $restricted_aliases = $s[1];
+    next;
+  }
+  if ($s[0] eq 'privileged_gnupghome:') {
+    $privileged_gnupghome = $s[1];
+    next;
+  }
+  if ($s[0] eq 'system_gnupghome:') {
+    $system_gnupghome = $s[1];
+    next;
+  }
+  if ($s[0] eq 'privileged_logfile:') {
+    $privileged_logfile = $s[1];
+    next;
+  }
+  if ($s[0] eq 'extranonce:') {
+    $extranonce = $s[1];
+    next;
+  }
+  if ($s[0] eq 'backup:') {
+    shift @s;
+    push @backup_locations, @s;
+    next;
+  }
+  if ($s[0] eq 'backup_user:') {
+    $backup_user = $s[1];
     next;
   }
 }
@@ -1681,6 +1738,425 @@ sub write_alias {
   rename("$aliasdir/.$alias.$$", "$aliasdir/$alias") || die("rename $aliasdir/.$alias.$$ $aliasdir/$alias: $!\n");
 }
 
+################
+
+my %privileged_cmds = (
+  'sign'	=> [ \&cmd_privileged_sign,       1, [ 'restricted' ] ],
+  'pubkey'	=> [ \&cmd_privileged_pubkey,     1, [ 'restricted' ] ],
+  'keylist'	=> [ \&cmd_privileged_keylist,    0, [ 'standard', 'restricted', 'privileged' ] ],
+  'keyphrases'	=> [ \&cmd_privileged_keyphrases, 0, [ 'standard', 'restricted' ] ],
+  'keygen'	=> [ \&cmd_privileged_keygen,     0, [ 'standard', 'restricted' ] ],
+  'keydel'	=> [ \&cmd_privileged_keydel,     1, [ 'standard', 'restricted', 'privileged' ] ],
+  'keyextend'	=> [ \&cmd_privileged_keyextend,  1, [ 'standard', 'restricted' ] ],
+  'keycvt'	=> [ \&cmd_privileged_keycvt,     1, [ 'standard', 'restricted' ] ],
+  'aliaslist'	=> [ \&cmd_privileged_aliaslist,  0, [ 'standard', 'restricted' ] ],
+  'aliasgen'	=> [ \&cmd_privileged_aliasgen,   1, [ 'standard', 'restricted' ] ],
+  'aliasdel'	=> [ \&cmd_privileged_aliasdel,   1, [ 'standard', 'restricted' ] ],
+  'enckeylist'	=> [ \&cmd_privileged_enckeylist, 0, [ 'standard' ] ],
+  'enckeygen'	=> [ \&cmd_privileged_enckeygen,  0, [ 'standard' ] ],
+  'enckeydel'	=> [ \&cmd_privileged_enckeydel,  1, [ 'standard' ] ],
+  'backup'	=> [ \&cmd_privileged_backup,     0, [ 'system' ] ],
+);
+
+sub privileged_switch_gnupghome {
+  my ($keyring, $allow_privileged, $allow_system) = @_;
+  my $oldgnupghome = $ENV{'GNUPGHOME'};
+  die("bad keyring in privileged_switch_gnupghome\n") if $keyring eq 'privileged' && !$allow_privileged;
+  die("bad keyring in privileged_switch_gnupghome\n") if $keyring eq 'system' && !$allow_system;
+  my $gnupghome;
+  $gnupghome = $oldgnupghome if $keyring eq 'standard';
+  $gnupghome = $restricted_gnupghome if $keyring eq 'restricted';
+  $gnupghome = $system_gnupghome if $keyring eq 'system';
+  $gnupghome = $privileged_gnupghome if $keyring eq 'privileged';
+  die("keyring $keyring is not configured\n") unless $gnupghome;
+  switch_gnupghome($gnupghome);
+  return $oldgnupghome;
+}
+
+sub privileged_get_aliasdir {
+  my ($keyring, $mustexist) = @_;
+  my $aliasdir;
+  $aliasdir = $restricted_aliases if $keyring eq 'restricted';
+  $aliasdir = $aliases if $keyring eq 'standard';
+  if ($mustexist) {
+    die("aliases are not configured for keyring $keyring\n") unless $aliasdir;
+    die("aliases directory $aliasdir does not exist\n") unless -d $aliasdir;
+  }
+  return $aliasdir;
+}
+
+sub privileged_get_phrasedir {
+  my ($keyring, $mustexist) = @_;
+  my $phrasedir;
+  $phrasedir = $restricted_phrases if $keyring eq 'restricted';
+  $phrasedir = $phrases if $keyring eq 'standard';
+  if ($mustexist) {
+    die("phrases are not configured for keyring $keyring\n") unless $phrasedir;
+    die("phrases directory $phrasedir does not exist\n") unless -d $phrasedir;
+  }
+  return $phrasedir;
+}
+
+sub privileged_map_user {
+  my ($keyring, $user) = @_;
+  my $phrasedir = privileged_get_phrasedir($keyring);
+  my $aliasdir = privileged_get_aliasdir($keyring);
+  $user = read_alias($aliasdir, $user) if $aliasdir && -e "$aliasdir/$user";
+  die("unknown key: $user\n") unless $phrasedir && -e "$phrasedir/$user";
+  return ($user, $phrasedir, $aliasdir);
+}
+
+sub cmd_privileged_sign {
+  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
+  die("usage: sign <arg>\n") unless @args == 1;
+  my $phrasedir;
+  ($user, $phrasedir) = privileged_map_user($keyring, $user);
+  my $oldgnupghome = privileged_switch_gnupghome($keyring);
+  undef $keycache;	# hack
+  my ($status, $out, $err) = do_sign_multiple("$phrasedir/$user", $user, undef, $hashalgo, $args[0]);
+  switch_gnupghome($oldgnupghome);
+  return ($status, $err, $out);
+}
+
+sub cmd_privileged_pubkey {
+  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
+  die("excess arguments\n") unless @args == 0;
+  ($user) = privileged_map_user($keyring, $user);
+  my $oldgnupghome = privileged_switch_gnupghome($keyring);
+  my $pubkey = rungpg_fatal('/dev/null', undef, $gpg, '--export', '-a', $user);
+  switch_gnupghome($oldgnupghome);
+  return (0, '', $pubkey);
+}
+
+sub cmd_privileged_keylist {
+  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
+  die("excess arguments\n") unless @args == 0;
+  my $oldgnupghome = privileged_switch_gnupghome($keyring, 1);
+  my $result= rungpg_fatal('/dev/null', undef, $gpg, '--list-keys');
+  switch_gnupghome($oldgnupghome);
+  return (0, '', $result);
+}
+
+sub cmd_privileged_keyphrases {
+  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
+  die("excess arguments\n") unless @args == 0;
+  my $phrasedir = privileged_get_phrasedir($keyring);
+  my $result = '';
+  $result .= "$_\n" for ls($phrasedir);
+  return (0, '', $result);
+}
+
+sub cmd_privileged_keydel {
+  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
+  die("excess arguments\n") unless @args == 0;
+  my $phrasedir;
+  ($user, $phrasedir) = privileged_map_user($keyring, $user);
+  my $oldgnupghome = privileged_switch_gnupghome($keyring, 1);
+  my ($efpr) = find_key($user, 'e');
+  die("key '$user' has an encrytion subkey\n") if $efpr;
+  my ($fpr) = find_key($user);
+  die("could not determine fingerprint of key '$user'\n") unless $fpr;
+  rungpg_fatal('/dev/null', undef, $gpg, '--batch', '--yes', '--delete-secret-and-public-key', $fpr);
+  unlink("$phrasedir/$user");
+  switch_gnupghome($oldgnupghome);
+  return (0, '', '');
+}
+
+sub cmd_privileged_keygen {
+  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
+  die("usage: keygen <type> <days> <name> <email> [alias]\n") unless @args == 4 || @args == 5;
+  my $type = $args[0];
+  my $expire = $args[1];
+  die("bad expire format\n") unless $expire =~ /^\d{1,10}$/s;
+  my $real = $args[2];
+  my $email = $args[3];
+  checkbadchar($real, 'real name');
+  checkbadchar($email, 'email');
+  my $alias = $args[4];
+  my $aliasdir = privileged_get_aliasdir($keyring, $alias ? 1 : 0);
+  my $phrasedir = privileged_get_phrasedir($keyring, 1);
+  my ($tdir) = prepare_tmp_gnupghome();
+  my $length;
+  ($type, $length) = split_length_from_type($type);
+  my $batch = "Key-Type: $type\n";
+  $batch .= ($type eq 'ecdsa' || $type eq 'eddsa' ? "Key-Curve: " : "Key-Length: "). "$length\n";
+  $batch .= "Key-Usage: sign\nName-Real: $real\nName-Email: $email\nExpire-Date: ${expire}d\n%no-protection\n";
+  spew("$tdir/params", $batch);
+  my $oldgnupghome = privileged_switch_gnupghome($keyring);
+  my $out = rungpg_fatal('/dev/null', $tdir, $gpg, '--batch', '--status-fd=1', '--no-secmem-warning', '--gen-key', "$tdir/params");
+  remove_tree($tdir);
+  die("could not determine key id of generated key\n") if $out !~ /KEY_CREATED P ([0-9A-F]{40,})/s;
+  my $keyid = substr($1, -16);
+  spew("$phrasedir/$keyid", '');
+  write_alias($aliasdir, $keyid, $alias) if $alias;
+  my $pubkey = rungpg_fatal('/dev/null', undef, $gpg, '--export', '-a', $keyid);
+  switch_gnupghome($oldgnupghome);
+  return (0, '', $pubkey);
+}
+
+sub cmd_privileged_keyextend {
+  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
+  die("usage: keyextend <days>\n") unless @args == 1;
+  my $expire = $args[0];
+  die("bad expire format\n") unless $expire =~ /^\d{1,10}$/s;
+  my $phrasedir;
+  ($user, $phrasedir) = privileged_map_user($keyring, $user);
+  # gpg does not support to specify the expire as argument on the cmd line
+  my ($tdir) = prepare_tmp_gnupghome();
+  spew("$tdir/params", "expire\n${expire}d\nsave\n");
+  my $oldgnupghome = privileged_switch_gnupghome($keyring);
+  rungpg_fatal("$phrasedir/$user", $tdir, $gpg, '--batch', '--no-secmem-warning', '--passphrase-fd=0', '--command-file', "$tdir/params", '--edit-key', $user);
+  remove_tree($tdir);
+  my $pubkey = rungpg_fatal('/dev/null', undef, $gpg, '--export', '-a', $user);
+  switch_gnupghome($oldgnupghome);
+  return (0, '', $pubkey);
+}
+
+sub cmd_privileged_keycvt {
+  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
+  die("excess arguments\n") unless @args == 0;
+  my $aliasdir = privileged_get_aliasdir($keyring);
+  $aliasdir = privileged_get_aliasdir($keyring, 1) if $aliasdir;
+  my $phrasedir = privileged_get_phrasedir($keyring, 1);
+  die("unknown key: $user\n") unless $phrasedir && -e "$phrasedir/$user";
+  my $oldgnupghome = privileged_switch_gnupghome($keyring);
+  my ($fpr) = find_key($user);
+  die("could not determine fingerprint of key '$user'\n") unless $fpr;
+  my $keyid = substr($fpr, -16);
+  die("phrases entry for $keyid already exists\n") if -e "$phrasedir/$keyid";
+  rename("$phrasedir/$user", "$phrasedir/$keyid") || die("rename $phrasedir/$user $phrasedir/$keyid: $!\n");
+  switch_gnupghome($oldgnupghome);
+  write_alias($aliasdir, $keyid, $user) if $aliasdir && ! -e "$aliasdir/$user";
+  return (0, '', '');
+}
+
+sub cmd_privileged_enckeygen {
+  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
+  if (@args && $args[0] eq 'sym') {
+    my $keyid = do_keygen_sym();
+    return(0, '', "$keyid\n");
+  }
+  die("please specify a user\n") if $user eq '-';
+  die("usage: enckeygen <type> <days>\n") unless @args == 2;
+  my $type = $args[0];
+  my $expire = $args[1];
+  die("bad expire format\n") unless $expire =~ /^\d{1,10}$/s;
+  if ($type =~ /^(rsa|elg)\@(2048|4096)$/) {
+    $type =~ s/\@//;
+  } elsif ($type ne 'cv25519') {
+    die("bad type: $type\n");
+  }
+  my $phrasedir;
+  ($user, $phrasedir) = privileged_map_user($keyring, $user);
+  my $oldgnupghome = privileged_switch_gnupghome($keyring);
+  my ($fpr) = find_key($user);
+  die("could not determine fingerprint of key '$user'\n") unless $fpr;
+  my ($efpr) = find_key($user, 'e');
+  die("key '$user' already has an encryption key\n") if $efpr;
+  rungpg_fatal("$phrasedir/$user", undef, $gpg, '--batch', '--no-secmem-warning', '--passphrase-fd=0', '--quick-add-key', $fpr, $type, 'encr', "${expire}d");
+  my $pubkey = rungpg_fatal('/dev/null', undef, $gpg, '--export', '-a', $user);
+  switch_gnupghome($oldgnupghome);
+  return (0, '', $pubkey);
+}
+
+sub cmd_privileged_enckeydel {
+  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
+  die("excess arguments\n") unless @args == 0;
+  if ($encryptionkeys && -e "$encryptionkeys/$user") {
+    unlink("$encryptionkeys/$user");
+    return (0, '', '');
+  }
+  my $phrasedir;
+  ($user, $phrasedir) = privileged_map_user($keyring, $user);
+  my $oldgnupghome = privileged_switch_gnupghome($keyring);
+  my ($fpr) = find_key($user);
+  die("could not determine fingerprint of key '$user'\n") unless $fpr;
+  my ($efpr) = find_key($user, 'e');
+  die("key '$user' does not have an encryption key\n") unless $efpr;
+  die("the enctyption key for '$user' is the primary key\n") if $fpr eq $efpr;
+  rungpg_fatal('/dev/null', undef, $gpg, '--batch', '--yes', '--delete-secret-and-public-key', "$efpr!");
+  switch_gnupghome($oldgnupghome);
+  return (0, '', '');
+}
+
+sub cmd_privileged_enckeylist {
+  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
+  my $result = '';
+  for my $keyid (ls($encryptionkeys)) {
+    my $info = eval { read_encparams_sym("$encryptionkeys/$keyid", $keyid) };
+    my $istr = '';
+    $istr .= "$_=$info->{$_}," for grep {$info && defined($info->{$_})} qw{version created s2kalgo s2kcnt cipheralgo};
+    $result .= "$keyid  ".substr($istr || 'broken,', 0, -1)."\n";
+  }
+  return (0, '', $result);
+}
+
+sub cmd_privileged_aliaslist {
+  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
+  die("excess arguments\n") unless @args == 0;
+  my $aliasdir = privileged_get_aliasdir($keyring);
+  my $phrasedir = privileged_get_phrasedir($keyring);
+  my $result = '';
+  for my $alias (ls($aliasdir)) {
+    my $isenc = $alias =~ /^:enc/ ? 1 : 0;
+    my $user = read_alias($aliasdir, $alias, $isenc);
+    my $dead = ' (dead)';
+    $dead = '' if $isenc && $encryptionkeys && -e "$encryptionkeys/$user";
+    $dead = '' if $phrasedir && -e "$phrasedir/$user";
+    $result .= "$alias -> $user$dead\n";
+  }
+  return (0, '', $result);
+}
+
+sub cmd_privileged_aliasgen {
+  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
+  die("usage: aliasgen <alias>\n") unless @args == 1;
+  my $alias = $args[0];
+  my $aliasdir = privileged_get_aliasdir($keyring, 1);
+  write_alias($aliasdir, $user, $alias);
+  return (0, '', '');
+}
+
+sub cmd_privileged_aliasdel {
+  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
+  die("excess arguments\n") unless @args == 0;
+  my $aliasdir = privileged_get_aliasdir($keyring);
+  die("unknown alias: $user\n") unless $aliasdir && -e "$aliasdir/$user";
+  unlink("$aliasdir/$user");
+  return (0, '', '');
+}
+
+sub cmd_privileged_backup {
+  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
+  die("no backup key configured\n") unless $backup_user;
+  die("no backup locations configured\n") unless @backup_locations;
+  my @bl = @backup_locations;
+  for (@bl) {
+    s/^\/+//;
+    die("cannot backup complete filesystem\n") unless $_;
+  }
+  # create backup tar
+  my $tdir = create_tmpdir();
+  my $tarfile = "$tdir/backup.tar";
+  my $encfile = "$tdir/backup.enc";
+  unlink($tarfile);
+  unlink($encfile);
+  rungpg_fatal('/dev/null', $tdir, 'tar', '-C', '/', '-cf', $tarfile, @bl);
+
+  # encrypt file
+  my $oldgnupghome = privileged_switch_gnupghome('system', 0, 1);
+  rungpg_fatal('/dev/null', $tdir, $gpg, '--batch', '--encrypt', '--no-verbose', '--no-secmem-warning', '--trust-model', 'always', '-o', $encfile, '-r', $backup_user, $tarfile);
+  switch_gnupghome($oldgnupghome);
+  unlink($tarfile);
+
+  my $fd;
+  open($fd, '<', $encfile) || die("$encfile: $!\n");
+  remove_tree($tdir);
+
+  my $size = -s $fd;
+  # send back reply (cannot use reply() as it closes the socket)
+  my $ret = pack('nn', 1, length($size)).$size;
+  $ret = pack("nnn", 0, length($ret), 0).$ret;
+  swrite(*CLNT, $ret);
+  # send back file
+  while ($size > 0) {
+    my $buf = '';
+    my $r = sysread($fd, $buf, $size > 8192 ? 8192 : $size);
+    die("$encfile: $!\n") unless defined $r;
+    die("$encfile: unexpected EOF\n") unless $r;
+    swrite(*CLNT, $buf);
+    $size -= length($buf);
+  }
+  close CLNT;
+  return (0, '', '');
+}
+
+sub privileged_generate_nonce {
+  my ($now, $logfdlen) = @_;
+  $now = int($now / 600);
+  return Digest::SHA::sha256_hex("$extranonce/$now/$logfdlen");
+}
+
+sub privileged_verify_signature {
+  my ($signature, $now, $logfdlen, $algouser, $keyring, @args) = @_;
+  my $oldgnupghome = privileged_switch_gnupghome('privileged', 1);
+  my $tdir = create_tmpdir();
+  my ($status, $out, $err);
+  spew("$tdir/sig", pack('H*', $signature));
+  for my $tdelta (0, 600) {
+    spew("$tdir/data", "privileged\0$algouser\0$keyring\0".privileged_generate_nonce($now - $tdelta, $logfdlen)."\0".join("\0", @args));
+    ($status, $out, $err) = rungpg('/dev/null', undef, $gpg, '--no-secmem-warning', '--batch', '--status-fd=1', '--verify', "$tdir/sig", "$tdir/data");
+    last unless $status;
+  }
+  switch_gnupghome($oldgnupghome);
+  remove_tree($tdir);
+  die("bad signature\n") if $status;
+  die("bad status output\n") unless $out =~ /^\[GNUPG:\] GOODSIG ([0-9A-F]+) (.*)$/m;
+  my ($keyid, $user) = ($1, $2);
+  die("cannot extract email from user $user\n") unless $user =~ /(\<\S+\>)/;
+  return "$keyid$1";
+}
+
+sub privileged_log {
+  my ($logfd, $logline) = @_;
+  $logline =~ s/[\r\n].*//s;
+  $logline =~ s/[\000-\037\177]//g;
+  $logline = "$logline\n";
+  die("privlog write: $!\n") unless syswrite($logfd, $logline) == length($logline);
+}
+
+sub cmd_privileged {
+  my ($cmd, $user, $hashalgo, @args) = @_;
+  die("privileged mode is not configured\n") unless $privileged_logfile && $privileged_gnupghome;
+  if (@args == 1 && $args[0] eq 'nonce') {
+    my $logfdlen = (-s $privileged_logfile) || 0;
+    my $nonce = privileged_generate_nonce(time(), $logfdlen);
+    return (0, '', $nonce);
+  }
+  -d $tmpdir || mkdir($tmpdir, 0700) || die("$tmpdir: $!\n");
+  die("privileged: please specify a user\n") unless $user;
+  die("privileged: bad number of arguments\n") unless @args >= 3;
+  die("privileged: oldproto is not supported\n") if $oldproto;
+  my ($keyring, $signature, $pcmd) = splice(@args, 0, 3);
+  die("privileged: bad keyring '$keyring'\n") if $keyring ne 'standard' && $keyring ne 'restricted' && $keyring ne 'privileged' && $keyring ne 'system';
+  die("privileged: no system keyring configured\n") if $keyring eq 'system' && !$system_gnupghome;
+  die("privileged: no restricted keyring configured\n") if $keyring eq 'restricted' && !$restricted_gnupghome;
+  die("bad signature\n") unless $signature =~ /^\A[0-9a-fA-F]+\z/s;
+  my $handler = $privileged_cmds{$pcmd};
+  die("unknown command: $pcmd\n") unless $handler;
+  die("please specify a user\n") if $user eq '-' && $handler->[1];
+  die("$pcmd: keyring must be ".join('|', @{$handler->[2]})."\n") unless grep {$keyring eq $_} @{$handler->[2]};
+
+  my $logfd;
+  open($logfd, '>>', $privileged_logfile) || die("$privileged_logfile: $!\n");
+  flock($logfd, LOCK_EX) || die("flock $privileged_logfile: $!\n");
+  my $now = time();
+  my $logfdlen = -s $logfd;
+  my $privileged_user = eval { privileged_verify_signature($signature, $now, $logfdlen, "$hashalgo:$user", $keyring, $pcmd, @args) };
+  if ($@) {
+    privileged_log($logfd, "auth $now $@");
+    sleep(5);
+    close($logfd);
+    die($@);
+  }
+  privileged_log($logfd, "req $now $privileged_user $user $hashalgo $keyring $pcmd @args");
+  my ($status, $err, @out);
+  eval { ($status, $err, @out) = $handler->[0]->($pcmd, $user, $hashalgo, $keyring, @args) };
+  ($status, $err) = (1, $@) if $@;
+  $now = time();
+  if ($status) {
+    privileged_log($logfd, "fail $now $status ".(split(/[\r\n]/, $err || 'unknown error'))[-1]);
+  } else {
+    privileged_log($logfd, "ok $now");
+  }
+  close($logfd);
+  exit(0) if $pcmd eq 'backup';		# already replied
+  return ($status, $err, @out);
+}
+
+################
+
+
 ## read the request, call the handler, reply the result
 @argv = readreq();
 
@@ -1724,6 +2200,10 @@ if ($user =~ /^(.*?):(.*)$/) {
 $hashalgo ||= 'SHA1';	# historic default, maybe die() instead?
 die("illegal user $user\n") if $user ne '' && ($user =~ /[\000-\037\/]/s || $user =~ /^\./s);
 die("illegal hashalgo $hashalgo\n") if $hashalgo ne '' && $hashalgo =~ /[\000-\037]/s;
+if ($cmd eq 'privileged') {
+  reply(cmd_privileged($cmd, $user, $hashalgo, @argv));
+  exit(0);
+}
 if (exists $map{"$hashalgo:$user"}) {
   $user = $map{"$hashalgo:$user"};
 } elsif ($user ne '' && exists($map{$user})) {
