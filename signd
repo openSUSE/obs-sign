@@ -18,9 +18,7 @@
 #
 ################################################################
 
-use strict;
-use warnings;
-use Socket qw/IPPROTO_TCP PF_INET PF_UNIX SOCK_STREAM SOL_SOCKET SO_REUSEADDR SO_KEEPALIVE INADDR_ANY inet_aton inet_ntoa sockaddr_in sockaddr_un getnameinfo/;
+use Socket;
 use POSIX;
 use Fcntl qw(:DEFAULT :flock);
 use Math::BigInt;
@@ -30,6 +28,9 @@ use bytes;
 use File::Temp qw/tempdir/;
 use File::Path qw/remove_tree/;
 use Digest::SHA;
+
+use strict;
+use warnings;
 
 my $have_gcrypt;
 eval {
@@ -574,15 +575,15 @@ sub decrypt_with_gcrypt {
     die("decrypt_with_gcrypt: unsupported encryption algorithm $info->{'algo'}\n");
   }
   $value = substr($value, 1) if unpack('C', $value) == 0;
-  die("unsupported DEK type\n") unless unpack('C', $value) == 2;
+  die("decryption error\n") unless unpack('C', $value) == 2;
   my $idx = index($value, "\0");
-  die("missing zero byte in decoded data\n") unless $idx >= 0;
+  die("decryption error\n") unless $idx >= 0;
   $value = substr($value, $idx + 1);
   my $cipheralgo = unpack('C', substr($value, 0, 1, ''));
   my $csum = unpack('n', substr($value, -2, 2, ''));
   my $csum2 = 0;
   $csum2 += $_ for unpack('C*', $value);
-  die("bad DEK checksum\n") unless $csum == ($csum2 % 65536);
+  die("decryption error\n") unless $csum == ($csum2 % 65536);
   return decrypt_cipher_with_gcrypt($cipheralgo, $value, $encrypted, $encrypted_mdc);
 }
 
@@ -1123,7 +1124,7 @@ sub doproxy {
   $args[1] = "$hashalgo:$user" if $hashalgo ne 'SHA1';
 
   #forward to next server
-  socket(CS , PF_INET, SOCK_STREAM, IPPROTO_TCP) || die("socket: $!\n");
+  socket(CS , PF_INET, SOCK_STREAM, Socket::IPPROTO_TCP) || die("socket: $!\n");
   bindreservedport(*CS) unless $use_unprivileged_ports;
   my $pack;
   if ($args[0] eq 'sign' && $oldproto) {
@@ -1139,7 +1140,7 @@ sub doproxy {
     $pack = pack('nn', length($pack), 0).$pack;
   }
   setsockopt(CS, SOL_SOCKET, SO_KEEPALIVE, pack("l",1));
-  connect(CS, sockaddr_in($port, $signaddr)) || die("connect: $!\n");
+  connect(CS, $signaddr) || die("connect: $!\n");
   swrite(*CS, $pack);
   while (1) {
     my $buf = '';
@@ -1314,6 +1315,8 @@ die("will not proxy to myself\n") if $signhost eq '127.0.0.1' && $port eq $proxy
 
 $signaddr = inet_aton($signhost);
 die("$signhost: unknown host\n") unless $signaddr;
+$signaddr = sockaddr_in($port, $signaddr);
+
 @pinentrymode = ( '--pinentry-mode=loopback' ) if have_pinentry_mode();
 $use_agent = 1 unless have_files_are_digests();
 
@@ -1366,7 +1369,7 @@ if ($logfile) {
 }
 printlog("$myname started");
 
-socket(MS , PF_INET, SOCK_STREAM, IPPROTO_TCP) || die "socket: $!\n";
+socket(MS , PF_INET, SOCK_STREAM, Socket::IPPROTO_TCP) || die "socket: $!\n";
 setsockopt(MS, SOL_SOCKET, SO_REUSEADDR, pack("l",1));
 setsockopt(MS, SOL_SOCKET, SO_KEEPALIVE, pack("l",1));
 bind(MS, sockaddr_in($proxyport, INADDR_ANY)) || die "bind: $!\n";
@@ -1403,7 +1406,7 @@ die("not coming from a reserved port\n") if !$allow_unprivileged_ports && ($spor
 my $allowed;
 my $hostnameinfo;
 for my $allow (@allows) {
-  $hostnameinfo ||= [ getnameinfo($clntaddr) ] if $allow !~ /^[0-9\.]+(:?\/[0-9]+)?$/;
+  $hostnameinfo ||= [ Socket::getnameinfo($clntaddr) ] if $allow !~ /^[0-9\.]+(:?\/[0-9]+)?$/;
   if (ip_in_network($peer, $allow) || $peer eq $allow || ($hostnameinfo && $hostnameinfo->[1] && $hostnameinfo->[1] eq $allow)) {
     $allowed = 1;
     last;
