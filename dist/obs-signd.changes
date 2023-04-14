@@ -1,4 +1,11 @@
 -------------------------------------------------------------------
+Fri Apr 14 14:04:29 CEST 2023 - mls@suse.de
+
+- update to version 2.8.1
+  * add privileged log command
+  * fix sign -t no longer working when aliases are defined
+
+-------------------------------------------------------------------
 Mon Mar 27 14:13:39 CEST 2023 - mls@suse.de
 
 - update to version 2.8.0
