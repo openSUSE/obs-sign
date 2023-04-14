@@ -1809,6 +1809,7 @@ my %privileged_cmds = (
   'enckeygen'	=> [ \&cmd_privileged_enckeygen,  0, [ 'standard' ] ],
   'enckeydel'	=> [ \&cmd_privileged_enckeydel,  1, [ 'standard' ] ],
   'backup'	=> [ \&cmd_privileged_backup,     0, [ 'system' ] ],
+  'log'		=> [ \&cmd_privileged_log,        0, [ 'system' ] ],
 );
 
 sub privileged_switch_gnupghome {
@@ -2105,7 +2106,22 @@ sub cmd_privileged_backup {
   my $fd;
   open($fd, '<', $encfile) || die("$encfile: $!\n");
   remove_tree($tdir);
+  privileged_replyfile($fd, $encfile);
+  close($fd);
+  return (0, '', '');
+}
 
+sub cmd_privileged_log {
+  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
+  my $fd;
+  open($fd, '<', $privileged_logfile) || die("$privileged_logfile: $!\n");
+  privileged_replyfile($fd, $privileged_logfile);
+  close($fd);
+  return (0, '', '');
+}
+
+sub privileged_replyfile {
+  my ($fd, $filename) = @_;
   my $size = -s $fd;
   # send back reply (cannot use reply() as it closes the socket)
   my $ret = pack('nn', 1, length($size)).$size;
@@ -2115,13 +2131,12 @@ sub cmd_privileged_backup {
   while ($size > 0) {
     my $buf = '';
     my $r = sysread($fd, $buf, $size > 8192 ? 8192 : $size);
-    die("$encfile: $!\n") unless defined $r;
-    die("$encfile: unexpected EOF\n") unless $r;
+    die("$filename: $!\n") unless defined $r;
+    die("$filename: unexpected EOF\n") unless $r;
     swrite(*CLNT, $buf);
     $size -= length($buf);
   }
   close CLNT;
-  return (0, '', '');
 }
 
 sub privileged_generate_nonce {
@@ -2203,7 +2218,7 @@ sub cmd_privileged {
     privileged_log($logfd, "ok $now");
   }
   close($logfd);
-  exit(0) if $pcmd eq 'backup';		# already replied
+  exit(0) if $pcmd eq 'backup' || $pcmd eq 'log';		# already replied
   return ($status, $err, @out);
 }
 
@@ -2264,7 +2279,7 @@ if (exists $map{"$hashalgo:$user"}) {
 }
 $user = $signuser if $user eq '' && $signuser ne '';
 die("illegal user $user\n") if $user ne '' && ($user =~ /[\000-\037\/]/s || $user =~ /^\./s);
-$user = read_alias($aliases, $user) if $aliases && -e "$aliases/$user";
+$user = read_alias($aliases, $user) if $user ne '' && $aliases && -e "$aliases/$user";
 
 # proxy unknown users
 if (!$phrases || ($cmd ne 'ping' && $user eq '') || ($user ne '' && ! -e "$phrases/$user")) {
