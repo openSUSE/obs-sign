@@ -627,7 +627,7 @@ sub can_decrypt_sym_with_gcrypt {
 
 
 ##
-## Gnupg agent functions
+## gnupg agent functions
 ##
 
 my $agent_sock;
@@ -719,7 +719,7 @@ sub agent_rpc {
 
 
 ##
-## Sexp support (used in agent)
+## sexp support (used in agent)
 ##
 
 sub parse_sexp {
@@ -781,7 +781,7 @@ sub parse_sexp_signature {
 
 
 ##
-## Gnupg functions
+## gnupg functions
 ##
 
 sub switch_gnupghome {
@@ -1030,6 +1030,225 @@ sub gpg_keygrip_to_info {
   };
   $info->{'fingerprint'} = $fingerprint if $info && $fingerprint;
   return $info;
+}
+
+
+##
+## project key encryption/decryption
+##
+
+sub do_decode_gpg {
+  my ($phrasefile, $encodeddata) = @_;
+  my $file = "$tmpdir/privkey.$$";
+  spew($file, $encodeddata);
+  my $decoded = rungpg_fatal($phrasefile, [ $file ], $gpg, '--batch', '--decrypt', '--max-output', '65536', '--no-verbose', '-q', '--no-secmem-warning', @pinentrymode, '--passphrase-fd=0', $file);
+  unlink($file);
+  return $decoded;
+}
+
+sub do_encode_gpg {
+  my ($user, $data, $tdir) = @_;
+  my $file = $tdir ? "$tdir/privkey" : "$tmpdir/privkey.$$";
+  spew($file, $data);
+  my $encodeddata = rungpg_fatal('/dev/null', $tdir || [ $file ], $gpg, '--batch', '--encrypt', '--no-verbose', '--no-secmem-warning', '--trust-model', 'always', '-o-', '-r', $user, $file);
+  unlink($file);
+  return $encodeddata;
+}
+
+sub do_decode_gcrypt {
+  my ($encodeddata) = @_;
+  my $gnupghome = $ENV{'GNUPGHOME'};
+  return undef unless $gnupghome;
+  my ($einfo, $encrypted, $encrypted_mdc) = parse_encryted_data($encodeddata);
+  return undef unless $einfo && $encrypted && can_decrypt_with_gcrypt($einfo);
+  my ($fingerprint, $keygrip) = find_key_keycache($einfo->{'keyid'}, 'e');
+  my $info = gpg_keygrip_to_info($gnupghome, $keygrip, $fingerprint);
+  return undef unless $info;
+  my $decrypted = decrypt_with_gcrypt($info, $einfo, $encrypted, $encrypted_mdc);
+  return decode_decrypted_data($decrypted);
+}
+
+sub read_encparams_sym {
+  my ($phrasefile, $keyid, $withsecret) = @_;
+  die("malformed encryption key $keyid\n") unless $keyid =~ /^[0-9A-F]{16}$/s;
+  die("unknown encryption key $keyid\n") unless $phrasefile && -s $phrasefile;
+  my $params = slurp_first_line($phrasefile);
+  my $secret = $withsecret ? $params : undef;
+  die("bad encryption key $keyid\n") unless $params =~ /^(?:[0-9a-f][0-9a-f])+$/s;
+  $params = pack('H*', $params);
+  # 1:01|4:created|1:s2kalgo|1:s2kcnt|1:cipheralgo|8:keyid|56:random
+  die("bad encryption key $keyid\n") unless length($params) == 72;
+  my ($version, $created, $s2kalgo, $s2kcnt, $cipheralgo, $xkeyid) = unpack('CNCCCH16', $params);
+  die("bad encryption key $keyid\n") unless $version == 1 && $s2kcnt != 0 && $xkeyid eq lc($keyid);
+  my $info = { 'version' => $version, 'created' => $created, 's2kalgo' => $s2kalgo, 's2kcnt' => $s2kcnt, 'cipheralgo' => $cipheralgo };
+  $info->{'secret'} = $secret if $secret;
+  return $info;
+}
+
+sub do_decode_sym {
+  my ($encodeddata) = @_;
+  # 1:01|8:keyid|1:xdatalen|?:xdata|8:salt|2:edatalength|?:edata
+  die("bad encoded data\n") if length($encodeddata) < 10;
+  my ($version, $keyid, $xdl) = unpack('CH16C', $encodeddata);
+  die("bad encoded data\n") if $version != 1 || length($encodeddata) < 10 + $xdl + 2 + 8;
+  $keyid = uc($keyid);
+  my $phrasefile =  $encryptionkeys ? "$encryptionkeys/$keyid" : undef;
+  my $info = read_encparams_sym($phrasefile, $keyid, $use_gcrypt_decrypt && $have_gcrypt ? 1 : 0);
+  my $file = "$tmpdir/privkey.$$";
+  my $edata = substr($encodeddata, 10 + $xdl);
+  die("truncated encoded data\n") if unpack('@8n', $edata) != length($edata) - 10;
+  my $s2ksalt = substr($edata, 0, 8);
+  $edata = substr($edata, 10);
+  if ($use_gcrypt_decrypt && $have_gcrypt && can_decrypt_sym_with_gcrypt($info)) {
+    return decrypt_sym_with_gcrypt($info, $s2ksalt, $edata, 1);
+  }
+  # create gpg symmetric session and integrity proteced encrypted data packets
+  $encodeddata = encodetag(3, pack('CCCCa8C', 4, $info->{'cipheralgo'}, 3, $info->{'s2kalgo'}, $s2ksalt, $info->{'s2kcnt'}));
+  $encodeddata .= encodetag(18, pack('C', 1).$edata);
+  spew($file, $encodeddata);
+  my $decoded = rungpg_fatal($phrasefile, [ $file ], $gpg, '--batch', '--decrypt', '--max-output', '65536', '--no-verbose', '-q', '--no-secmem-warning', '--passphrase-fd=0', $file);
+  unlink($file);
+  return $decoded;
+}
+
+sub do_encode_sym {
+  my ($keyid, $data, $tdir, $xdata) = @_;
+  $xdata = '' unless defined $xdata;
+  die("bad xdata length\n") if length($xdata) > 255;
+  my $phrasefile =  $encryptionkeys ? "$encryptionkeys/$keyid" : undef;
+  my $info = read_encparams_sym($phrasefile, $keyid);
+  die("unsupported s2kalgo\n") unless $info->{'s2kalgo'} == 10;
+  die("unsupported cipheralgo \n") unless $info->{'cipheralgo'} == 9;
+  my $s2kcntarg = (16 + ($info->{'s2kcnt'} & 0x0f)) << (6 + (($info->{'s2kcnt'} >> 4) & 0x0f));
+  my $file = $tdir ? "$tdir/privkey" : "$tmpdir/privkey.$$";
+  spew($file, $data);
+  my $encodeddata = rungpg_fatal($phrasefile , $tdir || [ $file ], $gpg, '--batch', '--symmetric', '--no-verbose', '--no-secmem-warning', '--passphrase-fd=0', '--s2k-mode=3', '--s2k-cipher-algo=aes256', '--s2k-digest-algo=sha512', "--s2k-count=$s2kcntarg", '--compress-algo=zlib', '-o-', $file);
+  unlink($file);
+  # parse and verify gpg encoded data packets and transcode to our own format
+  my ($einfo, $encrypted, $encrypted_mdc) = parse_sym_encryted_data($encodeddata);
+  die("gpg encrypted data does not match encryption parameters\n") if $info->{'cipheralgo'} != $einfo->{'cipheralgo'} || $info->{'s2kalgo'} != $einfo->{'s2kalgo'} || $info->{'s2kcnt'} != $einfo->{'s2kcnt'};
+  die("unexpected gpg encrypted data\n") if !$encrypted_mdc || length($einfo->{'s2ksalt'}) != 8 || length($encrypted) > 65535;
+  return pack('CH16C', 1, $keyid, length($xdata)).$xdata.$einfo->{'s2ksalt'}.pack('n', length($encrypted)).$encrypted;
+}
+
+sub do_keygen_sym {
+  die("encryptionkeys directory not configured\n") unless $encryptionkeys;
+  my $random = rungpg_fatal('/dev/null', undef, $gpg, '--gen-random', '2', '64');
+  die("random generation failed\n") unless length($random) == 64;
+  my $keyid = uc(unpack('H16', $random));
+  die("keyid $keyid already exists, please try again\n") if -e "$encryptionkeys/$keyid";
+  my $created = time();
+  my $param = pack('CNCCC', 1, $created, 10, 1, 9).$random;
+  # the gpg passphrase limit is 255 bytes, so our 144 bytes are good
+  spew("$encryptionkeys/.$keyid$$", unpack('H*', $param)."\n");
+  if (!link("$encryptionkeys/.$keyid$$", "$encryptionkeys/$keyid")) {
+    my $error = "link $encryptionkeys/.$keyid$$ $encryptionkeys/$keyid: $!\n";
+    unlink("$encryptionkeys/.$keyid$$");
+    die($error);
+  }
+  unlink("$encryptionkeys/.$keyid$$");
+  return $keyid;
+}
+
+sub do_decode {
+  my ($phrasefile, $user, $encodeddata) = @_;
+
+  return do_decode_sym($encodeddata) if unpack('C', $encodeddata) < 128;
+  if ($use_gcrypt_decrypt && $have_gcrypt) {
+    my $have_phrase = defined($phrasefile) && $phrasefile ne '/dev/null' && -s $phrasefile;
+    if (!$have_phrase) {
+      my $decoded = eval { do_decode_gcrypt($encodeddata) };
+      warn($@) if $@;
+      return $decoded if defined $decoded;
+    }
+  }
+  return do_decode_gpg($phrasefile, $encodeddata);
+}
+
+sub do_encode {
+  my ($user, $data, $tdir, $xdata) = @_;
+  return do_encode_sym($user, $data, $tdir, $xdata) if $encryptionkeys && $user =~ /^[0-9A-F]{16}$/ && -s "$encryptionkeys/$user";
+  return do_encode_gpg($user, $data, $tdir);
+}
+
+
+##
+## signature generation
+##
+
+sub sign_with_agent {
+  my ($phrasefile, $user, $fingerprint, $keygrip, $hashalgo, $hash, $isprivsign, $replyv4) = @_;
+  if (!$fingerprint) {
+    ($fingerprint, $keygrip) = $isprivsign ? find_key($user) : find_key_keycache($user);
+    die("unknown pubkey for $user\n") unless $fingerprint;
+  }
+  die("bad hash $hash\n") unless $hash =~ /^((?:[0-9a-fA-F][0-9a-fA-F])+)\@(0[01][0-9a-fA-F]{8})$/;
+  my $extra = $2;
+  $hash = uc($1);
+  my $pgphashalgo = get_pgphashalgo($hashalgo);
+  die("sign_with_agent: bad hashalgo $hashalgo\n") unless $pgphashalgo;
+  my $have_phrase = defined($phrasefile) && $phrasefile ne '/dev/null' && -s $phrasefile;
+  agent_rpc("SIGKEY $keygrip");
+  agent_rpc("SETHASH $pgphashalgo $hash");
+  agent_rpc("OPTION pinentry-mode=loopback") if $have_phrase;
+  my $sig = agent_rpc("PKSIGN", $phrasefile);
+  my ($pgppubalgo, @mpis) = parse_sexp_signature($sig);
+  my $sigdata = join('', map {encodempi($_)} @mpis);
+  return wrap_into_pgpsig_v4($extra, $fingerprint, $pgppubalgo, $pgphashalgo, $hash, $sigdata) if $replyv4;
+  return wrap_into_pgpsig_v3($extra, $fingerprint, $pgppubalgo, $pgphashalgo, $hash, $sigdata);
+}
+
+sub sign_with_files_are_digests {
+  my ($phrasefile, $user, $hashalgo, $hash, $isprivsign, $replyv4) = @_;
+  my @args;
+  if ($isprivsign) {
+    push @args, '--allow-non-selfsigned-uid';
+  } else {
+    push @args, '-u', $user;
+  }
+  my $classtime;
+  if ($patchclasstime && !$replyv4 && ($hash =~ /\@([0-9a-fA-F]{10})$/s)) {
+    $classtime = $1;
+    substr($hash, -10, 10, '0000000000');
+  }
+  my @force_v3_sigs;
+  push @force_v3_sigs, "--force-v3-sigs" unless $replyv4;
+  my ($status, $out, $err) = rungpg($phrasefile, undef, $gpg, "--batch", @force_v3_sigs, "--files-are-digests", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--ignore-time-conflict", @pinentrymode, "--passphrase-fd=0", @args, "-sbo", "-", $hash);
+  $out = patchclasstime($out, $classtime) if $classtime && !$status;
+  return ($status, $out, $err);
+}
+
+sub do_sign_multiple {
+  my ($phrasefile, $user, $info, $hashalgo, $hashes, $isprivsign) = @_;
+
+  my ($fingerprint, $keygrip);
+  if (!$info && $use_agent) {
+    ($fingerprint, $keygrip) = $isprivsign ? find_key($user) : find_key_keycache($user);
+    die("unknown pubkey for $user\n") unless $fingerprint;
+  }
+  if (!$info && $have_gcrypt && $use_gcrypt_sign && $fingerprint && $keygrip) {
+    my $have_phrase = defined($phrasefile) && $phrasefile ne '/dev/null' && -s $phrasefile;
+    $info = gpg_keygrip_to_info($ENV{'GNUPGHOME'}, $keygrip, $fingerprint) unless $have_phrase;
+  }
+  my ($status, $err, @out) = (0, '');
+  for my $hash (@$hashes) {
+    my $replyv4 = 0;
+    $replyv4 = 1 if $hash =~ /^(?:04040404)+\@/;	# special v4 algo probe
+    my ($lout, $lerr) = ('', '');
+    if ($info) {
+      $lout = eval { sign_with_gcrypt($info, $hash, $hashalgo, $replyv4) };
+      ($status, $lout, $lerr) = (1, '', $@) if $@;
+    } elsif ($use_agent) {
+      $lout = eval { sign_with_agent($phrasefile, $user, $fingerprint, $keygrip, $hashalgo, $hash, $isprivsign, $replyv4) };
+      ($status, $lout, $lerr) = (1, '', $@) if $@;
+    } else {
+      ($status, $lout, $lerr) = sign_with_files_are_digests($phrasefile, $user, $hashalgo, $hash, $isprivsign, $replyv4);
+    }
+    push @out, $lout;
+    $err .= $lerr;
+    last if $status;
+  }
+  return ($status, $err, @out);
 }
 
 
@@ -1534,212 +1753,6 @@ sub cmd_pubkey {
   die("pubkey: no argument expected\n") if @args;
   my $pubkey = rungpg_fatal('/dev/null', undef, $gpg, '--export', '-a', $user);
   return (0, '', $pubkey);
-}
-
-sub sign_with_agent {
-  my ($phrasefile, $user, $fingerprint, $keygrip, $hashalgo, $hash, $isprivsign, $replyv4) = @_;
-  if (!$fingerprint) {
-    ($fingerprint, $keygrip) = $isprivsign ? find_key($user) : find_key_keycache($user);
-    die("unknown pubkey for $user\n") unless $fingerprint;
-  }
-  die("bad hash $hash\n") unless $hash =~ /^((?:[0-9a-fA-F][0-9a-fA-F])+)\@(0[01][0-9a-fA-F]{8})$/;
-  my $extra = $2;
-  $hash = uc($1);
-  my $pgphashalgo = get_pgphashalgo($hashalgo);
-  die("sign_with_agent: bad hashalgo $hashalgo\n") unless $pgphashalgo;
-  my $have_phrase = defined($phrasefile) && $phrasefile ne '/dev/null' && -s $phrasefile;
-  agent_rpc("SIGKEY $keygrip");
-  agent_rpc("SETHASH $pgphashalgo $hash");
-  agent_rpc("OPTION pinentry-mode=loopback") if $have_phrase;
-  my $sig = agent_rpc("PKSIGN", $phrasefile);
-  my ($pgppubalgo, @mpis) = parse_sexp_signature($sig);
-  my $sigdata = join('', map {encodempi($_)} @mpis);
-  return wrap_into_pgpsig_v4($extra, $fingerprint, $pgppubalgo, $pgphashalgo, $hash, $sigdata) if $replyv4;
-  return wrap_into_pgpsig_v3($extra, $fingerprint, $pgppubalgo, $pgphashalgo, $hash, $sigdata);
-}
-
-sub sign_with_files_are_digests {
-  my ($phrasefile, $user, $hashalgo, $hash, $isprivsign, $replyv4) = @_;
-  my @args;
-  if ($isprivsign) {
-    push @args, '--allow-non-selfsigned-uid';
-  } else {
-    push @args, '-u', $user;
-  }
-  my $classtime;
-  if ($patchclasstime && !$replyv4 && ($hash =~ /\@([0-9a-fA-F]{10})$/s)) {
-    $classtime = $1;
-    substr($hash, -10, 10, '0000000000');
-  }
-  my @force_v3_sigs;
-  push @force_v3_sigs, "--force-v3-sigs" unless $replyv4;
-  my ($status, $out, $err) = rungpg($phrasefile, undef, $gpg, "--batch", @force_v3_sigs, "--files-are-digests", "--digest-algo=$hashalgo", "--no-verbose", "--no-armor", "--no-secmem-warning", "--ignore-time-conflict", @pinentrymode, "--passphrase-fd=0", @args, "-sbo", "-", $hash);
-  $out = patchclasstime($out, $classtime) if $classtime && !$status;
-  return ($status, $out, $err);
-}
-
-sub do_sign_multiple {
-  my ($phrasefile, $user, $info, $hashalgo, $hashes, $isprivsign) = @_;
-
-  my ($fingerprint, $keygrip);
-  if (!$info && $use_agent) {
-    ($fingerprint, $keygrip) = $isprivsign ? find_key($user) : find_key_keycache($user);
-    die("unknown pubkey for $user\n") unless $fingerprint;
-  }
-  if (!$info && $have_gcrypt && $use_gcrypt_sign && $fingerprint && $keygrip) {
-    my $have_phrase = defined($phrasefile) && $phrasefile ne '/dev/null' && -s $phrasefile;
-    $info = gpg_keygrip_to_info($ENV{'GNUPGHOME'}, $keygrip, $fingerprint) unless $have_phrase;
-  }
-  my ($status, $err, @out) = (0, '');
-  for my $hash (@$hashes) {
-    my $replyv4 = 0;
-    $replyv4 = 1 if $hash =~ /^(?:04040404)+\@/;	# special v4 algo probe
-    my ($lout, $lerr) = ('', '');
-    if ($info) {
-      $lout = eval { sign_with_gcrypt($info, $hash, $hashalgo, $replyv4) };
-      ($status, $lout, $lerr) = (1, '', $@) if $@;
-    } elsif ($use_agent) {
-      $lout = eval { sign_with_agent($phrasefile, $user, $fingerprint, $keygrip, $hashalgo, $hash, $isprivsign, $replyv4) };
-      ($status, $lout, $lerr) = (1, '', $@) if $@;
-    } else {
-      ($status, $lout, $lerr) = sign_with_files_are_digests($phrasefile, $user, $hashalgo, $hash, $isprivsign, $replyv4);
-    }
-    push @out, $lout;
-    $err .= $lerr;
-    last if $status;
-  }
-  return ($status, $err, @out);
-}
-
-################
-
-sub read_encparams_sym {
-  my ($phrasefile, $keyid, $withsecret) = @_;
-  die("malformed encryption key $keyid\n") unless $keyid =~ /^[0-9A-F]{16}$/s;
-  die("unknown encryption key $keyid\n") unless $phrasefile && -s $phrasefile;
-  my $params = slurp_first_line($phrasefile);
-  my $secret = $withsecret ? $params : undef;
-  die("bad encryption key $keyid\n") unless $params =~ /^(?:[0-9a-f][0-9a-f])+$/s;
-  $params = pack('H*', $params);
-  # 1:01|4:created|1:s2kalgo|1:s2kcnt|1:cipheralgo|8:keyid|56:random
-  die("bad encryption key $keyid\n") unless length($params) == 72;
-  my ($version, $created, $s2kalgo, $s2kcnt, $cipheralgo, $xkeyid) = unpack('CNCCCH16', $params);
-  die("bad encryption key $keyid\n") unless $version == 1 && $s2kcnt != 0 && $xkeyid eq lc($keyid);
-  my $info = { 'version' => $version, 'created' => $created, 's2kalgo' => $s2kalgo, 's2kcnt' => $s2kcnt, 'cipheralgo' => $cipheralgo };
-  $info->{'secret'} = $secret if $secret;
-  return $info;
-}
-
-sub do_decode_sym {
-  my ($encodeddata) = @_;
-  # 1:01|8:keyid|1:xdatalen|?:xdata|8:salt|2:edatalength|?:edata
-  die("bad encoded data\n") if length($encodeddata) < 10;
-  my ($version, $keyid, $xdl) = unpack('CH16C', $encodeddata);
-  die("bad encoded data\n") if $version != 1 || length($encodeddata) < 10 + $xdl + 2 + 8;
-  $keyid = uc($keyid);
-  my $phrasefile =  $encryptionkeys ? "$encryptionkeys/$keyid" : undef;
-  my $info = read_encparams_sym($phrasefile, $keyid, $use_gcrypt_decrypt && $have_gcrypt ? 1 : 0);
-  my $file = "$tmpdir/privkey.$$";
-  my $edata = substr($encodeddata, 10 + $xdl);
-  die("truncated encoded data\n") if unpack('@8n', $edata) != length($edata) - 10;
-  my $s2ksalt = substr($edata, 0, 8);
-  $edata = substr($edata, 10);
-  if ($use_gcrypt_decrypt && $have_gcrypt && can_decrypt_sym_with_gcrypt($info)) {
-    return decrypt_sym_with_gcrypt($info, $s2ksalt, $edata, 1);
-  }
-  # create gpg symmetric session and integrity proteced encrypted data packets
-  $encodeddata = encodetag(3, pack('CCCCa8C', 4, $info->{'cipheralgo'}, 3, $info->{'s2kalgo'}, $s2ksalt, $info->{'s2kcnt'}));
-  $encodeddata .= encodetag(18, pack('C', 1).$edata);
-  spew($file, $encodeddata);
-  my $decoded = rungpg_fatal($phrasefile, [ $file ], $gpg, '--batch', '--decrypt', '--max-output', '65536', '--no-verbose', '-q', '--no-secmem-warning', '--passphrase-fd=0', $file);
-  unlink($file);
-  return $decoded;
-}
-
-sub do_encode_sym {
-  my ($keyid, $data, $tdir, $xdata) = @_;
-  $xdata = '' unless defined $xdata;
-  die("bad xdata length\n") if length($xdata) > 255;
-  my $phrasefile =  $encryptionkeys ? "$encryptionkeys/$keyid" : undef;
-  my $info = read_encparams_sym($phrasefile, $keyid);
-  die("unsupported s2kalgo\n") unless $info->{'s2kalgo'} == 10;
-  die("unsupported cipheralgo \n") unless $info->{'cipheralgo'} == 9;
-  my $s2kcntarg = (16 + ($info->{'s2kcnt'} & 0x0f)) << (6 + (($info->{'s2kcnt'} >> 4) & 0x0f));
-  my $file = $tdir ? "$tdir/privkey" : "$tmpdir/privkey.$$";
-  spew($file, $data);
-  my $encodeddata = rungpg_fatal($phrasefile , $tdir || [ $file ], $gpg, '--batch', '--symmetric', '--no-verbose', '--no-secmem-warning', '--passphrase-fd=0', '--s2k-mode=3', '--s2k-cipher-algo=aes256', '--s2k-digest-algo=sha512', "--s2k-count=$s2kcntarg", '--compress-algo=zlib', '-o-', $file);
-  unlink($file);
-  # parse and verify gpg encoded data packets and transcode to our own format
-  my ($einfo, $encrypted, $encrypted_mdc) = parse_sym_encryted_data($encodeddata);
-  die("gpg encrypted data does not match encryption parameters\n") if $info->{'cipheralgo'} != $einfo->{'cipheralgo'} || $info->{'s2kalgo'} != $einfo->{'s2kalgo'} || $info->{'s2kcnt'} != $einfo->{'s2kcnt'};
-  die("unexpected gpg encrypted data\n") if !$encrypted_mdc || length($einfo->{'s2ksalt'}) != 8 || length($encrypted) > 65535;
-  return pack('CH16C', 1, $keyid, length($xdata)).$xdata.$einfo->{'s2ksalt'}.pack('n', length($encrypted)).$encrypted;
-}
-
-sub do_keygen_sym {
-  die("encryptionkeys directory not configured\n") unless $encryptionkeys;
-  my $random = rungpg_fatal('/dev/null', undef, $gpg, '--gen-random', '2', '64');
-  die("random generation failed\n") unless length($random) == 64;
-  my $keyid = uc(unpack('H16', $random));
-  die("keyid $keyid already exists, please try again\n") if -e "$encryptionkeys/$keyid";
-  my $created = time();
-  my $param = pack('CNCCC', 1, $created, 10, 1, 9).$random;
-  # the gpg passphrase limit is 255 bytes, so our 144 bytes are good
-  spew("$encryptionkeys/.$keyid$$", unpack('H*', $param)."\n");
-  if (!link("$encryptionkeys/.$keyid$$", "$encryptionkeys/$keyid")) {
-    my $error = "link $encryptionkeys/.$keyid$$ $encryptionkeys/$keyid: $!\n";
-    unlink("$encryptionkeys/.$keyid$$");
-    die($error);
-  }
-  unlink("$encryptionkeys/.$keyid$$");
-  return $keyid;
-}
-
-################
-
-sub do_decode_gcrypt {
-  my ($encodeddata) = @_;
-  my $gnupghome = $ENV{'GNUPGHOME'};
-  return undef unless $gnupghome;
-  my ($einfo, $encrypted, $encrypted_mdc) = parse_encryted_data($encodeddata);
-  return undef unless $einfo && $encrypted && can_decrypt_with_gcrypt($einfo);
-  my ($fingerprint, $keygrip) = find_key_keycache($einfo->{'keyid'}, 'e');
-  my $info = gpg_keygrip_to_info($gnupghome, $keygrip, $fingerprint);
-  return undef unless $info;
-  my $decrypted = decrypt_with_gcrypt($info, $einfo, $encrypted, $encrypted_mdc);
-  return decode_decrypted_data($decrypted);
-}
-
-sub do_decode {
-  my ($phrasefile, $user, $encodeddata) = @_;
-
-  return do_decode_sym($encodeddata) if unpack('C', $encodeddata) < 128;
-
-  if ($use_gcrypt_decrypt && $have_gcrypt) {
-    my $have_phrase = defined($phrasefile) && $phrasefile ne '/dev/null' && -s $phrasefile;
-    if (!$have_phrase) {
-      my $decoded = eval { do_decode_gcrypt($encodeddata) };
-      warn($@) if $@;
-      return $decoded if defined $decoded;
-    }
-  }
-  my $file = "$tmpdir/privkey.$$";
-  spew($file, $encodeddata);
-  my $decoded = rungpg_fatal($phrasefile, [ $file ], $gpg, '--batch', '--decrypt', '--max-output', '65536', '--no-verbose', '-q', '--no-secmem-warning', @pinentrymode, '--passphrase-fd=0', $file);
-  unlink($file);
-  return $decoded;
-}
-
-sub do_encode {
-  my ($user, $data, $tdir, $xdata) = @_;
-
-  return do_encode_sym($user, $data, $tdir, $xdata) if $encryptionkeys && $user =~ /^[0-9A-F]{16}$/ && -s "$encryptionkeys/$user";
-
-  my $file = $tdir ? "$tdir/privkey" : "$tmpdir/privkey.$$";
-  spew($file, $data);
-  my $encodeddata = rungpg_fatal('/dev/null', $tdir || [ $file ], $gpg, '--batch', '--encrypt', '--no-verbose', '--no-secmem-warning', '--trust-model', 'always', '-o-', '-r', $user, $file);
-  unlink($file);
-  return $encodeddata;
 }
 
 sub cmd_privsign {
