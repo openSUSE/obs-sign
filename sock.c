@@ -36,7 +36,7 @@ static int sock = -1;
 extern char *test_sign;
 extern char *host;
 extern int port;
-extern uid_t uid;
+extern uid_t uid, euid;
 extern int use_unprivileged_ports;
 
 void
@@ -70,7 +70,7 @@ opensocket(void)
     dodie_errno("socket");
   if (!use_unprivileged_ports)
     {
-      if (uid)
+      if (uid && euid != uid)
 	{
 	  if (seteuid(0))
 	    dodie_errno("seteuid");
@@ -81,7 +81,7 @@ opensocket(void)
 	    dodie_errno("bindresvport");
 	  sleep(1);
 	}
-      if (uid)
+      if (uid && euid != uid)
 	{
 	  if (seteuid(uid))
 	    dodie_errno("seteuid");

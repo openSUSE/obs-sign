@@ -42,7 +42,7 @@ static char *user;
 static char *algouser;
 static int allowuser;
 static int verbose;
-uid_t uid;
+uid_t uid, euid;
 int use_unprivileged_ports;
 
 static const char *const hashname[] = {"SHA1", "SHA256", "SHA512"};
@@ -1483,6 +1483,7 @@ main(int argc, char **argv)
   int mode = MODE_UNSET;
   const char *conf = 0;
 
+  euid = geteuid();
   uid = getuid();
   user = strdup("");
   host = strdup("127.0.0.1");
@@ -1511,7 +1512,7 @@ main(int argc, char **argv)
     {
       if (!allowuser)
 	dodie("sign: permission denied");
-      if (seteuid(uid))
+      if (euid != uid && seteuid(uid))
 	dodie_errno("seteuid");
     }
   if (argc == 2 && !strcmp(argv[1], "-t"))
