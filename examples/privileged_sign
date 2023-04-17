@@ -1,0 +1,487 @@
+#!/usr/bin/perl
+
+use strict;
+
+use Socket;
+use POSIX;
+use Digest::SHA;
+
+my $keyring = 'standard';
+my $signuser;
+my $hash;
+my $pubalgo;
+my $bindreservedport = $> ? 0 : 1;
+my $signhost = '127.0.0.1';
+my $port = 5167;
+my $conf = '/etc/sign.conf';
+my $sighelper;
+
+my $algouser;
+my $tcpproto = getprotobyname('tcp');
+my %cmdline_set;
+my $signaddr;	# host lookup cache
+
+sub digestctx {
+  return Digest::SHA->new($1) if $hash =~ /^sha(\d+)$/i;
+  die("unsupported hash $hash\n");
+}
+
+sub bindreservedport {
+  my ($sock) = @_;
+  local *S = $sock;
+  my %blacklist;
+  local *BL;
+  if (open(BL, "</etc/bindresvport.blacklist")) {
+    while(<BL>) {
+      chomp;
+      next unless /^\s*(\d+)/;
+      $blacklist{0 + $1} = 1;
+    }
+    close BL;
+  }
+  while (1) {
+    my $po;
+    for ($po = 600; $po < 1024; $po++) {
+      next if $blacklist{$po};
+      return if bind(S, sockaddr_in($po, INADDR_ANY));
+    }
+    sleep(3);
+  }
+}
+
+sub swrite {
+  my ($fh, $data) = @_;
+  while (length($data)) {
+    my $l = syswrite($fh, $data, length($data));
+    die("write: $!\n") unless defined $l;
+    $data = substr($data, $l);
+  }
+}
+
+sub gensig {
+  my (@args) = @_;
+  my $nonce = rpc_fatal_1('nonce', '-');
+  die("no nonce returned\n") unless $nonce;
+  splice(@args, 2, 0, $keyring, $nonce);
+  my $data = unpack('H*', join("\0", @args));
+  if ($sighelper) {
+    my $sig = `$sighelper $data`;
+    chomp $sig;
+    die("bad sighelper return") unless $sig =~ /([0-9a-fA-F]+)$/s;
+    return $1;
+  }
+  my $tty;
+  open($tty, '+>', '/dev/tty') || die("/dev/tty: $!\n");
+  my $oldfh = select($tty);
+  $| = 1;
+  select($oldfh);
+  print $tty "Cookie:    $data\n";
+  print $tty "Signature: ";
+  my $sig = '';
+  while (1) {
+    my $r = sysread($tty, $sig, 8192, length($sig));
+    die("read: $!\n") unless defined $r;
+    last if !$r || $sig =~ s/[\r\n].*//;
+  }
+  close($tty);
+  die("malformed signature\n") unless $sig =~ /\A(?:[0-9a-fA-F][0-9a-fA-F])+\z/s;
+  return $sig;
+}
+
+sub pkdecodetaglenoff {
+  my ($pkg) = @_;
+  my $tag = unpack('C', $pkg);
+  die("not a pgp packet\n") unless $tag & 128;
+  my ($len, $off);
+  if ($tag & 64) {
+    # new packet format
+    $tag &= 63;
+    $len = unpack('@1C', $pkg);
+    if ($len < 192) {
+      $off = 2;
+    } elsif ($len >= 192 && $len < 224) {
+      $len = unpack('@1n', $pkg) - 48960;
+      $off = 3;
+    } elsif ($len == 255) {
+      $len = unpack('@2N', $pkg);
+      $off = 6;
+    }
+  } else {
+    # old packet format
+    if (($tag & 3) == 0) {
+      $len = unpack('@1C', $pkg);
+      $off = 2;
+    } elsif (($tag & 3) == 1) {
+      $len = unpack('@1n', $pkg);
+      $off = 3;
+    } elsif (($tag & 3) == 2) {
+      $len = unpack('@1N', $pkg);
+      $off = 5;
+    }
+    $tag = ($tag & 60) >> 2;
+  }
+  die("unsupported pgp packet length\n") unless defined $off;
+  die("truncated pgp packet\n") if length($pkg) < $off + $len;
+  return ($tag, $len, $off);
+}
+
+sub pkdecodepacket {
+  my ($pk) = @_;
+  my ($tag, $len, $off) = pkdecodetaglenoff($pk);
+  return ($tag, substr($pk, $off, $len), substr($pk, $len + $off));
+}
+
+sub pkdecodesubpacket {
+  my ($pk) = @_;
+  my ($tag, $len, $off) = pkdecodetaglenoff(pack('C', 0xc0).$pk);
+  return (unpack('C', substr($pk, $off - 1, 1)), substr($pk, $off, $len - 1), substr($pk, $len + $off - 1));
+}
+
+sub pk2sig {
+  my ($tag, $sig) = pkdecodepacket($_[0]);
+  die("not a pgp signature\n") unless $tag == 2;
+  return $sig;
+}
+
+sub subpkgs2issuer {
+  my ($subpks) = @_;
+  my ($stag, $spk);
+  while ($subpks ne '') {
+    ($stag, $spk, $subpks) = pkdecodesubpacket($subpks);
+    return substr($spk, -8) if $stag == 16 || $stag == 33;
+  }
+  return undef;
+}
+
+sub sig2issuer {
+  my ($sig) = @_;
+  my $issuer;
+  if (unpack('C', $sig) == 3) {
+    $issuer = substr($sig, 7, 8);
+  } elsif (unpack('C', $sig) == 4) {
+    $issuer = subpkgs2issuer(substr($sig, 4 + 2, unpack('@4n', $sig), ''));
+    $issuer ||= subpkgs2issuer(substr($sig, 6 + 2, unpack('@6n', $sig)));
+  } else {
+    die("unsupported pgp signature version\n");
+  }
+  return $issuer ? uc(unpack('H*', $issuer)) : undef;
+}
+
+sub sig2mpis {
+  my ($sig) = @_;
+  my ($sigalgo, $mpidata);
+  if (unpack('C', $sig) == 3) {
+    $sigalgo = unpack('@15C', $sig);
+    $mpidata = substr($sig, 19);
+  } elsif (unpack('C', $sig) == 4) {
+    $sigalgo = unpack('@2C', $sig);
+    $mpidata = substr($sig, 4);
+    $mpidata = substr($sig, 2 + unpack('n', $mpidata));
+    $mpidata = substr($sig, 2 + unpack('n', $mpidata));
+  } else {
+    die("unsupported pgp signature version\n");
+  }
+  my $nmpis;
+  $nmpis = 1 if $sigalgo == 1;
+  $nmpis = 2 if $sigalgo == 17 || $sigalgo == 19 || $sigalgo == 22;
+  die("unsupported pgp algorithm $sigalgo\n") unless defined $nmpis;
+  my @mpis;
+  for (1..$nmpis) {
+    die unless length($mpidata) >= 2;
+    my $l = unpack('n', substr($mpidata, 0, 2, ''));
+    die unless length($mpidata) >= int(($l + 7) / 8);
+    push @mpis, substr($mpidata, 0, int(($l + 7) / 8), '');
+  }
+  return ($sigalgo, \@mpis);
+}
+
+sub x509_pack {
+  my ($tag, $data) = @_;
+  my $l = length($data);
+  return pack("CC", $tag, $l) . $data if $l < 128;
+  my $ll = $l >> 8 ? $l >> 16 ? $l >> 24 ? 4 : 3 : 2 : 1;
+  return pack("CCa*", $tag, $ll | 0x80,  substr(pack("N", $l), -$ll)) . $data;
+}
+
+sub x509_pack_mpi {
+  my $mpi = $_[0];
+  $mpi = pack('C', 0) if length($mpi) == 0;
+  $mpi = substr($mpi, 1) while length($mpi) > 1 && unpack('C', $mpi) == 0;
+  return x509_pack(0x02, unpack('C', $mpi) >= 128 ? pack('C', 0).$mpi : $mpi);
+}
+
+sub x509_pack_signature {
+  my ($algo, $mpis) = @_;
+  if ($algo == 1) {
+    my $sig = $mpis->[0];
+    $sig = "\0$sig" while length($sig) % 8;
+    return $sig;
+  } elsif ($algo == 17 || $algo == 19) {
+    return x509_pack(0x30, x509_pack_mpi($mpis->[0]).x509_pack_mpi($mpis->[1]));
+  } elsif ($algo == 22) {
+    die("x509_pack_signature: eddsa is not supported\n");
+  }
+  die("x509_pack_signature: unsupported pubkey algorithm $algo\n");
+}
+
+sub copyfd {
+  my ($in, $out, $size) = @_;
+  while ($size > 0) {
+    my $buf;
+    my $r = sysread($in, $buf, $size > 8192 ? 8192 : $size);
+    die("sysread: $!\n") unless defined $r;
+    die("unexpected EOF\n") unless $r;
+    swrite($out, $buf);
+    $size -= length($buf);
+  }
+}
+
+sub rpc {
+  my (@args) = @_;
+  die("bad number of args\n") unless @args >= 2;
+  splice(@args, 0, 2, 'privileged', $args[1], $args[0]);
+  splice(@args, 2, 0, $keyring, gensig(@args)) if $args[2] ne 'nonce';
+  if (!$signaddr) {
+    $signaddr = inet_aton($signhost);
+    die("$signhost: unknown host\n") unless $signaddr;
+  }
+  local *S;
+  socket(S, PF_INET, SOCK_STREAM, $tcpproto) || die("socket: $!\n");
+  bindreservedport(\*S) if $bindreservedport;
+  connect(S, sockaddr_in($port, $signaddr)) || die("connect to $signhost:$port: $!\n");
+
+  my $pack = pack('n' x (1 + @args), scalar(@args), map {length($_)} @args).join('', @args);
+  $pack = pack('nn', length($pack), 0).$pack;
+  swrite(\*S, $pack);
+  my $buf = '';
+  while (1) {
+    my $r = sysread(S, $buf, 8192, length($buf));
+    if (!defined($r)) {
+      die("sysread: $!\n") if $! != POSIX::EINTR;
+      next;
+    }
+    last unless $r;
+    last if length($buf) >= 2 * 65536 + 6;
+  }
+  die("answer is too small\n")  unless length($buf) >= 6;
+  my ($status, $outl, $errl) = unpack('nnn', $buf);
+  die("answer is too small\n")  unless length($buf) >= 6 + $outl + $errl;
+  my $err = substr($buf, 6 + $outl, $errl);
+  my @r;
+  if ($outl) {
+    die("answer is too small\n")  unless $outl >= 2;
+    my $out = substr($buf, 6, $outl);
+    my $nret = unpack('n', $out);
+    die("answer is too small\n")  unless $outl >= 2 + 2 * $nret;
+    (undef, @r) = unpack('n' x (1 + $nret), $out);
+    substr($out, 0, 2 + 2 * $nret, '');
+    for (@r) {
+      die("answer is too small\n") unless length($out) >= $_;
+      $_ = substr($out, 0, $_, '');
+    }
+    die("excess data in answer\n") if length($out);
+  }
+  if ($status == 0 && @args > 4 && ($args[4] eq 'backup' || $args[4] eq 'log')) {
+    die("bad $args[4] answer\n") unless @r == 1 && $r[0] =~ /^(\d+)$/;
+    my $size = $1;
+    substr($buf, 0, 6 + $outl + $errl, '');
+    $buf = substr($buf, 0, $size) if $size < length($buf);
+    swrite(\*STDOUT, $buf) if length($buf);
+    copyfd(\*S, \*STDOUT, $size - length($buf));
+  }
+  close S;
+  return ($status, $err, @r);
+}
+
+sub rpc_fatal {
+  my ($resnum, @args) = @_;
+  my ($status, $err, @r) = rpc(@args);
+  die($err || "unknown error\n") if $status;
+  die("unexpected number of results\n") if defined($resnum) && @r != $resnum;
+  return @r;
+}
+
+sub rpc_fatal_1 {
+  return (rpc_fatal(1, @_))[0];
+}
+
+sub readconfig {
+  my ($conffile) = @_;
+  local *F;
+  open(F, '<', $conffile) || die("$conffile: $!\n");
+  while(<F>) {
+    chomp;
+    next if /^#/;
+    my @s = split(' ', $_); 
+    next unless @s;
+    if ($s[0] eq 'server:') {
+      $signhost = $s[1] unless $cmdline_set{\$signhost};
+    } elsif ($s[0] eq 'port:') {
+      $port = $s[1] unless $cmdline_set{\$port};
+    } elsif ($s[0] eq 'use-unprivileged-ports:') {
+      $bindreservedport = 0 if $s[1] eq '1' || $s[1] =~ /^true$/i;
+    }
+  }
+  close F;
+}
+
+sub usage {
+  print {$_[0]} <<'EOF';
+Usage: privileged_sign [-u user] [-h hash] [--keyring keyring] ...
+    -O [file]                           rawopensslsign
+    -p                                  print pubkey
+    -k                                  print keyid
+    -g type expire name email [alias]   generate key
+    -x expire                           extend key
+    --keylist                           list keyring
+    --keyphrases                        list allowed keys
+    --keydel                            delete key
+    --keycvt                            convert key
+    --aliaslist                         list aliases
+    --aliasgen                          create alias
+    --aliasdel                          delete alias
+    --enckeylist                        list encryption keys
+    --enckeygen type [expire]           create encryption key
+    --enckeydel                         delete encryption key
+    --backup                            create encrypted backup
+    --log                               get privileged log
+EOF
+  exit($_[1] || 0);
+}
+
+my %modeoptions = (
+  '-O' => 'rawopensslsign',
+  '-p' => 'pubkey',
+  '-g' => 'keygen',
+  '-k' => 'keyid',
+  '-x' => 'keyextend',
+  '--keygen' 		=> 'keygen',
+  '--keyextend' 	=> 'keyextend',
+  '--keylist'		=> 'keylist',
+  '--keyphrases'	=> 'keyphrases',
+  '--keydel'		=> 'keydel',
+  '--keycvt'		=> 'keycvt',
+  '--aliaslist'		=> 'aliaslist',
+  '--aliasgen'		=> 'aliasgen',
+  '--aliasdel'		=> 'aliasdel',
+  '--enckeylist'	=> 'enckeylist',
+  '--enckeygen'		=> 'enckeygen',
+  '--enckeydel'		=> 'enckeydel',
+  '--backup'		=> 'backup',
+  '--log'		=> 'log',
+);
+
+my %stringoptions = (
+  '-u'		=> \$signuser,
+  '-h'		=> \$hash,
+  '-A'		=> \$pubalgo,
+  '--port'	=> \$port,
+  '--server'	=> \$signhost,
+  '--keyring'	=> \$keyring,
+  '--config'	=> \$conf,
+  '--sighelper'	=> \$sighelper,
+);
+
+my @modes;
+while (@ARGV && $ARGV[0] =~ /^-/) {
+  my $opt = shift @ARGV;
+  usage(\*STDOUT, 0) if $opt eq '--help';
+  if ($modeoptions{$opt}) {
+    push @modes, $modeoptions{$opt};
+  } elsif ($stringoptions{$opt}) {
+     my $r = $stringoptions{$opt};
+     $$r = shift @ARGV;
+     $cmdline_set{$r} = 1;
+  } else {
+    last if $opt eq '--';
+    print STDERR "unsupported option $opt\n\n";
+    usage(\*STDERR, 1);
+  }
+}
+if (!@modes) {
+  print STDERR "please specify a mode\n\n";
+  usage(\*STDERR, 1);
+}
+die("please specify only one mode\n") unless @modes == 1;
+my $mode = $modes[0];
+warn("WARNING: do not use a sighelper in production!\n") if $sighelper && $conf eq '/etc/sign.conf';
+
+readconfig($conf);
+
+$pubalgo = lc($pubalgo) if $pubalgo;
+$hash = uc($hash) || 'SHA256';
+$signuser ||= '-';
+$algouser = "$hash:$signuser";
+
+die("please specify a user with the -u option\n") if $signuser eq '-' && ($mode ne 'keygen' && $mode ne 'keylist' && $mode ne 'keyphrases' && $mode ne 'aliaslist' && $mode ne 'backup' && $mode ne 'log' && $mode ne 'enckeygen' && $mode ne 'enckeylist');
+
+if ($mode eq 'rawopensslsign') {
+  my $ctx = digestctx();
+  if (!@ARGV) {
+    $ctx->addfile(\*STDIN);
+  } elsif (@ARGV == 1) {
+    die("$ARGV[0]: $!\n") unless -e $ARGV[0];
+    $ctx->addfile($ARGV[0]);
+  } else {
+    die("cannot openssl sign multiple files\n");
+  }
+  my $pk = rpc_fatal_1('sign', $algouser, $ctx->hexdigest().'@0000000000');
+  my ($sigalgo, $mpis) = sig2mpis(pk2sig($pk));
+  if ($pubalgo) {
+    die("signature algorithm is not $pubalgo\n") unless ($pubalgo eq 'rsa' && $sigalgo == 1) || ($pubalgo eq 'dsa' && $sigalgo == 17) || ($pubalgo eq 'ecdsa' && $sigalgo == 19) || ($pubalgo eq 'eddsa' && $sigalgo == 22);
+  }
+  my $sig = x509_pack_signature($sigalgo, $mpis);
+  if (!@ARGV) {
+    print $sig;
+  } else {
+    local *F;
+    open(F, '>', "$ARGV[0].sig") || die("$ARGV[0].sig: $!\n");
+    print F $sig;
+    close(F) || die("$ARGV[0].sig: $!\n");
+  }
+} elsif ($mode eq 'pubkey') {
+  my $pubkey = rpc_fatal_1($mode, $algouser, @ARGV);
+  print $pubkey;
+} elsif ($mode eq 'keygen') {
+  my $pubkey = rpc_fatal_1($mode, $algouser, @ARGV);
+  print $pubkey;
+} elsif ($mode eq 'keyextend') {
+  my $pubkey = rpc_fatal_1($mode, $algouser, @ARGV);
+  print $pubkey;
+} elsif ($mode eq 'keylist' || $mode eq 'keyphrases') {
+  my $result = rpc_fatal_1($mode, $algouser, @ARGV);
+  print $result;
+} elsif ($mode eq 'keydel') {
+  rpc_fatal(undef, $mode, $algouser, @ARGV);
+} elsif ($mode eq 'keycvt') {
+  rpc_fatal(undef, $mode, $algouser, @ARGV);
+} elsif ($mode eq 'enckeygen') {
+  my $pubkey = rpc_fatal_1($mode, $algouser, @ARGV);
+  print $pubkey if @ARGV && $ARGV[0] eq 'sym';
+} elsif ($mode eq 'enckeydel') {
+  rpc_fatal(undef, $mode, $algouser, @ARGV);
+} elsif ($mode eq 'enckeylist') {
+  my $result = rpc_fatal_1($mode, $algouser, @ARGV);
+  print $result;
+} elsif ($mode eq 'keyid') {
+  my $ctx = digestctx();
+  my $pk = rpc_fatal_1('sign', $algouser, $ctx->hexdigest().'@0000000000');
+  my $issuer = sig2issuer(pk2sig($pk));
+  print "$issuer\n";
+} elsif ($mode eq 'aliaslist') {
+  my $result = rpc_fatal_1($mode, $algouser, @ARGV);
+  print $result;
+} elsif ($mode eq 'aliasgen') {
+  rpc_fatal(undef, $mode, $algouser, @ARGV);
+} elsif ($mode eq 'aliasdel') {
+  rpc_fatal(undef, $mode, $algouser, @ARGV);
+} elsif ($mode eq 'backup') {
+  $keyring = 'system';
+  rpc_fatal(undef, $mode, $algouser, @ARGV);
+} elsif ($mode eq 'log') {
+  $keyring = 'system';
+  rpc_fatal(undef, $mode, $algouser, @ARGV);
+} else {
+  die("unsupported mode: $mode\n");
+}
+

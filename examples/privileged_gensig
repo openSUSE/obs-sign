@@ -1,0 +1,86 @@
+#!/usr/bin/perl
+
+use strict;
+use Encode;
+
+sub rungpg {
+  my ($stdin, $prg, @args) = @_;
+
+  local *RH;
+  local *WH;
+  local *KID;
+
+  pipe RH, WH;
+  my $pid = open(KID, "-|");
+  if (!defined $pid) {
+    die("could not fork: $!\n");
+    exit(0);
+  }
+  if (!$pid) {
+    close RH;
+    if (!open(STDERR, ">&STDOUT")) {
+      print STDOUT "can't dup stdout: $!\n";
+      exit(1);
+    }
+    open(STDOUT, ">&WH") || die("can't dup writepipe: $!\n");
+    close WH;
+    if (ref($stdin)) {
+      open(STDIN, '<&=', $stdin) || die("stdin dup: $!\n");
+    } elsif (defined $stdin) {
+      open(STDIN, '<', $stdin) || die("$stdin: $!\n");
+    }
+    exec $prg, @args;
+    die("$prg: $!\n");
+  }
+  close WH;
+  my $out = '';
+  my $err = '';
+  1 while sysread(KID, $err, 4096, length($err)) > 0;
+  1 while sysread(RH, $out, 4096, length($out)) > 0;
+  close(RH);
+  my $status = 0;
+  $status = $? || 255 unless close KID;
+  $status >>= 8 if $status >= 256;
+  return ($status, $out, $err);
+}
+
+sub gensig {
+  my ($arg) = @_;
+
+  my @args = split("\0", $arg);
+  for (@args) {
+    die("Bad characters in cookie\n") if /[\000-\037\177]/;
+    decode('UTF-8', $_, Encode::FB_CROAK | Encode::LEAVE_SRC) if /[\200-\377]/;
+  }
+  splice(@args, 3, 1) if @args >= 4;
+  print "Command:   @args\n";
+  my $datafd;
+  open($datafd, '+>', undef) || die;
+  syswrite($datafd, $arg);
+  sysseek($datafd, 0, 0);
+  my ($status, $out, $err) = rungpg($datafd, 'gpg', '-b');
+  die($err || "error") if $status;
+  my $sig = unpack('H*', $out);
+  print "Signature: $sig\n";
+}
+
+if (@ARGV == 0) {
+  $| = 1;
+  while (1) {
+    print "\nCookie:    ";
+    my $cookie = '';
+    while (1) {
+      my $r = sysread(\*STDIN, $cookie, 8192, length($cookie));
+      die("read: $!\n") unless defined $r;
+      last if !$r || $cookie =~ s/[\r\n].*//;
+    }
+    eval { gensig(pack('H*', $cookie)) };
+    print "Error: $@" if $@;
+  }
+} elsif (@ARGV == 1) {
+  gensig(pack('H*', $ARGV[0]));
+} else {
+  die("bad number of args\n") unless @ARGV > 4;
+  die("bad nonce\n") unless $ARGV[3] =~ /^\A[0-9a-f]+\z/s;
+  gensig(join("\0", @ARGV));
+}
