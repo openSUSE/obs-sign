@@ -176,6 +176,11 @@ sub checkbadchar {
 ## PGP functions (RFC 4880)
 ##
 
+my $pgp_curve_nistp256 = "\x2a\x86\x48\xce\x3d\x03\x01\x07";
+my $pgp_curve_nistp384 = "\x2b\x81\x04\x00\x22";
+my $pgp_curve_ed25519  = "\x2b\x06\x01\x04\x01\xda\x47\x0f\x01";
+my $pgp_curve_cv25519  = "\x2b\x06\x01\x04\x01\x97\x55\x01\x05\x01";
+
 sub get_pgphashalgo {
   my ($hashalgo) = @_;
   $hashalgo = lc($hashalgo);
@@ -480,8 +485,8 @@ sub sign_with_gcrypt {
   } elsif ($info->{'algo'} == 19) {
     die("sign_with_gcrypt: missing MPIs\n") unless @{$info->{'mpis'} || []} == 1 && @{$info->{'smpis'} || []} == 1;
     my $curve;
-    $curve = 'NIST P-256' if $info->{'curve'} eq "\x2a\x86\x48\xce\x3d\x03\x01\x07";
-    $curve = 'NIST P-384' if $info->{'curve'} eq "\x2b\x81\x04\x00\x22";
+    $curve = 'NIST P-256' if $info->{'curve'} eq $pgp_curve_nistp256;
+    $curve = 'NIST P-384' if $info->{'curve'} eq $pgp_curve_nistp384;
     die("sign_with_gcrypt: unsupported ECDSA curve\n") unless $curve;
     my $hashraw = pack('H*', $hash);
     $hashraw = substr($hashraw, 0, 32) if $curve eq 'NIST P-256';
@@ -495,7 +500,7 @@ sub sign_with_gcrypt {
     $sigdata = $rv->print(Crypt::GCrypt::MPI::FMT_PGP()).$sv->print(Crypt::GCrypt::MPI::FMT_PGP());
   } elsif ($info->{'algo'} == 22) {
     my $curve;
-    $curve = 'Ed25519' if $info->{'curve'} eq "\x2b\x06\x01\x04\x01\xda\x47\x0f\x01";
+    $curve = 'Ed25519' if $info->{'curve'} eq $pgp_curve_ed25519;
     die("sign_with_gcrypt: unsupported EdDSA curve\n") unless $curve;
     die("sign_with_gcrypt: missing MPIs\n") unless @{$info->{'mpis'} || []} == 1 && @{$info->{'smpis'} || []} == 1;
     my ($d) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$info->{'smpis'}};
@@ -518,9 +523,9 @@ sub can_sign_with_gcrypt {
   return 0 unless $info->{'smpis'};
   return 1 if $info->{'algo'} == 1;
   return 1 if $info->{'algo'} == 17;
-  return 1 if $info->{'algo'} == 22 && $info->{'curve'} eq "\x2b\x06\x01\x04\x01\xda\x47\x0f\x01";
-  return 1 if $info->{'algo'} == 19 && $info->{'curve'} eq "\x2a\x86\x48\xce\x3d\x03\x01\x07";
-  return 1 if $info->{'algo'} == 19 && $info->{'curve'} eq "\x2b\x81\x04\x00\x22";
+  return 1 if $info->{'algo'} == 22 && $info->{'curve'} eq $pgp_curve_ed25519;
+  return 1 if $info->{'algo'} == 19 && $info->{'curve'} eq $pgp_curve_nistp256;
+  return 1 if $info->{'algo'} == 19 && $info->{'curve'} eq $pgp_curve_nistp384;
   return 0;
 }
 
@@ -992,10 +997,10 @@ sub gpg_privkey_to_info {
   } elsif ($type eq 'ecc') {
     $info = {'algo' => 19, 'mpis' => ['q'], 'smpis' => ['d']};
     my $curve = $pk->nth_data(1, 'curve') || '?';
-    $info->{'curve'} = "\x2b\x06\x01\x04\x01\xda\x47\x0f\x01" if $curve eq 'Ed25519';
-    $info->{'curve'} = "\x2b\x06\x01\x04\x01\x97\x55\x01\x05\x01" if $curve eq 'Curve25519';
-    $info->{'curve'} = "\x2a\x86\x48\xce\x3d\x03\x01\x07" if $curve eq 'NIST P-256';
-    $info->{'curve'} = "\x2b\x81\x04\x00\x22" if $curve eq 'NIST P-384';
+    $info->{'curve'} = $pgp_curve_ed25519 if $curve eq 'Ed25519';
+    $info->{'curve'} = $pgp_curve_cv25519 if $curve eq 'Curve25519';
+    $info->{'curve'} = $pgp_curve_nistp256 if $curve eq 'NIST P-256';
+    $info->{'curve'} = $pgp_curve_nistp384 if $curve eq 'NIST P-384';
     die("unsupported ecc curve $curve\n") unless $info->{'curve'};
     $info->{'algo'} = 18 if $curve eq 'Curve25519';
     $info->{'algo'} = 22 if $curve eq 'Ed25519';
@@ -2112,7 +2117,7 @@ sub cmd_privileged_backup {
 
   # encrypt file
   my $oldgnupghome = privileged_switch_gnupghome('system', 0, 1);
-  rungpg_fatal('/dev/null', $tdir, $gpg, '--batch', '--encrypt', '--no-verbose', '--no-secmem-warning', '--trust-model', 'always', '-o', $encfile, '-r', $backup_user, $tarfile);
+  rungpg_fatal('/dev/null', $tdir, $gpg, '--batch', '--encrypt', '--no-verbose', '--no-secmem-warning', '--trust-model', 'always', '--no-auto-key-locate', '-o', $encfile, '-r', $backup_user, $tarfile);
   switch_gnupghome($oldgnupghome);
   unlink($tarfile);
 
@@ -2231,7 +2236,7 @@ sub cmd_privileged {
     privileged_log($logfd, "ok $now");
   }
   close($logfd);
-  exit(0) if $pcmd eq 'backup' || $pcmd eq 'log';		# already replied
+  exit(0) if !$status && ($pcmd eq 'backup' || $pcmd eq 'log');		# already replied
   return ($status, $err, @out);
 }
 
