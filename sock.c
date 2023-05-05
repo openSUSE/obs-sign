@@ -95,7 +95,7 @@ ssl_connect(const char *hostname)
     dodie("SSL_new failed");
   if (!SSL_set_fd(ssl, sock))
     dodie("SSL_set_fd failed");
-  if (host)
+  if (hostname)
     SSL_set_tlsext_host_name(ssl, hostname);
   if (SSL_connect(ssl) != 1)
     dodie_ssl_error("SSL_connect failed");
