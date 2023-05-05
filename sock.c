@@ -30,14 +30,86 @@
 
 #include "inc.h"
 
+#ifdef WITH_OPENSSL
+# include <openssl/err.h>
+# include <openssl/ssl.h>
+#endif
+
 
 static int sock = -1;
 
 extern char *test_sign;
 extern char *host;
 extern int port;
+extern int sockproto;
 extern uid_t uid, euid;
 extern int use_unprivileged_ports;
+
+#ifdef WITH_OPENSSL
+extern char *ssl_keyfile;
+extern char *ssl_certfile;
+extern char *ssl_verifyfile;
+extern char *ssl_verifydir;
+#endif
+
+#ifdef WITH_OPENSSL
+
+static SSL_CTX *ctx;
+static SSL *ssl;
+
+void
+dodie_ssl_error(const char *msg)
+{
+  unsigned long e = ERR_get_error();
+  fprintf(stderr, "%s: %s\n", msg, ERR_error_string(e, 0));
+  exit(1);
+}
+
+void
+init_ssl_ctx()
+{
+  SSL_library_init();
+  SSL_load_error_strings();
+  ctx = SSL_CTX_new(SSLv23_method());
+  if (!ctx)
+    dodie("SSL_CTX_new failed");
+  SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_COMPRESSION | SSL_OP_ALL);
+  if (ssl_keyfile && !SSL_CTX_use_PrivateKey_file(ctx, ssl_keyfile, SSL_FILETYPE_PEM))
+    dodie_errno("SSL_CTX_use_PrivateKey_file failed");
+  if (ssl_certfile && !SSL_CTX_use_certificate_chain_file(ctx, ssl_certfile))
+    dodie_errno("SSL_CTX_use_certificate_chain_file failed");
+  if ((ssl_verifyfile || ssl_verifydir) && !SSL_CTX_load_verify_locations(ctx, ssl_verifyfile, ssl_verifydir))
+    dodie("SSL_CTX_load_verify_locations failed");
+  if (!ssl_verifyfile && !ssl_verifydir && !SSL_CTX_set_default_verify_paths(ctx))
+    dodie("SSL_CTX_set_default_verify_paths failed");
+  SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, 0);
+}
+
+void
+ssl_connect(const char *hostname)
+{
+  if (!ctx)
+    init_ssl_ctx();
+  ssl = SSL_new(ctx);
+  if (!ssl)
+    dodie("SSL_new failed");
+  if (!SSL_set_fd(ssl, sock))
+    dodie("SSL_set_fd failed");
+  if (host)
+    SSL_set_tlsext_host_name(ssl, hostname);
+  if (SSL_connect(ssl) != 1)
+    dodie_ssl_error("SSL_connect failed");
+}
+
+void
+ssl_close()
+{
+  if (ssl)
+    SSL_free(ssl);
+  ssl = 0;
+}
+
+#endif
 
 void
 opensocket(void)
@@ -48,6 +120,10 @@ opensocket(void)
 
   if (test_sign)
     return;
+#ifndef WITH_OPENSSL
+  if (sockproto == SOCKPROTO_SSL)
+    dodie("not built with SSL support");
+#endif
   if (!hostknown)
     {
       svt.sin_addr.s_addr = inet_addr(host);
@@ -91,17 +167,45 @@ opensocket(void)
     dodie_errno(host);
   optval = 1;
   setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &optval, sizeof(optval));
+#ifdef WITH_OPENSSL
+  if (sockproto == SOCKPROTO_SSL)
+    ssl_connect(host);
+#endif
 }
 
 void
 closesocket()
 {
+#ifdef WITH_OPENSSL
+  ssl_close();
+#endif
   if (sock != -1)
     {
       close(sock);
       sock = -1;
     }
 }
+
+static inline ssize_t
+readsocket(void *buf, size_t count)
+{
+#ifdef WITH_OPENSSL
+  if (sockproto == SOCKPROTO_SSL)
+    return SSL_read(ssl, buf, count);
+#endif
+  return read(sock, buf, count);
+}
+
+static inline ssize_t
+writesocket(void *buf, size_t count)
+{
+#ifdef WITH_OPENSSL
+  if (sockproto == SOCKPROTO_SSL)
+    return SSL_write(ssl, buf, count);
+#endif
+  return write(sock, buf, count);
+}
+
 
 static pid_t
 pipe_and_fork(int *pip)
@@ -179,7 +283,7 @@ doreq_raw(byte *buf, int inbufl, int bufl)
     opensocket();		/* better late then never */
   if (test_sign)
     doreq_test(buf, inbufl, bufl);
-  else if (write(sock, buf, inbufl) != inbufl)
+  if (writesocket(buf, inbufl) != inbufl)
     {
       perror("write");
       closesocket();
@@ -196,7 +300,7 @@ doreq_raw(byte *buf, int inbufl, int bufl)
 	  closesocket();
 	  return -1;
 	}
-      ll = read(sock, buf + l, bufl - l);
+      ll = readsocket(buf + l, bufl - l);
       if (ll == -1)
 	{
 	  perror("read");

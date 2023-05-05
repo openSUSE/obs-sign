@@ -43,10 +43,11 @@ eval {
 };
 
 my @allows;
+my @allow_subject;
 my %map;
 my $signhost = '127.0.0.1';
 my $port = 5167;
-my $proxyport = 5167;
+my $sockproto = '';
 my $signuser = '';
 my $gpg = '/usr/bin/gpg';
 my $phrases = '';
@@ -66,6 +67,17 @@ my $keycache = '';
 my $use_gcrypt_sign;
 my $use_gcrypt_privsign;
 my $use_gcrypt_decrypt;
+my $ssl_certfile;
+my $ssl_keyfile;
+my $ssl_verifyfile;
+my $ssl_verifydir;
+
+my $proxyport;
+my $proxysockproto;
+my $proxyssl_certfile;
+my $proxyssl_keyfile;
+my $proxyssl_verifyfile;
+my $proxyssl_verifydir;
 
 my $restricted_gnupghome = '';
 my $restricted_phrases = '';
@@ -1365,6 +1377,17 @@ sub doproxy {
   }
   setsockopt(CS, SOL_SOCKET, SO_KEEPALIVE, pack("l",1));
   connect(CS, $signaddr) || die("connect: $!\n");
+  if ($sockproto && $sockproto eq 'ssl') {
+    my %sslconf;
+    $sslconf{'SSL_verify_mode'} = &IO::Socket::SSL::SSL_VERIFY_PEER;
+    $sslconf{'SSL_key_file'} = $ssl_keyfile if $ssl_keyfile;
+    $sslconf{'SSL_cert_file'} = $ssl_certfile if $ssl_certfile;
+    $sslconf{'SSL_ca_file'} = $ssl_verifyfile if $ssl_verifyfile;
+    $sslconf{'SSL_ca_path'} = $ssl_verifydir if $ssl_verifydir;
+    my $ssl = IO::Socket::SSL->start_SSL(\*CS, %sslconf);
+    die("ssl handshake failed: $IO::Socket::SSL::SSL_ERROR\n") unless $ssl;
+    *CS = $ssl;
+  }
   swrite(*CS, $pack);
   while (1) {
     my $buf = '';
@@ -1376,6 +1399,7 @@ sub doproxy {
     last unless $r;
     swrite(*CLNT, $buf);
   }
+  close(CS);
 }
 
 
@@ -1406,16 +1430,61 @@ while(<F>) {
     next;
   }
   if ($s[0] eq 'port:') {
-    $port = $proxyport = $s[1];
+    $port = $s[1];
+    next;
+  }
+  if ($s[0] eq 'proto:') {
+    $sockproto = $s[1];
+    next;
+  }
+  if ($s[0] eq 'ssl_keyfile:') {
+    $ssl_keyfile = $s[1];
+    next;
+  }
+  if ($s[0] eq 'ssl_certfile:') {
+    $ssl_certfile = $s[1];
+    next;
+  }
+  if ($s[0] eq 'ssl_verifyfile:') {
+    $ssl_verifyfile = $s[1];
+    next;
+  }
+  if ($s[0] eq 'ssl_verifydir:') {
+    $ssl_verifydir = $s[1];
     next;
   }
   if ($s[0] eq 'proxyport:') {
     $proxyport = $s[1];
     next;
   }
+  if ($s[0] eq 'proxyproto:') {
+    $proxysockproto = $s[1] || '';
+    next;
+  }
+  if ($s[0] eq 'proxyssl_keyfile:') {
+    $proxyssl_keyfile = $s[1] || '';
+    next;
+  }
+  if ($s[0] eq 'proxyssl_certfile:') {
+    $proxyssl_certfile = $s[1] || '';
+    next;
+  }
+  if ($s[0] eq 'proxyssl_verifyfile:') {
+    $proxyssl_verifyfile = $s[1] || '';
+    next;
+  }
+  if ($s[0] eq 'proxyssl_verifydir:') {
+    $proxyssl_verifydir = $s[1] || '';
+    next;
+  }
   if ($s[0] eq 'allow:') {
     shift @s;
     push @allows, @s;
+    next;
+  }
+  if ($s[0] eq 'allow_subject:') {
+    shift @s;
+    push @allow_subject, @s;
     next;
   }
   if ($s[0] eq 'map:') {
@@ -1533,6 +1602,13 @@ while(<F>) {
   }
 }
 
+$proxyport = $port unless defined $proxyport;
+$proxysockproto = $sockproto unless defined $proxysockproto;
+$proxyssl_certfile = $ssl_certfile unless defined $proxyssl_certfile;
+$proxyssl_keyfile = $ssl_keyfile unless defined $proxyssl_keyfile;
+$proxyssl_verifyfile = $ssl_verifyfile unless defined $proxyssl_verifyfile;
+$proxyssl_verifydir = $ssl_verifydir unless defined $proxyssl_verifydir;
+
 my $myname = $phrases ? 'signd' : 'signproxy';
 
 die("will not proxy to myself\n") if $signhost eq '127.0.0.1' && $port eq $proxyport && !$phrases;
@@ -1575,6 +1651,16 @@ if (@ARGV && $ARGV[0] eq '--gen-enckey') {
   print "generated encryption key $keyid\n";
   exit(0);
 }
+
+die("unknown sockproto $sockproto\n") if $sockproto && $sockproto ne 'unprotected' && $sockproto ne 'ssl';
+die("unknown proxysockproto $proxysockproto\n") if $proxysockproto && $proxysockproto ne 'unprotected' && $proxysockproto ne 'ssl';
+if (($proxysockproto || '') eq 'ssl') {
+  die("no ssl_keyfile specified\n") unless $proxyssl_keyfile;
+  die("keyfile '$proxyssl_keyfile' does not exist\n") unless -f $proxyssl_keyfile;
+  die("no ssl_certfile specified\n") unless $proxyssl_certfile;
+  die("certfile '$proxyssl_certfile' does not exist\n") unless -f $proxyssl_certfile;
+}
+require IO::Socket::SSL if ($sockproto || '') eq 'ssl' || ($proxysockproto || '') eq 'ssl';
 
 if (($ARGV[0] || '') eq '-f') {
   my $pid = fork();
@@ -1638,6 +1724,31 @@ for my $allow (@allows) {
 }
 die("illegal host $peer\n") unless $allowed;
 
+if ($proxysockproto eq 'ssl') {
+  #$IO::Socket::SSL::DEBUG = 4;
+  my %sslconf = ( SSL_cert_file => $proxyssl_certfile, SSL_key_file => $proxyssl_keyfile );
+  $sslconf{'SSL_verify_mode'} = &IO::Socket::SSL::SSL_VERIFY_FAIL_IF_NO_PEER_CERT | &IO::Socket::SSL::SSL_VERIFY_PEER;
+  $sslconf{'SSL_ca_file'} = $proxyssl_verifyfile if $proxyssl_verifyfile;
+  $sslconf{'SSL_ca_path'} = $proxyssl_verifydir if $proxyssl_verifydir;
+  my $ssl = IO::Socket::SSL->start_SSL(\*CLNT, SSL_server => 1, %sslconf);
+  die("ssl handshake failed: $IO::Socket::SSL::SSL_ERROR\n") unless $ssl;
+  *CLNT = $ssl;
+  if (@allow_subject) {
+    my $cert = $ssl->peer_certificate();
+    die("could not get peer certificate\n") unless $cert;
+    my $subject = Net::SSLeay::X509_get_subject_name($cert);
+    die("could not get subject from peer certificate\n") unless $subject;
+    $subject = Net::SSLeay::X509_NAME_print_ex($subject, &Net::SSLeay::XN_FLAG_RFC2253);
+    die("could not convert certificate subject to text\n") unless $subject;
+    $allowed = undef;
+    for my $as (@allow_subject) {
+      next unless $subject =~ /^$as$/;
+      $allowed = 1;
+      last;
+    }
+    die("certificate denied: $subject\n") unless $allowed;
+  }
+}
 
 
 ### commands

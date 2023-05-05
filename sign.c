@@ -37,6 +37,7 @@
 
 char *host;
 int port = MYPORT;
+int sockproto = SOCKPROTO_UNPROTECTED;
 char *test_sign;
 static char *user;
 static char *algouser;
@@ -44,6 +45,11 @@ static int allowuser;
 static int verbose;
 uid_t uid, euid;
 int use_unprivileged_ports;
+
+char *ssl_certfile;
+char *ssl_keyfile;
+char *ssl_verifyfile;
+char *ssl_verifydir;
 
 static const char *const hashname[] = {"SHA1", "SHA256", "SHA512"};
 static const int  hashlen[] = {20, 32, 64};
@@ -1363,6 +1369,44 @@ read_sign_conf(const char *conf)
       if (!strcmp(buf, "port"))
 	{
 	  port = atoi(bp);
+	  continue;
+	}
+      if (!strcmp(buf, "proto"))
+	{
+	  if (!strcmp(bp, "ssl"))
+	    sockproto = SOCKPROTO_SSL;
+	  else if (!strcmp(bp, "unprotected"))
+	    sockproto = SOCKPROTO_UNPROTECTED;
+	  else
+	    dodie("sign.conf: unsupported proto argument");
+	  continue;
+	}
+      if (!strcmp(buf, "ssl_keyfile"))
+	{
+	  if (ssl_keyfile)
+	    free(ssl_keyfile);
+	  ssl_keyfile = *bp ? strdup(bp) : 0;
+	  continue;
+	}
+      if (!strcmp(buf, "ssl_certfile"))
+	{
+	  if (ssl_certfile)
+	    free(ssl_certfile);
+	  ssl_certfile = *bp ? strdup(bp) : 0;
+	  continue;
+	}
+      if (!strcmp(buf, "ssl_verifyfile"))
+	{
+	  if (ssl_verifyfile)
+	    free(ssl_verifyfile);
+	  ssl_verifyfile = *bp ? strdup(bp) : 0;
+	  continue;
+	}
+      if (!strcmp(buf, "ssl_verifydir"))
+	{
+	  if (ssl_verifydir)
+	    free(ssl_verifydir);
+	  ssl_verifydir = *bp ? strdup(bp) : 0;
 	  continue;
 	}
       if (!strcmp(buf, "use-unprivileged-ports"))

@@ -17,6 +17,9 @@ typedef unsigned char byte;
 #define PUB_EDDSA       2
 #define PUB_ECDSA       3
 
+#define SOCKPROTO_UNPROTECTED	0
+#define SOCKPROTO_SSL		1
+
 /* sign.c */
 extern int hashalgo;
 
