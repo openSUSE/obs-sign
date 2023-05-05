@@ -15,6 +15,11 @@ my $signhost = '127.0.0.1';
 my $port = 5167;
 my $conf = '/etc/sign.conf';
 my $sighelper;
+my $proto;
+my $ssl_certfile;
+my $ssl_keyfile;
+my $ssl_verifyfile;
+my $ssl_verifydir;
 
 my $algouser;
 my $tcpproto = getprotobyname('tcp');
@@ -249,6 +254,18 @@ sub rpc {
   socket(S, PF_INET, SOCK_STREAM, $tcpproto) || die("socket: $!\n");
   bindreservedport(\*S) if $bindreservedport;
   connect(S, sockaddr_in($port, $signaddr)) || die("connect to $signhost:$port: $!\n");
+  if ($proto && $proto eq 'ssl') {
+    require IO::Socket::SSL;
+    my %sslconf;
+    $sslconf{'SSL_verify_mode'} = &IO::Socket::SSL::SSL_VERIFY_PEER;
+    $sslconf{'SSL_key_file'} = $ssl_keyfile if $ssl_keyfile;
+    $sslconf{'SSL_cert_file'} = $ssl_certfile if $ssl_certfile;
+    $sslconf{'SSL_ca_file'} = $ssl_verifyfile if $ssl_verifyfile;
+    $sslconf{'SSL_ca_path'} = $ssl_verifydir if $ssl_verifydir;
+    my $ssl = IO::Socket::SSL->start_SSL(\*S, %sslconf);
+    die("ssl handshake failed: ".($IO::Socket::SSL::SSL_ERROR ? $IO::Socket::SSL::SSL_ERROR : 'unknown error')."\n") unless $ssl;
+    *S = $ssl;
+  }
 
   my $pack = pack('n' x (1 + @args), scalar(@args), map {length($_)} @args).join('', @args);
   $pack = pack('nn', length($pack), 0).$pack;
@@ -318,6 +335,16 @@ sub readconfig {
       $signhost = $s[1] unless $cmdline_set{\$signhost};
     } elsif ($s[0] eq 'port:') {
       $port = $s[1] unless $cmdline_set{\$port};
+    } elsif ($s[0] eq 'proto:') {
+      $proto = $s[1] unless $cmdline_set{\$proto};
+    } elsif ($s[0] eq 'ssl_certfile:') {
+      $ssl_certfile = $s[1];
+    } elsif ($s[0] eq 'ssl_keyfile:') {
+      $ssl_keyfile = $s[1];
+    } elsif ($s[0] eq 'ssl_verifyfile:') {
+      $ssl_verifyfile = $s[1];
+    } elsif ($s[0] eq 'ssl_verifydir:') {
+      $ssl_verifydir= $s[1];
     } elsif ($s[0] eq 'use-unprivileged-ports:') {
       $bindreservedport = 0 if $s[1] eq '1' || $s[1] =~ /^true$/i;
     }
@@ -376,6 +403,7 @@ my %stringoptions = (
   '-h'		=> \$hash,
   '-A'		=> \$pubalgo,
   '--port'	=> \$port,
+  '--proto'	=> \$proto,
   '--server'	=> \$signhost,
   '--keyring'	=> \$keyring,
   '--config'	=> \$conf,
@@ -412,6 +440,7 @@ $pubalgo = lc($pubalgo) if $pubalgo;
 $hash = uc($hash) || 'SHA256';
 $signuser ||= '-';
 $algouser = "$hash:$signuser";
+die("unsupported socket proto $proto\n") if $proto && $proto ne 'unprotected' && $proto ne 'ssl';
 
 die("please specify a user with the -u option\n") if $signuser eq '-' && ($mode ne 'keygen' && $mode ne 'keylist' && $mode ne 'keyphrases' && $mode ne 'aliaslist' && $mode ne 'backup' && $mode ne 'log' && $mode ne 'enckeygen' && $mode ne 'enckeylist');
 
