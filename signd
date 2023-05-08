@@ -1483,6 +1483,7 @@ while(<F>) {
     next;
   }
   if ($s[0] eq 'allow_subject:') {
+    @s = split(' ', $_, 2);
     shift @s;
     push @allow_subject, @s;
     next;
@@ -1742,7 +1743,12 @@ if ($proxysockproto eq 'ssl') {
     die("could not convert certificate subject to text\n") unless $subject;
     $allowed = undef;
     for my $as (@allow_subject) {
-      next unless $subject =~ /^$as$/;
+      if ($as =~ /^\/(.*)\/$/) {
+	my $as_re = $1;
+        next unless $subject =~ /$as_re/;
+      } else {
+        next unless $subject eq $as;
+      }
       $allowed = 1;
       last;
     }

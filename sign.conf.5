@@ -16,30 +16,34 @@ The following keys are recognized:
 
 .TP 4
 .BR server: " hostname"
-Forward all unknown requests to the specified server.
+Forward all requests with unknown signing users to the specified server.
 .TP 4
 .BR port: " port"
 Use the specified port number instead of the default port "5167".
-Also sets the proxyport.
 .TP 4
-.BR proxyport: " port"
-Listen on the specified port number for incoming requests.
+.BR proto: " unprotected|ssl"
+Set the protection protocol to secure the connection to the
+sign server. The default is to use an unprotected connection.
 .TP 4
 .BR user: " user"
 Set a default user to use for signing.
 .TP 4
 .BR hash: " hash"
 Set a default hash to use for signing. The default hash
-is SHA1.
+is SHA1 for compatibility reasons.
 .TP 4
-.BR allow: " ip subnet hostname..."
+.BR allow: " ip"
+.TQ
+.BR allow: " subnet"
+.TQ
+.BR allow: " hostname"
 Allow only connections from the specified ip addresses,
 subnets expressed in CIDR notation, and/or hostnames.
 Note that hostnames are resolved using reverse DNS
 lookups, so there must be reverse entries in the DNS
 server, and it should be secured against DNS poisoning
 attacks.
-Must be present.
+All request are rejected if the allow list is empty.
 .TP 4
 .BR gpg: " path_to_gpg"
 Select the gpg program to use instead of "/usr/bin/gpg".
@@ -54,8 +58,8 @@ Modify the signuser. This can be used to map hashes and
 users to unambiguous key ids.
 .TP 4
 .BR allowuser: " username|uid"
-Grant the user the right to sign. the sign binary must
-be installed suid-root for this to work. Multiple
+Grant the user the right to sign. The sign binary must
+be installed as suid-root binary for this to work. Multiple
 users can be specified by using multiple allowuser
 lines in the configuration.
 .TP 4
@@ -92,6 +96,47 @@ specify more than one location, as gpg uses different socket
 directories depending on if the user is logged in or not.
 As a fallback, signd will call "gpgconf --list-dirs" to find
 the current location of the agent socket.
+.TP 4
+.BR ssl_certfile: " path
+.TQ
+.BR ssl_keyfile: " path
+Specify the certificate and the corresponding private key for
+ssl client certification.
+.TP 4
+.BR ssl_verifyfile: " path
+.TQ
+.BR ssl_verifydir: " dirpath
+Specify the ca locations used to verify the certificate of the
+server. If neither a verifydir nor a verifyfile is configured,
+the default ca locations are used.
+.TP 4
+.BR proxyport: " port"
+.TQ
+.BR proxyproto: " unprotected|ssl"
+.TQ
+.BR proxyssl_certfile: " path
+.TQ
+.BR proxyssl_keyfile: " path
+.TQ
+.BR proxyssl_verifyfile: " path
+.TQ
+.BR proxyssl_verifydir: " dirpath
+Configure the setting for incoming requests. The corresponding
+value for outgoing requests is used if a key has not been set.
+The keyfile/certfile specifies the server certificate, the
+verifydir/verifyfile configures the ca locations to verify
+the client certificate. Note that incoming requests with no
+client certificate are rejected.
+.TP 4
+.BR allow_subject: " x509_subject"
+.TQ
+.BR allow_subject: " /x509_subject_regex/"
+Allow only requests that have a verified client certificate
+with a subject that matches one of the specified values.
+The X509 subject is converted to a string as specified in RFC-2253
+before doing a match. If the allow_subject list is empty, no
+check is done on the X509 subject but the certificate is
+still verified.
 
 .SH FILES
 .I /etc/sign.conf
