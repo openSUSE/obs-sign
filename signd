@@ -544,7 +544,11 @@ sub can_sign_with_gcrypt {
 sub decrypt_cipher_with_gcrypt {
   my ($cipheralgo, $key, $encrypted, $encrypted_mdc) = @_;
   my ($cipher, $blklen);
-  if ($cipheralgo == 9) {	# AES256
+  if ($cipheralgo == 7) {	# AES128
+    die("bad cipher key length\n") unless length($key) == 16;
+    $blklen = 16;
+    $cipher = Crypt::GCrypt->new('type' => 'cipher', 'algorithm' => 'aes128', 'mode' => 'cfb', 'padding' => 'none');
+  } elsif ($cipheralgo == 9) {	# AES256
     die("bad cipher key length\n") unless length($key) == 32;
     $blklen = 16;
     $cipher = Crypt::GCrypt->new('type' => 'cipher', 'algorithm' => 'aes256', 'mode' => 'cfb', 'padding' => 'none');
