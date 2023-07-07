@@ -1,4 +1,11 @@
 -------------------------------------------------------------------
+Fri Jul  7 15:29:31 CEST 2023 - mls@suse.de
+
+- update to version 2.8.2
+  * support aes128 cipher in decrypt_cipher_with_gcrypt
+  * add tls support
+
+-------------------------------------------------------------------
 Fri Apr 14 14:04:29 CEST 2023 - mls@suse.de
 
 - update to version 2.8.1
