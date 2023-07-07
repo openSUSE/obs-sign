@@ -190,7 +190,7 @@ static inline ssize_t
 readsocket(void *buf, size_t count)
 {
 #ifdef WITH_OPENSSL
-  if (sockproto == SOCKPROTO_SSL)
+  if (!test_sign && sockproto == SOCKPROTO_SSL)
     return SSL_read(ssl, buf, count);
 #endif
   return read(sock, buf, count);
@@ -200,7 +200,7 @@ static inline ssize_t
 writesocket(void *buf, size_t count)
 {
 #ifdef WITH_OPENSSL
-  if (sockproto == SOCKPROTO_SSL)
+  if (!test_sign && sockproto == SOCKPROTO_SSL)
     return SSL_write(ssl, buf, count);
 #endif
   return write(sock, buf, count);
@@ -283,7 +283,7 @@ doreq_raw(byte *buf, int inbufl, int bufl)
     opensocket();		/* better late then never */
   if (test_sign)
     doreq_test(buf, inbufl, bufl);
-  if (writesocket(buf, inbufl) != inbufl)
+  else if (writesocket(buf, inbufl) != inbufl)
     {
       perror("write");
       closesocket();
