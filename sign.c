@@ -123,6 +123,8 @@ readprivkey(void)
     dodie("private key too large");
   if (privkey[l - 1] == '\n')
     l--;
+  if (l < 2)
+    dodie("bad private key");
   privkey[l] = 0;
 }
 
