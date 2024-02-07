@@ -876,6 +876,9 @@ x509_appx_contentinfo(struct x509 *cb, unsigned char *digest, int digestlen)
     *   INTEGER           :00
     *   INTEGER           :00
     *   INTEGER           :00
+    *
+    * SIP stands for "Subject Interface Package"
+    * the octet string is the GUID 0AC5DF4B-CE07-4DE2-B76E-23C839A09FD1
     */
   static byte spcinfodata[] = {
     0x30, 0x35, 0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x01, 0x1e, 0x30, 0x27,
