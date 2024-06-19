@@ -1,4 +1,11 @@
 -------------------------------------------------------------------
+Wed Jun 19 13:22:39 CEST 2024 - mls@suse.de
+
+- update to version 2.8.4
+  * support ECDSA for rpm signing
+  * use reserved signature space for rpm signing
+
+-------------------------------------------------------------------
 Fri Jul  7 15:29:31 CEST 2023 - mls@suse.de
 
 - update to version 2.8.3
