@@ -34,6 +34,7 @@
 #define RPMSIGTAG_PGP  1002
 #define RPMSIGTAG_MD5  1004
 #define RPMSIGTAG_GPG  1005
+#define RPMSIGTAG_RESERVEDSPACE	1008
 
 /* RPM constants */
 static const int  pubtag[]  = { RPMSIGTAG_GPG, RPMSIGTAG_PGP, RPMSIGTAG_GPG, RPMSIGTAG_GPG };
@@ -202,12 +203,52 @@ rpm_realign(struct rpmdata *rd, byte *region)
   free(rsps);
 }
 
+static void
+rpm_adaptreserved(struct rpmdata *rd, byte *region, int diff)
+{
+  byte *rpmsig = rd->rpmsig;
+  int rpmsigcnt = rd->rpmsigcnt;
+  byte *rpmsigdata = rpmsig + 16 * rpmsigcnt;
+  int o, l;
+  byte *rsp;
+  
+  if (!rpmsigcnt || !diff)
+    return;
+  /* the reserved space must be the last tag and must be the last
+   * entry in the data segment */
+  rsp = rpmsig + 16 * (rpmsigcnt - 1);
+  if (getbe4c(rsp) != RPMSIGTAG_RESERVEDSPACE || getbe4(rsp + 4) != 7)
+    return;
+  o = getbe4c(rsp + 8);
+  l = getbe4c(rsp + 12);
+  if (o + l != rd->rpmsigdlen - (region ? 16 : 0))
+    return;	/* reserved space is not at end of data */
+  if (diff < 0 && l + diff < 1)
+    return;	/* not enough space left */
+  if (region)
+    {
+      /* check region offset again just in case... */
+      if (getbe4c(region + 8) != o + l)
+        dodie("rpm_adaptreserved: unexpected region offset");
+      memmove(rpmsigdata + o + l + diff, rpmsigdata + o + l, 16);
+      setbe4(region + 8, o + l + diff);
+    }
+  if (diff > 0)
+    memset(rpmsigdata + o + l, 0, diff);
+  else
+    memset(rpmsigdata + rd->rpmsigdlen + diff, 0, -diff);
+  l += diff;
+  setbe4(rsp + 12, l);
+  rd->rpmsigdlen += diff;
+}
+
 int
 rpm_insertsig(struct rpmdata *rd, int hdronly, byte *newsig, int newsiglen)
 {
   byte *rpmsig = rd->rpmsig;
   int rpmsigcnt = rd->rpmsigcnt;
   u32 rpmsigsize = rd->rpmsigsize, rpmsigdlen = rd->rpmsigdlen;
+  u32 oldsigspace = rpmsigcnt * 16 + rpmsigdlen, newsigspace;
   u32 off, before;
   int i, myi, tag;
   byte *rsp, *region;
@@ -289,6 +330,14 @@ rpm_insertsig(struct rpmdata *rd, int hdronly, byte *newsig, int newsiglen)
   /* correct the alignment of all entries */
   rpm_realign(rd, region);
   rpmsigdlen = rd->rpmsigdlen;
+
+  /* if the last entry is the reserved tag, shrink it */
+  newsigspace = rpmsigcnt * 16 + rpmsigdlen;
+  if (newsigspace > oldsigspace)
+    {
+      rpm_adaptreserved(rd, region, oldsigspace - newsigspace);
+      rpmsigdlen = rd->rpmsigdlen;
+    }
 
   /* pad to multiple of 8 */
   pad = 7 - ((rpmsigdlen + 7) & 7);
