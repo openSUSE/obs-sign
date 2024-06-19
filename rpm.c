@@ -36,8 +36,8 @@
 #define RPMSIGTAG_GPG  1005
 
 /* RPM constants */
-static const int  pubtag[]  = { RPMSIGTAG_GPG, RPMSIGTAG_PGP, RPMSIGTAG_GPG };
-static const int  pubtagh[] = { RPMSIGTAG_DSA, RPMSIGTAG_RSA, RPMSIGTAG_DSA };	/* header only tags */
+static const int  pubtag[]  = { RPMSIGTAG_GPG, RPMSIGTAG_PGP, RPMSIGTAG_GPG, RPMSIGTAG_GPG };
+static const int  pubtagh[] = { RPMSIGTAG_DSA, RPMSIGTAG_RSA, RPMSIGTAG_DSA, RPMSIGTAG_DSA };	/* header only tags */
 
 static inline u32
 getbe4c(const unsigned char *p)
