@@ -354,7 +354,7 @@ sub readconfig {
 
 sub usage {
   print {$_[0]} <<'EOF';
-Usage: privileged_sign [-u user] [-h hash] [--keyring keyring] ...
+Usage: privileged_sign [-u user|XXXXXXXX] [-h hash] [--keyring keyring] ...
     -O [file]                           rawopensslsign
     -p                                  print pubkey
     -k                                  print keyid
@@ -372,6 +372,8 @@ Usage: privileged_sign [-u user] [-h hash] [--keyring keyring] ...
     --enckeydel                         delete encryption key
     --backup                            create encrypted backup
     --log                               get privileged log
+
+user is either the email adress or last 4 bytes in hex of the keyid.
 EOF
   exit($_[1] || 0);
 }
