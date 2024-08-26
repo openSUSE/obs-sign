@@ -2006,9 +2006,9 @@ sub cmd_privileged_sign {
   ($user, $phrasedir) = privileged_map_user($keyring, $user);
   my $oldgnupghome = privileged_switch_gnupghome($keyring);
   undef $keycache;	# hack
-  my ($status, $out, $err) = do_sign_multiple("$phrasedir/$user", $user, undef, $hashalgo, $args[0]);
+  my ($status, $err, @out) = do_sign_multiple("$phrasedir/$user", $user, undef, $hashalgo, \@args);
   switch_gnupghome($oldgnupghome);
-  return ($status, $err, $out);
+  return ($status, $err, @out);
 }
 
 sub cmd_privileged_pubkey {
