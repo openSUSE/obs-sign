@@ -390,6 +390,7 @@ my %modeoptions = (
   '--keyphrases'	=> 'keyphrases',
   '--keydel'		=> 'keydel',
   '--keycvt'		=> 'keycvt',
+  '--keytotpm'		=> 'keytotpm',
   '--aliaslist'		=> 'aliaslist',
   '--aliasgen'		=> 'aliasgen',
   '--aliasdel'		=> 'aliasdel',
@@ -485,6 +486,8 @@ if ($mode eq 'rawopensslsign') {
 } elsif ($mode eq 'keydel') {
   rpc_fatal(undef, $mode, $algouser, @ARGV);
 } elsif ($mode eq 'keycvt') {
+  rpc_fatal(undef, $mode, $algouser, @ARGV);
+} elsif ($mode eq 'keytotpm') {
   rpc_fatal(undef, $mode, $algouser, @ARGV);
 } elsif ($mode eq 'enckeygen') {
   my $pubkey = rpc_fatal_1($mode, $algouser, @ARGV);
