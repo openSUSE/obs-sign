@@ -37,8 +37,8 @@
 #define RPMSIGTAG_RESERVEDSPACE	1008
 
 /* RPM constants */
-static const int  pubtag[]  = { RPMSIGTAG_GPG, RPMSIGTAG_PGP, RPMSIGTAG_GPG, RPMSIGTAG_GPG };
-static const int  pubtagh[] = { RPMSIGTAG_DSA, RPMSIGTAG_RSA, RPMSIGTAG_DSA, RPMSIGTAG_DSA };	/* header only tags */
+static const int  pubtag[]  = { RPMSIGTAG_GPG, RPMSIGTAG_PGP, RPMSIGTAG_GPG, RPMSIGTAG_GPG, 0 };
+static const int  pubtagh[] = { RPMSIGTAG_DSA, RPMSIGTAG_RSA, RPMSIGTAG_DSA, RPMSIGTAG_DSA, 0 };	/* header only tags */
 
 static inline u32
 getbe4c(const unsigned char *p)
@@ -267,6 +267,11 @@ rpm_insertsig(struct rpmdata *rd, int hdronly, byte *newsig, int newsiglen)
       return -1;
     }
   sigtag = hdronly ? pubtagh[pubalgo] : pubtag[pubalgo];
+  if (!sigtag)
+    {
+      fprintf(stderr, "unsupported pubkey algorithm\n");
+      return -1;
+    }
 
   /* first do some sanity checking */
   region = rpm_sanitycheck(rd);

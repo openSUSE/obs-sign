@@ -54,7 +54,7 @@ char *ssl_verifydir;
 static const char *const hashname[] = {"SHA1", "SHA256", "SHA512"};
 static const int  hashlen[] = {20, 32, 64};
 
-static const char *const pubalgoname[] = {"DSA", "RSA", "EdDSA", "ECDSA"};
+static const char *const pubalgoname[] = {"DSA", "RSA", "EdDSA", "ECDSA", "MLDSA65"};
 
 int hashalgo = HASH_SHA1;
 static int assertpubalgo = -1;
@@ -267,12 +267,21 @@ getrawopensslsig(byte *sig, int sigl, struct x509 *sigcb)
     nmpis = 1;
   else if (sigalgo == PUB_DSA || sigalgo == PUB_ECDSA)
     nmpis = 2;
+  else if (sigalgo == PUB_MLDSA65)
+    nmpis = 1;
   else if (sigalgo == PUB_EDDSA)
     dodie("EdDSA openssl signing is not supported");
   else
     dodie("invalid signature algo");
   off = findsigmpioffset(sig, sigl);
   setmpis(sig + off, sigl - off, nmpis, mpi, mpil, 0);
+  if (sigalgo == PUB_MLDSA65)
+    {
+      if (mpil[0] != 3309 + 1 || mpi[0][0] != 0x40)
+        dodie("bad mldsa65 openssl signature");
+      x509_insert(sigcb, 0, mpi[0] + 1, mpil[0] - 1);
+      return sigalgo;
+    }
   x509_signature(sigcb, sigalgo, mpi, mpil);
   return sigalgo;
 }
@@ -308,6 +317,7 @@ sign(char *filename, int isfilter, int mode)
   int needsign;
   struct x509 sigcb;
   int sigcbalgo = -1;
+  int cmssig = 0;
 
   if (bulk_cpio)
     {
@@ -441,7 +451,9 @@ sign(char *filename, int isfilter, int mode)
   if (mode == MODE_CMSSIGN || mode == MODE_KOSIGN)
     {
       x509_init(&cms_signedattrs);
-      if (signtime)
+      if (assertpubalgo == PUB_MLDSA65 || assertpubalgo == PUB_EDDSA)
+	cmssig = 1;
+      if (!cmssig)
 	{
 	  hash_final(&ctx);
 	  x509_signedattrs(&cms_signedattrs, hash_read(&ctx), hash_len(), signtime);
@@ -480,6 +492,17 @@ sign(char *filename, int isfilter, int mode)
     }
   hash_final(&ctx);
   p = hash_read(&ctx);
+
+  /* hack for pure cms-mode cms signatures */
+  if (cmssig)
+    {
+      sigtrail[0] = 0x43;
+      sigtrail[1] = signtime >> 24;
+      sigtrail[2] = signtime >> 16;
+      sigtrail[3] = signtime >> 8;
+      sigtrail[4] = signtime;
+      x509_signedattrs(&cms_signedattrs, p, hash_len(), signtime);
+    }
 
   ph = 0;
   outlh = 0;
@@ -1611,6 +1634,8 @@ main(int argc, char **argv)
 	    assertpubalgo = PUB_EDDSA;
 	  else if (!strcasecmp(argv[1], "ecdsa"))
 	    assertpubalgo = PUB_ECDSA;
+	  else if (!strcasecmp(argv[1], "mldsa65"))
+	    assertpubalgo = PUB_MLDSA65;
 	  else
 	    {
 	      fprintf(stderr, "sign: unknown pubkey algorithm '%s'\n", argv[1]);

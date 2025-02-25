@@ -31,6 +31,7 @@ static const byte oid_rsa_encryption[] = { 0x0b, 0x06, 0x09, 0x2a, 0x86, 0x48, 0
 static const byte oid_dsa_encryption[] = { 0x09, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x38, 0x04, 0x01 };
 static const byte oid_ed25519[] = { 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70 };
 static const byte oid_ec_public_key[] = { 0x09, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01 };
+static const byte oid_mldsa65[] = { 0x0b, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x12 };
 
 static const byte oid_prime256v1[] = { 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07 };
 static const byte oid_secp384r1[] = { 0x07, 0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22 };
@@ -353,6 +354,10 @@ x509_algoid(struct x509 *cb, int pubalgo, byte **mpi, int *mpil)
       else
 	dodie("x509_pubkey: unsupported ECDSA curve");
     }
+  else if (pubalgo == PUB_MLDSA65)
+    {
+      x509_add_const(cb, oid_mldsa65);
+    }
   else
     abort();
   x509_tag(cb, offset, 0x30);
@@ -412,6 +417,8 @@ x509_pubkey(struct x509 *cb, int pubalgo, byte **mpi, int *mpil, byte *keyid)
 	dodie("x509_pubkey: bad ECDSA point");
       x509_add(cb, mpi[1], mpil[1]);
     }
+  else
+    dodie("x509_pubkey: unsupported algorithm");
   if (keyid)
     {
       SHA1_CONTEXT ctx;
@@ -835,6 +842,8 @@ x509_pubkey2pubalgo(unsigned char *pubkey, int pubkeylen)
     return PUB_ECDSA;
   if (pubkeylen == 3 && !memcmp(pubkey, oid_ed25519 + 3, 3))
     return PUB_EDDSA;	/* Ed25519 */
+  if (pubkeylen == 9 && !memcmp(pubkey, oid_mldsa65 + 3, 9))
+    return PUB_MLDSA65;
   return -1;
 }
 

@@ -16,6 +16,7 @@ typedef unsigned char byte;
 #define PUB_RSA         1
 #define PUB_EDDSA       2
 #define PUB_ECDSA       3
+#define PUB_MLDSA65     4
 
 #define SOCKPROTO_UNPROTECTED	0
 #define SOCKPROTO_SSL		1
