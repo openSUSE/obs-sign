@@ -156,7 +156,7 @@ unarmor_pubkey(char *pubkey, int *pktlp)
 /* v4 signature support */
 
 static const int  hashpgpalgo[] = {2, 8, 10};
-static const int  pubpgpalgo[] = {17, 1, 22, 19, 0};
+static const int  pubpgpalgo[] = {17, 1, 22, 19, 100};
 
 static unsigned char
 v4sig_skel[] = {
