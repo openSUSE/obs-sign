@@ -235,6 +235,8 @@ x509_time(struct x509 *cb, time_t t)
   int offset = cb->len;
   struct tm *tm = gmtime(&t);
   char tbuf[256];
+  if (!tm || tm->tm_year < 0 || tm->tm_year >= 8100)
+    dodie("x509_time: time out of range");
   sprintf(tbuf, "%04d%02d%02d%02d%02d%02dZ", tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday, tm->tm_hour, tm->tm_min, tm->tm_sec);
   if (tm->tm_year >= 50 && tm->tm_year < 150)
     {
