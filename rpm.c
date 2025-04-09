@@ -28,8 +28,9 @@
 #define HEADER_SIGNATURES 62
 #define RPMSIGTAG_DSA   267		/* header only sig */
 #define RPMSIGTAG_RSA   268		/* header only sig */
-#define RPMSIGTAG_SHA1  269		/* header only hash */
+#define RPMSIGTAG_SHA1  269		/* payload hash */
 #define RPMSIGTAG_LONGSIZE 270
+#define RPMSIGTAG_SHA256 273
 #define RPMSIGTAG_SIZE 1000
 #define RPMSIGTAG_PGP  1002
 #define RPMSIGTAG_MD5  1004
@@ -371,9 +372,9 @@ rpm_readsigheader(struct rpmdata *rd, int fd, const char *filename)
       fprintf(stderr, "%s: not a rpm\n", filename);
       exit(1);
     }
-  if (rd->rpmlead[4] != 0x03 || rd->rpmlead[0x4e] != 0 || rd->rpmlead[0x4f] != 5)
+  if ((rd->rpmlead[4] != 0x03 && rd->rpmlead[4] != 0x04) || rd->rpmlead[0x4e] != 0 || rd->rpmlead[0x4f] != 5)
     {
-      fprintf(stderr, "%s: not a v3 rpm or not new header styles\n", filename);
+      fprintf(stderr, "%s: not a v3/4 rpm or not new header styles\n", filename);
       exit(1);
     }
   doread(fd, rd->rpmsighead, 16);
@@ -403,6 +404,8 @@ rpm_readsigheader(struct rpmdata *rd, int fd, const char *filename)
 	}
       if (tag == RPMSIGTAG_SHA1)
 	rd->gotsha1 = 1;
+      if (tag == RPMSIGTAG_SHA256)
+	rd->gotsha256 = 1;
       if (tag == RPMSIGTAG_MD5)
 	{
           int o = getbe4c(rsp + 8);

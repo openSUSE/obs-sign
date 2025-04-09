@@ -514,8 +514,18 @@ sign(char *filename, int isfilter, int mode)
         hash_write(&hctx, sigtrail, 5);
       hash_final(&hctx);
       /* header only seems to work only if there's a header only hash */
-      if (!noheaderonly && rpmrd.gotsha1)
+      if (!noheaderonly && (rpmrd.gotsha1 || rpmrd.gotsha256))
         ph = hash_read(&hctx);
+      if (rpmrd.rpmlead[4] == 4)
+	{
+	  /* v6 rpms only have a header-only signature */
+	  if (noheaderonly)
+	    dodie("cannot use --noheaderonly with a v6 rpm");
+	  if (!ph)
+	    dodie("rpm does not have a payload hash");
+	  p = ph;
+	  ph = 0;
+	}
     }
 
   if (!privkey && !ph)
@@ -642,7 +652,7 @@ sign(char *filename, int isfilter, int mode)
     }
   else if (mode == MODE_RPMSIGN)
     {
-      if (rpm_insertsig(&rpmrd, 0, buf, outl))
+      if (rpm_insertsig(&rpmrd, rpmrd.rpmlead[4] == 4 ? 1 : 0, buf, outl))
 	{
 	  if (!isfilter)
 	    unlink(outfilename);

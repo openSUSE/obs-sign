@@ -176,6 +176,7 @@ struct rpmdata {
   u64 hdrin_size;
   byte *hdrin_md5;      /* points into rpmsig */
   int gotsha1;          /* did we see a RPMSIGTAG_SHA1 tag? */
+  int gotsha256;        /* did we see a RPMSIGTAG_SHA256 tag? */
 
   u32 buildtime;
   byte rpmmd5sum[16];   /* md5sum over header+payload */
