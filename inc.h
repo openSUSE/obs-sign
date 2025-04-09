@@ -87,6 +87,7 @@ int hash_len(void);
 void printr64(FILE *f, const byte *str, int len);
 char *r64dec1(char *p, u32 *vp, int *eofp);
 char *r64dec(char *p, unsigned char **bpp);
+void r64enc(char *out, const byte *str, int len);
 
 /* pgp.c */
 void write_armored_pubkey(FILE *fp, const byte *pubkey, int length);

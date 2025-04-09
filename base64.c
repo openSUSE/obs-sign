@@ -19,11 +19,12 @@
 
 #include "inc.h"
 
+static const byte bintoasc[64] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
 void
 printr64(FILE *f, const byte *str, int len)
 {
   int a, b, c, i;
-  static const byte bintoasc[64] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
   i = -1;
   while (len > 0)
@@ -43,6 +44,25 @@ printr64(FILE *f, const byte *str, int len)
       putc(len > -1 ? bintoasc[c & 63] : '=', f);
     }
   putc('\n', f);
+}
+
+void
+r64enc(char *out, const byte *str, int len)
+{
+  int a, b, c;
+
+  while (len > 0)
+    {
+      a = *str++;
+      b = --len > 0 ? *str++ : 0;
+      c = --len > 0 ? *str++ : 0;
+      --len;
+      *out++ = bintoasc[a >> 2];
+      *out++ = bintoasc[(a & 3) << 4 | b >> 4];
+      *out++ = len > -2 ? bintoasc[(b & 15) << 2 | c >> 6] : '=';
+      *out++ = len > -1 ? bintoasc[c & 63] : '=';
+    }
+  *out = 0;
 }
 
 char *

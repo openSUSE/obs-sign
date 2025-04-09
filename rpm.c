@@ -31,6 +31,7 @@
 #define RPMSIGTAG_SHA1  269		/* payload hash */
 #define RPMSIGTAG_LONGSIZE 270
 #define RPMSIGTAG_SHA256 273
+#define RPMSIGTAG_OPENPGP 278
 #define RPMSIGTAG_RESERVED	999
 #define RPMSIGTAG_SIZE 1000
 #define RPMSIGTAG_PGP  1002
@@ -256,20 +257,31 @@ rpm_insertsig(struct rpmdata *rd, int hdronly, byte *newsig, int newsiglen)
   int i, myi, tag;
   byte *rsp, *region;
   int pad;
-  int pubalgo, sigtag;
+  int sigtag = 0;
+  char bspace[1024 * 4 / 3 + 5];
 
   if (newsiglen < 0 || newsiglen > 1024)
     {
       fprintf(stderr, "new signature size is bad: %d\n", newsiglen);
       return -1;
     }
-  pubalgo = pkg2sigpubalgo(newsig, newsiglen);
-  if (pubalgo < 0)
+  if (rd->rpmlead[4] == 4)
     {
-      fprintf(stderr, "signature has unknown pubkey algorithm\n");
-      return -1;
+      sigtag = RPMSIGTAG_OPENPGP;
+      r64enc(bspace, newsig, newsiglen);
+      newsig = (byte *)bspace;
+      newsiglen = strlen(bspace) + 1;
     }
-  sigtag = hdronly ? pubtagh[pubalgo] : pubtag[pubalgo];
+  if (!sigtag)
+    {
+      int pubalgo = pkg2sigpubalgo(newsig, newsiglen);
+      if (pubalgo < 0)
+	{
+	  fprintf(stderr, "signature has unknown pubkey algorithm\n");
+	  return -1;
+	}
+      sigtag = hdronly ? pubtagh[pubalgo] : pubtag[pubalgo];
+    }
   if (!sigtag)
     {
       fprintf(stderr, "unsupported pubkey algorithm\n");
@@ -294,8 +306,16 @@ rpm_insertsig(struct rpmdata *rd, int hdronly, byte *newsig, int newsiglen)
   memmove(rsp + 16, rsp, rpmsigsize - i * 16);
   memset(rsp, 0, 16);
   setbe4(rsp, sigtag);
-  setbe4(rsp + 4, 7);
-  setbe4(rsp + 12, newsiglen);
+  if (sigtag == RPMSIGTAG_OPENPGP)
+    {
+      setbe4(rsp + 4, 8);
+      setbe4(rsp + 12, 1);
+    }
+  else
+    {
+      setbe4(rsp + 4, 7);
+      setbe4(rsp + 12, newsiglen);
+    }
 
   if (i < rpmsigcnt)
     before = getbe4c(rsp + 16 + 8);
@@ -397,7 +417,7 @@ rpm_readsigheader(struct rpmdata *rd, int fd, const char *filename)
   for (i = 0, rsp = rd->rpmsig; i < rd->rpmsigcnt; i++, rsp += 16)
     {
       tag = getbe4c(rsp);
-      if (tag == pubtag[PUB_DSA] || tag == pubtag[PUB_RSA] || tag == pubtagh[PUB_DSA] || tag == pubtagh[PUB_RSA])
+      if (tag == RPMSIGTAG_OPENPGP || tag == pubtag[PUB_DSA] || tag == pubtag[PUB_RSA] || tag == pubtagh[PUB_DSA] || tag == pubtagh[PUB_RSA])
 	{
 	  /* already signed */
 	  free(rd->rpmsig);
