@@ -31,6 +31,7 @@
 #define RPMSIGTAG_SHA1  269		/* payload hash */
 #define RPMSIGTAG_LONGSIZE 270
 #define RPMSIGTAG_SHA256 273
+#define RPMSIGTAG_RESERVED	999
 #define RPMSIGTAG_SIZE 1000
 #define RPMSIGTAG_PGP  1002
 #define RPMSIGTAG_MD5  1004
@@ -210,7 +211,7 @@ rpm_adaptreserved(struct rpmdata *rd, byte *region, int diff)
   byte *rpmsig = rd->rpmsig;
   int rpmsigcnt = rd->rpmsigcnt;
   byte *rpmsigdata = rpmsig + 16 * rpmsigcnt;
-  int o, l;
+  int tag, o, l;
   byte *rsp;
   
   if (!rpmsigcnt || !diff)
@@ -218,7 +219,8 @@ rpm_adaptreserved(struct rpmdata *rd, byte *region, int diff)
   /* the reserved space must be the last tag and must be the last
    * entry in the data segment */
   rsp = rpmsig + 16 * (rpmsigcnt - 1);
-  if (getbe4c(rsp) != RPMSIGTAG_RESERVEDSPACE || getbe4(rsp + 4) != 7)
+  tag = getbe4c(rsp);
+  if ((tag != RPMSIGTAG_RESERVEDSPACE && tag != RPMSIGTAG_RESERVED) || getbe4(rsp + 4) != 7)
     return;
   o = getbe4c(rsp + 8);
   l = getbe4c(rsp + 12);
