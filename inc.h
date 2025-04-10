@@ -189,6 +189,7 @@ struct rpmdata {
 };
 
 int rpm_insertsig(struct rpmdata *rd, int hdronly, byte *newsig, int newsiglen);
+int rpm_delsigs(struct rpmdata *rd);
 int rpm_read(struct rpmdata *rd, int fd, char *filename, HASH_CONTEXT *ctx, HASH_CONTEXT *hctx, int getbuildtime);
 void rpm_write(struct rpmdata *rd, int foutfd, int fd, int chksumfilefd);
 void rpm_free(struct rpmdata *rd);

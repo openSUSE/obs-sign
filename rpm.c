@@ -381,12 +381,91 @@ rpm_insertsig(struct rpmdata *rd, int hdronly, byte *newsig, int newsiglen)
   return 0;
 }
 
+int
+rpm_delsigs(struct rpmdata *rd)
+{
+  byte *rpmsig = rd->rpmsig;
+  int rpmsigcnt = rd->rpmsigcnt;
+  u32 rpmsigsize = rd->rpmsigsize, rpmsigdlen = rd->rpmsigdlen;
+  byte *rsp, *region;
+  u32 oldsigspace = rpmsigcnt * 16 + rpmsigdlen, newsigspace;
+  u32 off, siglen, before;
+  int i, myi, tag;
+  int pad;
+
+  /* first do some sanity checking */
+  region = rpm_sanitycheck(rd);
+  /* now erase all sigs */
+  for (i = 0, tag = 0, rsp = rpmsig; i < rpmsigcnt; i++, rsp += 16)
+    {
+      tag = getbe4c(rsp);
+      if (!(tag == RPMSIGTAG_OPENPGP || tag == RPMSIGTAG_GPG || tag == RPMSIGTAG_PGP || tag == RPMSIGTAG_DSA || tag == RPMSIGTAG_RSA))
+	continue;
+      off = getbe4c(rsp + 8);
+      siglen = datalen(rpmsig, rpmsigcnt, rpmsigdlen, rsp);
+      before = off + siglen;
+      if (before > rpmsigdlen)
+	abort();
+      /* delete it */
+      memmove(rpmsig + rpmsigcnt * 16 + off, rpmsig + rpmsigcnt * 16 + before, rpmsigdlen - before);
+      memmove(rsp, rsp + 16, rpmsigsize - i * 16 - 16);
+      rpmsigcnt--;
+      rpmsigdlen -= siglen;
+      /* now fix up all entries behind us */
+      myi = i;
+      for (i = 0, rsp = rpmsig; i < rpmsigcnt; i++, rsp += 16)
+	{
+	  off = getbe4c(rsp + 8);
+	  if (off >= before)
+	    setbe4(rsp + 8, off - siglen);
+	}
+      /* restart */
+      i = myi - 1;
+      rsp = rpmsig + 16 * i;
+    }
+
+  /* update entry count in region data */
+  if (region)
+    {
+      off = getbe4c(region + 8);
+      rsp = rpmsig + rpmsigcnt * 16 + off;
+      setbe4(rsp + 8, (u32)(-(rpmsigcnt * 16)));
+    }
+  rd->rpmsigcnt = rpmsigcnt;
+  rd->rpmsigdlen = rpmsigdlen;
+
+  /* correct the alignment of all entries */
+  rpm_realign(rd, region);
+  rpmsigdlen = rd->rpmsigdlen;
+
+  /* if the last entry is the reserved tag, grow it */
+  newsigspace = rpmsigcnt * 16 + rpmsigdlen;
+  if (newsigspace < oldsigspace)
+    {
+      rpm_adaptreserved(rd, region, oldsigspace - newsigspace);
+      rpmsigdlen = rd->rpmsigdlen;
+    }
+  /* pad to multiple of 8 */
+  pad = 7 - ((rpmsigdlen + 7) & 7);
+  if (pad)
+    memset(rpmsig + rpmsigcnt * 16 + rpmsigdlen, 0, pad);
+  rpmsigsize = rpmsigcnt * 16 + rpmsigdlen + pad;
+  rd->rpmsigsize = rpmsigsize;
+  rd->hdrin_md5 = 0;	/* no longer valid */
+
+  /* update sighead with new values */
+  setbe4(rd->rpmsighead + 8, rpmsigcnt);
+  setbe4(rd->rpmsighead + 12, rpmsigdlen);
+  return 0;
+}
+
 static int
 rpm_readsigheader(struct rpmdata *rd, int fd, const char *filename)
 {
   byte *p, *rsp;
   int i;
   u32 tag;
+  int alreadysigned = 0;
 
   doread(fd, rd->rpmlead, 96);
   if (getbe4(rd->rpmlead) != 0xedabeedb)
@@ -417,13 +496,8 @@ rpm_readsigheader(struct rpmdata *rd, int fd, const char *filename)
   for (i = 0, rsp = rd->rpmsig; i < rd->rpmsigcnt; i++, rsp += 16)
     {
       tag = getbe4c(rsp);
-      if (tag == RPMSIGTAG_OPENPGP || tag == pubtag[PUB_DSA] || tag == pubtag[PUB_RSA] || tag == pubtagh[PUB_DSA] || tag == pubtagh[PUB_RSA])
-	{
-	  /* already signed */
-	  free(rd->rpmsig);
-	  rd->rpmsig = 0;
-	  return 0;
-	}
+      if (tag == RPMSIGTAG_OPENPGP || tag == RPMSIGTAG_GPG || tag == RPMSIGTAG_PGP || tag == RPMSIGTAG_DSA || tag == RPMSIGTAG_RSA)
+	alreadysigned = 1;
       if (tag == RPMSIGTAG_SHA1)
 	rd->gotsha1 = 1;
       if (tag == RPMSIGTAG_SHA256)
@@ -450,7 +524,7 @@ rpm_readsigheader(struct rpmdata *rd, int fd, const char *filename)
 	  rd->hdrin_size = (u32)(p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]);
 	}
     }
-  return 1;
+  return alreadysigned ? 0 : 1;
 }
 
 static void
@@ -465,7 +539,8 @@ rpm_readheaderpayload(struct rpmdata *rd, int fd, char *filename, HASH_CONTEXT *
   u32 buildtimeoff = 0;
 
   md5_init(&md5ctx);
-  hash_init(hctx);
+  if (hctx)
+    hash_init(hctx);
 
   lensig = 0;
   lenhdr = 0;
@@ -506,18 +581,21 @@ rpm_readheaderpayload(struct rpmdata *rd, int fd, char *filename, HASH_CONTEXT *
 	    if (lensig + i >= buildtimeoff && lensig + i < buildtimeoff + 4)
 	      btbuf[lensig + i - buildtimeoff] = buf[i];
 	}
-      hash_write(ctx, buf,  l);
+      if (ctx)
+        hash_write(ctx, buf,  l);
       md5_write(&md5ctx, buf, l);
       if (lenhdr)
 	{
 	  if (l >= lenhdr)
 	    {
-	      hash_write(hctx, buf,  lenhdr);
+	      if (hctx)
+	        hash_write(hctx, buf,  lenhdr);
 	      lenhdr = 0;
 	    }
 	  else
 	    {
-	      hash_write(hctx, buf,  l);
+	      if (hctx)
+	        hash_write(hctx, buf,  l);
 	      lenhdr -= l;
 	    }
 	}
@@ -551,8 +629,13 @@ int
 rpm_read(struct rpmdata *rd, int fd, char *filename, HASH_CONTEXT *ctx, HASH_CONTEXT *hctx, int getbuildtime)
 {
   memset(rd, 0, sizeof(*rd));
-  if (!rpm_readsigheader(rd, fd, filename))
-    return 0;	/* already signed */
+  if (!rpm_readsigheader(rd, fd, filename) && ctx != NULL)
+    {
+      if (rd->rpmsig)
+        free(rd->rpmsig);
+      rd->rpmsig = 0;
+      return 0;	/* already signed */
+    }
   rpm_readheaderpayload(rd, fd, filename, ctx, hctx, getbuildtime);
   return 1;
 }

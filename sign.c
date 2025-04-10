@@ -73,6 +73,7 @@ static struct x509 othercerts;
 int appxdetached = 0;
 static int cms_flags = 0;
 static int bulk_cpio;
+static int do_delsign;
 
 #define MODE_UNSET        0
 #define MODE_RPMSIGN      1
@@ -294,6 +295,25 @@ dofwrite(FILE *fout, byte *b, size_t l)
 }
 
 static int
+mode_from_filename(char *filename, int isfilter)
+{
+  int mode;
+  size_t l;
+  if (isfilter)
+    dodie("please specify a mode for filter usage (see sign --help)");
+  l = strlen(filename);
+  if (l > 4 && (!strcmp(filename + l - 4, ".rpm") || !strcmp(filename + l - 4, ".spm")))
+    mode = MODE_RPMSIGN;
+  else if (l > 9 && (!strcmp(filename + l - 9, ".AppImage")))
+    mode = MODE_APPIMAGESIGN;
+  else if (l > 5 && (!strcmp(filename + l - 5, ".appx")))
+    mode = MODE_APPXSIGN;
+  else
+    mode = MODE_CLEARSIGN;
+  return mode;
+}
+
+static int
 sign(char *filename, int isfilter, int mode)
 {
   u32 signtime;
@@ -301,7 +321,7 @@ sign(char *filename, int isfilter, int mode)
   struct appxdata appxdata;
   struct pedata pedata;
   byte buf[8192];
-  int l, fd;
+  int fd;
   byte sigtrail[5], *p, *ph = 0;
   HASH_CONTEXT ctx;
   HASH_CONTEXT hctx;
@@ -328,17 +348,7 @@ sign(char *filename, int isfilter, int mode)
   if (mode == MODE_UNSET)
     {
       force = 0;
-      if (isfilter)
-	dodie("please specify a mode for filter usage (see sign --help)");
-      l = strlen(filename);
-      if (l > 4 && (!strcmp(filename + l - 4, ".rpm") || !strcmp(filename + l - 4, ".spm")))
-	mode = MODE_RPMSIGN;
-      else if (l > 9 && (!strcmp(filename + l - 9, ".AppImage")))
-        mode = MODE_APPIMAGESIGN;
-      else if (l > 5 && (!strcmp(filename + l - 5, ".appx")))
-        mode = MODE_APPXSIGN;
-      else
-        mode = MODE_CLEARSIGN;
+      mode = mode_from_filename(filename, isfilter);
     }
 
   if (mode == MODE_APPIMAGESIGN && isfilter)
@@ -875,6 +885,75 @@ sign_bulk_cpio(char *filename, int isfilter, int mode)
       if (fflush(stdout))
 	dodie_errno("fflush");
     }
+}
+
+
+static int
+delsign(char *filename, int isfilter, int mode)
+{
+  char *outfilename = 0;
+  char *finaloutfilename = 0;	/* rename outfilename to finaloutfilename when done */
+  int fd;
+  FILE *fout = 0;
+  struct rpmdata rpmrd;
+
+  if (mode == MODE_UNSET)
+    mode = mode_from_filename(filename, isfilter);
+  if (mode != MODE_RPMSIGN)
+    dodie("--delsign is only implemented fom rpms");
+
+  /* open input file */
+  if (isfilter)
+    fd = 0;
+  else if ((fd = open(filename, O_RDONLY)) == -1)
+    dodie_errno(filename);
+
+  if (!isfilter)
+    {
+      outfilename = doalloc(strlen(filename) + 16);
+      sprintf(outfilename, "%s.sIgN%d", filename, getpid());
+      finaloutfilename = filename;
+    }
+
+  rpm_read(&rpmrd, fd, filename, NULL, NULL, 0);
+
+  if (verbose)
+    fprintf(isfilter ? stderr : stdout, "%s %s\n", "rpm delsign",  filename);
+
+  rpm_delsigs(&rpmrd);
+
+  /* open the output file */
+  if (isfilter)
+    fout = stdout;
+  else
+    {
+      if ((fout = fopen(outfilename, "w")) == 0)
+	dodie_errno(outfilename);
+    }
+
+  rpm_write(&rpmrd, isfilter ? 1 : fileno(fout), fd, -1);
+  rpm_free(&rpmrd);
+
+  /* close and rename output file */
+  if (!isfilter)
+    {
+      close(fd);
+      if (fout && fclose(fout))
+	{
+	  perror("fclose");
+	  unlink(outfilename);
+	  exit(1);
+	}
+      if (finaloutfilename && rename(outfilename, finaloutfilename) != 0)
+	{
+	  perror("rename");
+	  unlink(outfilename);
+	  exit(1);
+	}
+    }
+  if (outfilename)
+    free(outfilename);
+  return 0;
 }
 
 
@@ -1742,6 +1821,8 @@ main(int argc, char **argv)
 	bulk_cpio = 1;
       else if (!strcmp(opt, "--fingerprint"))
 	mode = MODE_FINGERPRINT;
+      else if (!strcmp(opt, "--delsign"))
+	do_delsign = 1;
       else if (!strcmp(opt, "--"))
 	break;
       else
@@ -1827,6 +1908,18 @@ main(int argc, char **argv)
         hashfile(argv[1], 0);
       else
 	dodie("usage: sign --hashfile [-h algo] [file]");
+      exit(0);
+    }
+  if (do_delsign)
+    {
+      if (argc == 1)
+	delsign("<stdin>", 1, mode);
+      else while (argc > 1)
+	{
+	  delsign(argv[1], 0, mode);
+	  argv++;
+	  argc--;
+	}
       exit(0);
     }
   if (mode == MODE_RAWOPENSSLSIGN)

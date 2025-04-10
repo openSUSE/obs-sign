@@ -150,6 +150,10 @@ The input is a cpio archive in newc format. Each file in the archive is
 signed. All the signatures are packed into a new cpio archive which filenames
 consisting of the original files plus a ".sig" suffix. This mode is
 currently only supported for raw X509 signature creation (-O).
+.TP
+.B \-\-delsign
+Remove all existing signatures from the input instead of signing. This
+is currently only supported for rpm packages.
 
 
 .SH KEY GENERATION
