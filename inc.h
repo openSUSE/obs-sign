@@ -187,6 +187,7 @@ struct rpmdata {
   byte chksum_md5[16];
   byte chksum_sha1[20];
   byte chksum_sha256[32];
+  byte chksum_sha512[64];
 };
 
 int rpm_insertsig(struct rpmdata *rd, int hdronly, byte *newsig, int newsiglen);

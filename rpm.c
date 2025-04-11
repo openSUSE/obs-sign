@@ -645,6 +645,7 @@ rpm_write(struct rpmdata *rd, int foutfd, int fd, int chksumfilefd)
   MD5_CTX chksum_ctx_md5;
   SHA1_CONTEXT chksum_ctx_sha1;
   SHA256_CONTEXT chksum_ctx_sha256;
+  SHA512_CONTEXT chksum_ctx_sha512;
   int l;
   byte rpmmd5sum2[16];
 
@@ -676,6 +677,11 @@ rpm_write(struct rpmdata *rd, int foutfd, int fd, int chksumfilefd)
       sha256_write(&chksum_ctx_sha256, rd->rpmlead, 96);
       sha256_write(&chksum_ctx_sha256, rd->rpmsighead, 16);
       sha256_write(&chksum_ctx_sha256, rd->rpmsig, rd->rpmsigsize);
+
+      sha512_init(&chksum_ctx_sha512);
+      sha512_write(&chksum_ctx_sha512, rd->rpmlead, 96);
+      sha512_write(&chksum_ctx_sha512, rd->rpmsighead, 16);
+      sha512_write(&chksum_ctx_sha512, rd->rpmsig, rd->rpmsigsize);
     }
   md5_init(&md5ctx);
   for (;;)
@@ -692,6 +698,7 @@ rpm_write(struct rpmdata *rd, int foutfd, int fd, int chksumfilefd)
 	  md5_write(&chksum_ctx_md5, buf, l);
 	  sha1_write(&chksum_ctx_sha1, buf, l);
 	  sha256_write(&chksum_ctx_sha256, buf, l);
+	  sha512_write(&chksum_ctx_sha512, buf, l);
 	}
     }
   md5_final(rpmmd5sum2, &md5ctx);
@@ -702,6 +709,8 @@ rpm_write(struct rpmdata *rd, int foutfd, int fd, int chksumfilefd)
       memcpy(rd->chksum_sha1, sha1_read(&chksum_ctx_sha1), 20);
       sha256_final(&chksum_ctx_sha256);
       memcpy(rd->chksum_sha256, sha256_read(&chksum_ctx_sha256), 32);
+      sha512_final(&chksum_ctx_sha512);
+      memcpy(rd->chksum_sha512, sha512_read(&chksum_ctx_sha512), 64);
     }
   if (memcmp(rpmmd5sum2, rd->rpmmd5sum, 16))
     dodie("rpm has changed, bailing out!");
@@ -718,7 +727,7 @@ rpm_free(struct rpmdata *rd)
 void
 rpm_writechecksums(struct rpmdata *rd, int chksumfilefd)
 {
-  char buf[16*2 + 5+16*2 + 6+20*2 + 8+32*2 + 1], *bp;
+  char buf[16*2 + 5+16*2 + 6+20*2 + 8+32*2 + 8+64*2 + 1], *bp;
   int i;
 
   if (chksumfilefd < 0)
@@ -748,6 +757,13 @@ rpm_writechecksums(struct rpmdata *rd, int chksumfilefd)
   for (i = 0; i < 32; i++)
     {
       sprintf(bp, "%02x", rd->chksum_sha256[i]);
+      bp += 2;
+    }
+  strcpy(bp, " sha512:");
+  bp += 8;
+  for (i = 0; i < 64; i++)
+    {
+      sprintf(bp, "%02x", rd->chksum_sha512[i]);
       bp += 2;
     }
   *bp++ = '\n';

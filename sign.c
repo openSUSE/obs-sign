@@ -931,7 +931,7 @@ delsign(char *filename, int isfilter, int mode)
 	dodie_errno(outfilename);
     }
 
-  rpm_write(&rpmrd, isfilter ? 1 : fileno(fout), fd, -1);
+  rpm_write(&rpmrd, isfilter ? 1 : fileno(fout), fd, chksumfilefd);
   rpm_free(&rpmrd);
 
   /* close and rename output file */
@@ -953,6 +953,11 @@ delsign(char *filename, int isfilter, int mode)
     }
   if (outfilename)
     free(outfilename);
+
+  /* append to checksums file if needed */
+  if (mode == MODE_RPMSIGN && chksumfilefd >= 0)
+    rpm_writechecksums(&rpmrd, chksumfilefd);
+
   return 0;
 }
 
@@ -1635,6 +1640,28 @@ usage()
            );
 }
 
+static void
+chksumfile_open()
+{
+  if (strcmp(chksumfile, "-"))
+    chksumfilefd = open(chksumfile, O_WRONLY|O_CREAT|O_APPEND, 0666);
+  else
+    chksumfilefd = 1;
+  if (chksumfilefd < 0)
+    dodie_errno(chksumfile); 
+}
+
+static void
+chksumfile_close()
+{
+  if (strcmp(chksumfile, "-") && chksumfilefd >= 0)
+    {
+      if (close(chksumfilefd))
+        dodie_errno("chksum file close");
+      chksumfilefd = -1;
+    }
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1912,6 +1939,8 @@ main(int argc, char **argv)
     }
   if (do_delsign)
     {
+      if (chksumfile)
+	chksumfile_open();
       if (argc == 1)
 	delsign("<stdin>", 1, mode);
       else while (argc > 1)
@@ -1920,6 +1949,8 @@ main(int argc, char **argv)
 	  argv++;
 	  argc--;
 	}
+      if (chksumfile)
+	chksumfile_close();
       exit(0);
     }
   if (mode == MODE_RAWOPENSSLSIGN)
@@ -1931,14 +1962,7 @@ main(int argc, char **argv)
     pubalgoprobe = probe_pubalgo();
 
   if (chksumfile)
-    {
-      if (strcmp(chksumfile, "-"))
-	chksumfilefd = open(chksumfile, O_WRONLY|O_CREAT|O_APPEND, 0666);
-      else
-	chksumfilefd = 1;
-      if (chksumfilefd < 0)
-	dodie_errno(chksumfile); 
-    }
+    chksumfile_open();
   if (argc == 1)
     sign("<stdin>", 1, mode);
   else while (argc > 1)
@@ -1947,11 +1971,8 @@ main(int argc, char **argv)
       argv++;
       argc--;
     }
-  if (chksumfile && strcmp(chksumfile, "-") && chksumfilefd >= 0)
-    {
-      if (close(chksumfilefd))
-        dodie_errno("chksum file close");
-    }
+  if (chksumfile)
+    chksumfile_close();
   x509_free(&cert);
   x509_free(&othercerts);
   exit(0);
