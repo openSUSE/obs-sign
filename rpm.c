@@ -246,8 +246,8 @@ rpm_adaptreserved(struct rpmdata *rd, byte *region, int diff)
   rd->rpmsigdlen += diff;
 }
 
-int
-rpm_insertsig(struct rpmdata *rd, int hdronly, byte *newsig, int newsiglen)
+static int
+rpm_insertsig_tag(struct rpmdata *rd, int sigtag, byte *newsig, int newsiglen)
 {
   byte *rpmsig = rd->rpmsig;
   int rpmsigcnt = rd->rpmsigcnt;
@@ -257,34 +257,10 @@ rpm_insertsig(struct rpmdata *rd, int hdronly, byte *newsig, int newsiglen)
   int i, myi, tag;
   byte *rsp, *region;
   int pad;
-  int sigtag = 0;
-  char bspace[1024 * 4 / 3 + 5];
 
   if (newsiglen < 0 || newsiglen > 1024)
     {
       fprintf(stderr, "new signature size is bad: %d\n", newsiglen);
-      return -1;
-    }
-  if (rd->rpmlead[4] == 4)
-    {
-      sigtag = RPMSIGTAG_OPENPGP;
-      r64enc(bspace, newsig, newsiglen);
-      newsig = (byte *)bspace;
-      newsiglen = strlen(bspace) + 1;
-    }
-  if (!sigtag)
-    {
-      int pubalgo = pkg2sigpubalgo(newsig, newsiglen);
-      if (pubalgo < 0)
-	{
-	  fprintf(stderr, "signature has unknown pubkey algorithm\n");
-	  return -1;
-	}
-      sigtag = hdronly ? pubtagh[pubalgo] : pubtag[pubalgo];
-    }
-  if (!sigtag)
-    {
-      fprintf(stderr, "unsupported pubkey algorithm\n");
       return -1;
     }
 
@@ -379,6 +355,35 @@ rpm_insertsig(struct rpmdata *rd, int hdronly, byte *newsig, int newsiglen)
   setbe4(rd->rpmsighead + 8, rpmsigcnt);
   setbe4(rd->rpmsighead + 12, rpmsigdlen);
   return 0;
+}
+
+int
+rpm_insertsig(struct rpmdata *rd, int hdronly, byte *newsig, int newsiglen)
+{
+  int sigtag;
+  int pubalgo;
+  if (rd->rpmlead[4] == 4)
+    {
+      int r;
+      char *bspace = doalloc(newsiglen * 4 / 3 + 5);
+      r64enc(bspace, newsig, newsiglen);
+      r = rpm_insertsig_tag(rd, RPMSIGTAG_OPENPGP, (byte *)bspace, (int)(strlen(bspace) + 1));
+      free(bspace);
+      return r;
+    }
+  pubalgo = pkg2sigpubalgo(newsig, newsiglen);
+  if (pubalgo < 0)
+    {
+      fprintf(stderr, "signature has an unknown pubkey algorithm\n");
+      return -1;
+    }
+  sigtag = hdronly ? pubtagh[pubalgo] : pubtag[pubalgo];
+  if (!sigtag)
+    {
+      fprintf(stderr, "unsupported pubkey algorithm\n");
+      return -1;
+    }
+  return rpm_insertsig_tag(rd, sigtag, newsig, newsiglen);
 }
 
 int

@@ -19,32 +19,7 @@
 
 #include "inc.h"
 
-static const byte bintoasc[64] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-void
-printr64(FILE *f, const byte *str, int len)
-{
-  int a, b, c, i;
-
-  i = -1;
-  while (len > 0)
-    {
-      if (++i == 16)
-	{
-	  i = 0;
-	  putc('\n', f);
-	}
-      a = *str++;
-      b = --len > 0 ? *str++ : 0;
-      c = --len > 0 ? *str++ : 0;
-      --len;
-      putc(bintoasc[a >> 2], f);
-      putc(bintoasc[(a & 3) << 4 | b >> 4], f);
-      putc(len > -2 ? bintoasc[(b & 15) << 2 | c >> 6] : '=', f);
-      putc(len > -1 ? bintoasc[c & 63] : '=', f);
-    }
-  putc('\n', f);
-}
+static const char bintoasc[64] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 void
 r64enc(char *out, const byte *str, int len)
@@ -124,3 +99,21 @@ r64dec(char *p, unsigned char **bpp)
   return p;
 }
 
+void
+printr64(FILE *f, const byte *str, int len)
+{
+  int i = -1;
+  char *p, *s = doalloc(len * 4 / 3 + 5);
+  r64enc(s, str, len);
+  for (p = s; *p; p++)
+    {
+      if (++i == 64)
+	{
+	  i = 0;
+	  putc('\n', f);
+	}
+      putc(*p, f);
+    }
+  putc('\n', f);
+  free(s);
+}
