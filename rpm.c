@@ -459,13 +459,12 @@ rpm_delsigs(struct rpmdata *rd)
   return 0;
 }
 
-static int
+static void
 rpm_readsigheader(struct rpmdata *rd, int fd, const char *filename)
 {
   byte *p, *rsp;
   int i;
   u32 tag;
-  int alreadysigned = 0;
 
   doread(fd, rd->rpmlead, 96);
   if (getbe4(rd->rpmlead) != 0xedabeedb)
@@ -497,7 +496,7 @@ rpm_readsigheader(struct rpmdata *rd, int fd, const char *filename)
     {
       tag = getbe4c(rsp);
       if (tag == RPMSIGTAG_OPENPGP || tag == RPMSIGTAG_GPG || tag == RPMSIGTAG_PGP || tag == RPMSIGTAG_DSA || tag == RPMSIGTAG_RSA)
-	alreadysigned = 1;
+	rd->gotsigs = 1;
       if (tag == RPMSIGTAG_SHA1)
 	rd->gotsha1 = 1;
       if (tag == RPMSIGTAG_SHA256)
@@ -524,7 +523,6 @@ rpm_readsigheader(struct rpmdata *rd, int fd, const char *filename)
 	  rd->hdrin_size = (u32)(p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]);
 	}
     }
-  return alreadysigned ? 0 : 1;
 }
 
 static void
@@ -629,11 +627,10 @@ int
 rpm_read(struct rpmdata *rd, int fd, char *filename, HASH_CONTEXT *ctx, HASH_CONTEXT *hctx, int getbuildtime)
 {
   memset(rd, 0, sizeof(*rd));
-  if (!rpm_readsigheader(rd, fd, filename) && ctx != NULL)
+  rpm_readsigheader(rd, fd, filename);
+  if (rd->gotsigs && ctx != NULL)
     {
-      if (rd->rpmsig)
-        free(rd->rpmsig);
-      rd->rpmsig = 0;
+      rpm_free(rd);
       return 0;	/* already signed */
     }
   rpm_readheaderpayload(rd, fd, filename, ctx, hctx, getbuildtime);
