@@ -24,6 +24,7 @@
 #include "inc.h"
 #include "bele.h"
 
+#define MAX_SIG_SIZE 1024		/* we pre-allocate space for 2 new signatures */
 
 #define HEADER_SIGNATURES 62
 #define RPMSIGTAG_DSA   267		/* header only sig */
@@ -258,7 +259,7 @@ rpm_insertsig_tag(struct rpmdata *rd, int sigtag, byte *newsig, int newsiglen)
   byte *rsp, *region;
   int pad;
 
-  if (newsiglen < 0 || newsiglen > 1024)
+  if (newsiglen < 0 || newsiglen > MAX_SIG_SIZE)
     {
       fprintf(stderr, "new signature size is bad: %d\n", newsiglen);
       return -1;
@@ -493,9 +494,9 @@ rpm_readsigheader(struct rpmdata *rd, int fd, const char *filename)
   if (rd->rpmsigcnt > 0xffff || rd->rpmsigdlen > 0xfffffff)
     dodie("signature header overflow");
   rd->rpmsigsize = rd->rpmsigcnt * 16 + ((rd->rpmsigdlen + 7) & ~7);
-  rd->rpmsig = doalloc(rd->rpmsigsize + 2 * (1024 + 16 + 16) + 8);	/* 16(entry) + 16(alignment) */
+  rd->rpmsig = doalloc(rd->rpmsigsize + 2 * (MAX_SIG_SIZE + 16 + 16) + 8);	/* 16(entry) + 16(alignment) */
   doread(fd, rd->rpmsig, rd->rpmsigsize);
-  memset(rd->rpmsig + rd->rpmsigsize, 0, 2 * (1024 + 16 + 16) + 8);	/* zero out extra space */
+  memset(rd->rpmsig + rd->rpmsigsize, 0, 2 * (MAX_SIG_SIZE + 16 + 16) + 8);	/* zero out extra space */
   rd->rpmdataoff = 96 + 16 + rd->rpmsigsize;
   for (i = 0, rsp = rd->rpmsig; i < rd->rpmsigcnt; i++, rsp += 16)
     {
