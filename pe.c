@@ -11,7 +11,7 @@ update_chksum(u32 pos, const unsigned char *b, int l, u32 *csump)
     abort();	/* this can overflow */
   if (pos & 1)
     {
-      c = *b++ << 8;
+      c += *b++ << 8;
       l--;
     }
   for (; l > 1; l -= 2, b += 2)
