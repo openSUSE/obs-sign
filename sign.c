@@ -1087,13 +1087,13 @@ keyextend(char *expire, char *pubkey)
     dodie("self-sig is not version 4");
   if (pp[1] != 0x13)
     dodie("self-sig is not class 0x13");
-  if (pp[3] == 9)
+  if (pp[3] == 2)
+    pp[3] = 8;    /* upgrade deprecated sha-1 to sha256 */
+  else if (pp[3] == 9)
     pp[3] = 10;		/* change sha384 to sha512 */
   else if (pp[3] == 11)
     pp[3] = 8;		/* change sha224 to sha256 */
-  if (pp[3] == 2)
-    hashalgo = HASH_SHA1;
-  else if (pp[3] == 8)
+  if (pp[3] == 8)
     hashalgo = HASH_SHA256;
   else if (pp[3] == 10)
     hashalgo = HASH_SHA512;
