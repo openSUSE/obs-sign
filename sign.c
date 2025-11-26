@@ -93,11 +93,12 @@ static int do_delsign;
 #define MODE_PESIGN	  15
 #define MODE_KOSIGN	  16
 #define MODE_FINGERPRINT  17
+#define MODE_TOTP         18
 
 static const char *const modes[] = {
   "?", "rpm sign", "clear sign", "detached sign", "keyid", "pubkey", "keygen", "keyextend",
   "raw detached sign", "raw openssl sign", "cert create", "appimage sign", "appx sign", "hashfile",
-  "cms sign", "PE sign", "kernel module sign", "fingerprint"
+  "cms sign", "PE sign", "kernel module sign", "fingerprint", "totp"
 };
 
 static void sign_bulk_cpio(char *filename, int isfilter, int mode);
@@ -1426,6 +1427,39 @@ getpubkey()
 }
 
 static void
+do_totp()
+{
+  byte buf[8192];
+  int outl;
+  const char *args[4];
+  u32 ti;
+  char tibuf[16];
+
+  if (!privkey)
+    dodie("need -P option for totp");
+  if (access(privkey, R_OK))
+    dodie_errno(privkey);
+  opensocket();
+  readprivkey();
+  if (timearg && *timearg >= '0' && *timearg <= '9')
+    ti = strtoul(timearg, NULL, 0);
+  else
+    ti = (u32)time((time_t)0);
+  sprintf(tibuf, "%08x", ti);
+  args[0] = "privtotp";
+  args[1] = algouser;
+  args[2] = privkey;
+  args[3] = tibuf;
+  outl = doreq_12(4, args, buf, sizeof(buf), 0);
+  if (outl < 0)
+    exit(-outl);
+  if (outl == 0 || outl > 1000)
+    dodie("bad totp result");
+  buf[outl++] = '\n';
+  fwrite(buf, 1, outl, stdout);
+}
+
+static void
 ping()
 {
   byte buf[256];
@@ -1848,6 +1882,8 @@ main(int argc, char **argv)
 	bulk_cpio = 1;
       else if (!strcmp(opt, "--fingerprint"))
 	mode = MODE_FINGERPRINT;
+      else if (!strcmp(opt, "--totp"))
+	mode = MODE_TOTP;
       else if (!strcmp(opt, "--delsign"))
 	do_delsign = 1;
       else if (!strcmp(opt, "--"))
@@ -1878,6 +1914,13 @@ main(int argc, char **argv)
       if (argc != 1)
 	dodie("usage: sign -p [-u user]");
       getpubkey();
+      exit(0);
+    }
+  if (mode == MODE_TOTP)
+    {
+      if (argc != 1)
+	dodie("usage: sign --totp");
+      do_totp();
       exit(0);
     }
   if (mode == MODE_KEYGEN)

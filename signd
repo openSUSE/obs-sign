@@ -1098,8 +1098,9 @@ sub parse_sexp {
       my $cnt = $1;
       substr($l, 0, length($cnt) + 1, '');
       push @l, substr($l, 0, $cnt, '');
-    } elsif ($l =~ /([0-9a-zA-Z\-\.\/_:*+=]+)/) {
+    } elsif ($l =~ /^([0-9a-zA-Z\-\.\/_:*+=]+)/) {
       push @l, substr($l, 0, length($1), '');
+      $l =~ s/^ //;
     } else {
       die("unterminated sexp\n") if $l eq '';
       die("unsupported sexp: ".substr($l, 0, 1)."\n");
@@ -2305,6 +2306,53 @@ sub cmd_sign {
   return do_sign_multiple("$phrases/$user", $user, undef, $hashalgo, \@args);
 }
 
+sub cmd_privtotp {
+  my ($cmd, $user, $hashalgo, @args) = @_;
+  die("totp: two arguments expected\n") if @args != 2;
+  die("bad private key\n") if $args[0] !~ /^(?:[0-9a-fA-F][0-9a-fA-F])+$/s;
+  my $totp = pack('H*', shift @args);
+  $totp = do_decode("$phrases/$user", $user, $totp);
+  die("bad totp uri\n") unless $totp =~ /^otpauth:\/\/totp\/.*?\?(.*)$/;
+  my %cgi;
+  for (split('&', $1)) {
+    s/%([a-fA-F0-9]{2})/chr(hex($1))/sge;
+    $cgi{$1} = $2 if /^([^=]+)=(.*)$/;
+  }
+  for (qw{algorithm secret digits period}) {
+    die("missing totp parameter '$_'\n") unless defined $cgi{$_};
+  }
+  die("bad totp digits\n") unless $cgi{'digits'} =~ /^\d+$/ && $cgi{'digits'} > 0 && $cgi{'digits'} <= 10;
+  die("bad totp period\n") unless $cgi{'period'} =~ /^\d+$/ && $cgi{'period'} > 0;
+  die("totp: bad time argument\n") unless $args[0] =~ /^(?:[0-9a-fA-F][0-9a-fA-F]){4}$/s;
+  my $t = unpack('N', pack('H*', $args[0]));
+  my $now = time();
+  if ($t) {
+    my $skew = defined($cgi{'skew'}) ? 0 + $cgi{'skew'} : 3600;
+    die("time out of range\n") if $t - $now < -$skew || $t - $now > $skew;
+  } else {
+    $t = $now;
+  }
+  # do base32 decoding of secret
+  my $secret = uc($cgi{'secret'});
+  $secret =~ s/[^A-Z2-7].*\Z//s;
+  $secret =~ tr/A-Z2-7/\000-\037/;
+  $secret = join('', map {unpack('B5', pack('C', $_ << 3))} unpack('C*', $secret));
+  $secret = pack('B*', substr($secret, 0, int(length($secret) / 8) * 8));
+  my $b = pack('NN', 0, int($t / $cgi{'period'}));
+  my $hmac;
+  my $totpalgo = lc($cgi{'algorithm'});
+  $hmac = Digest::SHA::hmac_sha1($b, $secret) if $totpalgo eq 'sha1';
+  $hmac = Digest::SHA::hmac_sha256($b, $secret) if $totpalgo eq 'sha256';
+  $hmac = Digest::SHA::hmac_sha512($b, $secret) if $totpalgo eq 'sha512';
+  die("unsupported hmac algorithm\n") unless defined $hmac;
+  die("bad hmac length\n") unless length($hmac) >= 20;
+  my $offset = unpack('C', substr($hmac, -1, 1)) & 15;
+  my $val = unpack("\@${offset}N", $hmac) & 0x7fffffff;
+  $val %= 10 ** $cgi{'digits'};
+  $val = "0$val" while length($val) < $cgi{'digits'};
+  return (0, '', $val);
+}
+
 ################
 
 sub read_alias {
@@ -2813,7 +2861,7 @@ eval {
 };
 die("malformed argument\n") if $@;
 
-if (($argv[0] eq 'privsign' || $argv[0] eq 'certgen') && @argv > 2) {
+if (($argv[0] eq 'privsign' || $argv[0] eq 'certgen' || $argv[0] eq 'privtotp') && @argv > 2) {
   my $pk = $argv[2];
   $argv[2] =~ s/^(..)(.*)(..)$/$1...$3/s;
   printlog("$peer: @argv");
@@ -2831,6 +2879,7 @@ my %cmds = (
   'pubkey'	=> \&cmd_pubkey,
   'privsign'	=> \&cmd_privsign,
   'sign'	=> \&cmd_sign,
+  'privtotp'	=> \&cmd_privtotp,
 );
 
 # extract command/user/hashalgo
