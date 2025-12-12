@@ -52,6 +52,14 @@ getbe4c(const unsigned char *p)
   return getbe4(p);
 }
 
+static inline u32
+getbe4t(const unsigned char *p)
+{
+  if (p[0] >= 0x40)
+    dodie("tag number overflow");
+  return getbe4(p);
+}
+
 static byte *
 rpm_sanitycheck(struct rpmdata *rd)
 {
@@ -64,7 +72,7 @@ rpm_sanitycheck(struct rpmdata *rd)
 
   for (i = 0, rsp = rpmsig; i < rpmsigcnt; i++, rsp += 16)
     {
-      tag = getbe4c(rsp);
+      tag = getbe4t(rsp);
       off = getbe4c(rsp + 8);
       if (off > (region ? rpmsigdlen - 16 : rpmsigdlen))
 	dodie("data offset out of range");
@@ -221,7 +229,7 @@ rpm_adaptreserved(struct rpmdata *rd, byte *region, int diff)
   /* the reserved space must be the last tag and must be the last
    * entry in the data segment */
   rsp = rpmsig + 16 * (rpmsigcnt - 1);
-  tag = getbe4c(rsp);
+  tag = getbe4t(rsp);
   if ((tag != RPMSIGTAG_RESERVEDSPACE && tag != RPMSIGTAG_RESERVED) || getbe4(rsp + 4) != 7)
     return;
   o = getbe4c(rsp + 8);
@@ -271,7 +279,7 @@ rpm_insertsig_tag(struct rpmdata *rd, int sigtag, byte *newsig, int newsiglen)
   /* now find the correct place to insert the signature */
   for (i = 0, tag = 0, rsp = rpmsig; i < rpmsigcnt; i++, rsp += 16)
     {
-      tag = getbe4c(rsp);
+      tag = getbe4t(rsp);
       if (tag == sigtag)
 	abort();	/* must not insert already existing tag */
       if (tag > sigtag)
@@ -404,7 +412,7 @@ rpm_delsigs(struct rpmdata *rd)
   /* now erase all sigs */
   for (i = 0, tag = 0, rsp = rpmsig; i < rpmsigcnt; i++, rsp += 16)
     {
-      tag = getbe4c(rsp);
+      tag = getbe4t(rsp);
       if (!(tag == RPMSIGTAG_OPENPGP || tag == RPMSIGTAG_GPG || tag == RPMSIGTAG_PGP || tag == RPMSIGTAG_DSA || tag == RPMSIGTAG_RSA))
 	continue;
       off = getbe4c(rsp + 8);
@@ -500,7 +508,7 @@ rpm_readsigheader(struct rpmdata *rd, int fd, const char *filename)
   rd->rpmdataoff = 96 + 16 + rd->rpmsigsize;
   for (i = 0, rsp = rd->rpmsig; i < rd->rpmsigcnt; i++, rsp += 16)
     {
-      tag = getbe4c(rsp);
+      tag = getbe4t(rsp);
       if (tag == RPMSIGTAG_OPENPGP || tag == RPMSIGTAG_GPG || tag == RPMSIGTAG_PGP || tag == RPMSIGTAG_DSA || tag == RPMSIGTAG_RSA)
 	rd->gotsigs = 1;
       if (tag == RPMSIGTAG_SHA1)
