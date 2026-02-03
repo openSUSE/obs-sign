@@ -403,6 +403,20 @@ sub wrap_into_pgpsig_v4 {
   return encodetag_oldformat(2, $v4sig);
 }
 
+sub parse_protected_data_packet {
+  my ($encodeddata) = @_;
+  my ($tag, $pkg) = decodepkg($encodeddata);
+  if ($tag == 18) {
+    die("unsupported integrity protected data packet version\n") if unpack('C', substr($pkg, 0, 1, '')) != 1;
+    return { 'method' => 'cfb', 'encrypted' => $pkg, 'mdc' => 1 };
+  } elsif ($tag == 20) {
+    my ($aead_version, $aead_cipher, $aead_algo, $aead_chunksize) = unpack('CCCC', substr($pkg, 0, 4, ''));
+    die("unsupported aead protected data packet version\n") if $aead_version != 1;
+    return { 'method' => 'aead', 'aead_cipher' => $aead_cipher, 'aead_algo' => $aead_algo, 'aead_chunksize' => $aead_chunksize, 'encrypted' => $pkg };
+  }
+  die("unsupported protected data packet $tag\n");
+}
+
 sub parse_encryted_data {
   my ($encodeddata) = @_;
 
@@ -433,13 +447,11 @@ sub parse_encryted_data {
     $mpioff += $ml + 1;
   }
   die("truncated mpis\n") if length($pkg) < $mpioff;
-  ($tag, $pkg) = decodepkg(substr($encodeddata, $off + $len));
-  die("unsupported protected data tag $tag\n") unless $tag == 18;
-  die("unsupported integrity protected data packet version\n") if unpack('C', substr($pkg, 0, 1, '')) != 1;
-  return ($einfo, $pkg, 1);
+  my $edata = parse_protected_data_packet(substr($encodeddata, $off + $len));
+  return ($einfo, $edata);
 }
 
-sub parse_sym_encryted_data {
+sub parse_sym_encrypted_data {
   my ($encodeddata) = @_;
 
   my ($tag, $len, $off) = decodetaglenoff($encodeddata);
@@ -451,10 +463,8 @@ sub parse_sym_encryted_data {
   die("symmetric session packet with session key\n") if $len > 2 + 11;
   my ($s2kalgo, $s2ksalt, $s2kcnt) = unpack('@3Ca8C', $pkg);
   my $einfo = { 'cipheralgo' => $cipheralgo, 's2kalgo' => $s2kalgo, 's2kcnt' => $s2kcnt, 's2ksalt' => $s2ksalt };
-  ($tag, $pkg) = decodepkg(substr($encodeddata, $off + $len));
-  die("unsupported protected data tag $tag\n") unless $tag == 18;
-  die("unsupported integrity protected data packet version\n") if unpack('C', substr($pkg, 0, 1, '')) != 1;
-  return ($einfo, $pkg, 1);
+  my $edata = parse_protected_data_packet(substr($encodeddata, $off + $len));
+  return ($einfo, $edata);
 }
 
 sub decode_decrypted_data {
@@ -625,8 +635,8 @@ sub can_sign_with_gcrypt {
   return 0;
 }
 
-sub decrypt_cipher_with_gcrypt {
-  my ($cipheralgo, $key, $encrypted, $encrypted_mdc) = @_;
+sub decrypt_cfb_with_gcrypt {
+  my ($cipheralgo, $key, $edata) = @_;
   my ($cipher, $blklen);
   if ($cipheralgo == 7) {	# AES128
     die("bad cipher key length\n") unless length($key) == 16;
@@ -640,6 +650,7 @@ sub decrypt_cipher_with_gcrypt {
   die("decrypt_with_gcrypt: unsupported cipher algorithm $cipheralgo\n") unless $cipher && $blklen;
   $cipher->start('decrypting');
   $cipher->setkey($key);
+  my $encrypted = $edata->{'encrypted'};
   my $padlen = length($encrypted) % $blklen;
   my $pad = $padlen ? ("\0" x ($blklen - $padlen)) : '';
   my $plain = $cipher->decrypt("$encrypted$pad");
@@ -648,7 +659,7 @@ sub decrypt_cipher_with_gcrypt {
   die("bad DEK data\n") if length($plain) < $blklen + 2;
   my @chk = unpack('nn', substr($plain, $blklen - 2, 4));
   die("DEK mismatch\n") if $chk[0] != $chk[1];
-  if ($encrypted_mdc) {
+  if ($edata->{'mdc'}) {
     die("MDC mismatch\n") if length($plain) < $blklen + 2 + 22 || unpack('n', substr($plain, -22, 2)) != 0xd314;
     die("MDC mismatch\n") if substr($plain, -20) ne Digest::SHA::sha1(substr($plain, 0, -20));
     substr($plain, -22, 22, '');
@@ -656,8 +667,67 @@ sub decrypt_cipher_with_gcrypt {
   return substr($plain, $blklen + 2);
 }
 
+sub decrypt_aead_with_gcrypt {
+  my ($cipheralgo, $key, $edata) = @_;
+  die("cipher algo mismatch\n") if $edata->{'aead_cipher'} != $cipheralgo;
+  my $chunksize = $edata->{'aead_chunksize'};
+  die("illegal chunk size\n") unless $chunksize >= 0 && $chunksize <= 56;
+  $chunksize = 1 << ($chunksize + 6);
+  my ($ciphermode, $iv_size);
+  ($ciphermode, $iv_size) = ('eax', 16) if $edata->{'aead_algo'} == 1;
+  ($ciphermode, $iv_size) = ('ocb', 15) if $edata->{'aead_algo'} == 2;
+  die("decrypt_with_gcrypt: unsupported aead algorithm $edata->{'aead_algo'}\n") unless $ciphermode && $iv_size;
+  my $encrypted = $edata->{'encrypted'};
+  die("truncated encrypted data\n") unless length($encrypted) >= $iv_size + 16;
+  my $aead_iv = substr($encrypted, 0, $iv_size, '');
+  my $finaltag = substr($encrypted, -16, 16, '');
+  my $cipher;
+  if ($cipheralgo == 7) {	# AES128
+    $cipher = Crypt::GCrypt->new('type' => 'cipher', 'algorithm' => 'aes128', 'mode' => $ciphermode, 'padding' => 'none');
+  } elsif ($cipheralgo == 9) {	# AES256
+    $cipher = Crypt::GCrypt->new('type' => 'cipher', 'algorithm' => 'aes256', 'mode' => $ciphermode, 'padding' => 'none');
+  }
+  die("decrypt_with_gcrypt: unsupported cipher algorithm $cipheralgo\n") unless $cipher;
+  $cipher->start('decrypting');
+  $cipher->setkey($key);
+  my $plain = '';
+  my $chunkindex = 0;
+  while (length($encrypted)) {
+    my $chunk = substr($encrypted, 0, $chunksize + 16, '');
+    die("truncated data\n") unless length($chunk) >= 16;
+    my $tag = substr($chunk, -16, 16, '');
+    my $nonce = $aead_iv;
+    substr($nonce, -8, 8) ^= pack('NN', 0, $chunkindex);
+    $cipher->setiv($nonce);
+    my $ad = pack('CCCCCNN', 0xd4, 1, $edata->{'aead_cipher'}, $edata->{'aead_algo'}, $edata->{'aead_chunksize'}, 0, $chunkindex);
+    $cipher->authenticate($ad);
+    $cipher->final();
+    my $decrypted = $cipher->decrypt_raw($chunk);
+    $cipher->checktag($tag);
+    $plain .= $decrypted;
+    $chunkindex++;
+  }
+  my $nonce = $aead_iv;
+  substr($nonce, -8, 8) ^= pack('NN', 0, $chunkindex);
+  $cipher->setiv($nonce);
+  my $ad = pack('CCCCCNNNN', 0xd4, 1, $edata->{'aead_cipher'}, $edata->{'aead_algo'}, $edata->{'aead_chunksize'}, 0, $chunkindex, 0, length($plain));
+  $cipher->authenticate($ad);
+  $cipher->final();
+  $cipher->decrypt_raw('');
+  $cipher->checktag($finaltag);
+  $cipher->finish();
+  return $plain;
+}
+
+sub decrypt_cipher_with_gcrypt {
+  my ($cipheralgo, $key, $edata) = @_;
+  return decrypt_cfb_with_gcrypt($cipheralgo, $key, $edata) if $edata->{'method'} eq 'cfb';
+  return decrypt_aead_with_gcrypt($cipheralgo, $key, $edata) if $edata->{'method'} eq 'aead';
+  die("decrypt_with_gcrypt: unsupported method $edata->{'method'}\n");
+}
+
 sub decrypt_with_gcrypt {
-  my ($info, $einfo, $encrypted, $encrypted_mdc) = @_;
+  my ($info, $einfo, $edata) = @_;
   die("decrypt_with_gcrypt: encryption algo mismatch\n") if $info->{'algo'} != $einfo->{'algo'};
   my $value;
   if ($info->{'algo'} == 1) {
@@ -689,15 +759,19 @@ sub decrypt_with_gcrypt {
   my $csum2 = 0;
   $csum2 += $_ for unpack('C*', $value);
   die("decryption error\n") unless $csum == ($csum2 % 65536);
-  return decrypt_cipher_with_gcrypt($cipheralgo, $value, $encrypted, $encrypted_mdc);
+  return decrypt_cipher_with_gcrypt($cipheralgo, $value, $edata);
 }
 
 sub can_decrypt_with_gcrypt {
-  my ($einfo) = @_;
+  my ($einfo, $edata) = @_;
   return 0 unless $have_gcrypt && $einfo && $einfo->{'algo'};
-  return 1 if $einfo->{'algo'} == 1;
-  return 1 if $einfo->{'algo'} == 16;
-  return 0;
+  return 0 unless $einfo->{'algo'} == 1 || $einfo->{'algo'} == 16;
+  if ($edata && $edata->{'method'} eq 'aead') {
+    return 0 unless defined &Crypt::GCrypt::authenticate;
+    return 0 unless $edata->{'aead_algo'} == 1 || $edata->{'aead_algo'} == 2;
+    return 0 unless $edata->{'aead_cipher'} == 7 || $edata->{'aead_cipher'} == 9;
+  }
+  return 1;
 }
 
 sub pgp_s2k_is {
@@ -711,18 +785,18 @@ sub pgp_s2k_is {
 }
 
 sub decrypt_sym_with_gcrypt {
-  my ($info, $salt, $encrypted, $encrypted_mdc) = @_;
+  my ($info, $salt, $edata) = @_;
   my $keylen;
   $keylen = 32 if $info->{'cipheralgo'} == 9;
   die("decrypt_sym_with_gcrypt: unsupported cipher algorithm $info->{'cipheralgo'}\n") unless $keylen;
   my $s2kcnt = (16 + ($info->{'s2kcnt'} & 0x0f)) << (6 + (($info->{'s2kcnt'} >> 4) & 0x0f));
   my $secret = pgp_s2k_is($info->{'s2kalgo'}, $salt, $info->{'secret'}, $s2kcnt, $keylen);
-  my $decrypted = decrypt_cipher_with_gcrypt($info->{'cipheralgo'}, $secret, $encrypted, $encrypted_mdc);
+  my $decrypted = decrypt_cipher_with_gcrypt($info->{'cipheralgo'}, $secret, $edata);
   return decode_decrypted_data($decrypted);
 }
 
 sub can_decrypt_sym_with_gcrypt {
-  my ($info) = @_;
+  my ($info, $edata) = @_;
   return 0 unless $have_gcrypt && $info && defined($info->{'secret'});
   return 0 if ($info->{'s2kalgo'} || 0) != 10;
   return 0 if ($info->{'cipheralgo'} || 0) != 9;
@@ -1439,12 +1513,12 @@ sub do_decode_gcrypt {
   my ($encodeddata) = @_;
   my $gnupghome = $ENV{'GNUPGHOME'};
   return undef unless $gnupghome;
-  my ($einfo, $encrypted, $encrypted_mdc) = parse_encryted_data($encodeddata);
-  return undef unless $einfo && $encrypted && can_decrypt_with_gcrypt($einfo);
+  my ($einfo, $edata) = parse_encryted_data($encodeddata);
+  return undef unless $einfo && $edata && can_decrypt_with_gcrypt($einfo, $edata);
   my ($fingerprint, $keygrip) = find_key_keycache($einfo->{'keyid'}, 'e');
   my $info = gpg_keygrip_to_info($gnupghome, $keygrip, $fingerprint);
   return undef unless $info;
-  my $decrypted = decrypt_with_gcrypt($info, $einfo, $encrypted, $encrypted_mdc);
+  my $decrypted = decrypt_with_gcrypt($info, $einfo, $edata);
   return decode_decrypted_data($decrypted);
 }
 
@@ -1478,13 +1552,13 @@ sub do_decode_sym {
   my $edata = substr($encodeddata, 10 + $xdl);
   die("truncated encoded data\n") if unpack('@8n', $edata) != length($edata) - 10;
   my $s2ksalt = substr($edata, 0, 8);
-  $edata = substr($edata, 10);
-  if ($use_gcrypt_decrypt && $have_gcrypt && can_decrypt_sym_with_gcrypt($info)) {
-    return decrypt_sym_with_gcrypt($info, $s2ksalt, $edata, 1);
+  $edata = { 'method' => 'cfb', 'encrypted' => substr($edata, 10), 'mdc' => 1 };
+  if ($use_gcrypt_decrypt && $have_gcrypt && can_decrypt_sym_with_gcrypt($info, $edata)) {
+    return decrypt_sym_with_gcrypt($info, $s2ksalt, $edata);
   }
   # create gpg symmetric session and integrity proteced encrypted data packets
   $encodeddata = encodetag(3, pack('CCCCa8C', 4, $info->{'cipheralgo'}, 3, $info->{'s2kalgo'}, $s2ksalt, $info->{'s2kcnt'}));
-  $encodeddata .= encodetag(18, pack('C', 1).$edata);
+  $encodeddata .= encodetag(18, pack('C', 1).$edata->{'encrypted'});
   spew($file, $encodeddata);
   my $decoded = rungpg_fatal($phrasefile, [ $file ], $gpg, '--batch', '--decrypt', '--max-output', '65536', '--no-verbose', '-q', '--no-secmem-warning', '--passphrase-fd=0', $file);
   unlink($file);
@@ -1505,9 +1579,10 @@ sub do_encode_sym {
   my $encodeddata = rungpg_fatal($phrasefile , $tdir || [ $file ], $gpg, '--batch', '--symmetric', '--no-verbose', '--no-secmem-warning', '--passphrase-fd=0', '--s2k-mode=3', '--s2k-cipher-algo=aes256', '--s2k-digest-algo=sha512', "--s2k-count=$s2kcntarg", '--compress-algo=zlib', '-o-', $file);
   unlink($file);
   # parse and verify gpg encoded data packets and transcode to our own format
-  my ($einfo, $encrypted, $encrypted_mdc) = parse_sym_encryted_data($encodeddata);
+  my ($einfo, $edata) = parse_sym_encrypted_data($encodeddata);
   die("gpg encrypted data does not match encryption parameters\n") if $info->{'cipheralgo'} != $einfo->{'cipheralgo'} || $info->{'s2kalgo'} != $einfo->{'s2kalgo'} || $info->{'s2kcnt'} != $einfo->{'s2kcnt'};
-  die("unexpected gpg encrypted data\n") if !$encrypted_mdc || length($einfo->{'s2ksalt'}) != 8 || length($encrypted) > 65535;
+  my $encrypted = $edata->{'encrypted'};
+  die("unexpected gpg encrypted data\n") if $edata->{'method'} ne 'cfb' || !$edata->{'mdc'} || length($einfo->{'s2ksalt'}) != 8 || length($encrypted) > 65535;
   return pack('CH16C', 1, $keyid, length($xdata)).$xdata.$einfo->{'s2ksalt'}.pack('n', length($encrypted)).$encrypted;
 }
 
@@ -2308,9 +2383,11 @@ sub cmd_sign {
 
 sub cmd_privtotp {
   my ($cmd, $user, $hashalgo, @args) = @_;
-  die("totp: two arguments expected\n") if @args != 2;
+  die("privtotp: two arguments expected\n") if @args != 2;
   die("bad private key\n") if $args[0] !~ /^(?:[0-9a-fA-F][0-9a-fA-F])+$/s;
-  my $totp = pack('H*', shift @args);
+  die("bad time argument\n") unless $args[1] =~ /^(?:[0-9a-fA-F][0-9a-fA-F]){4}$/s;
+  my $totp = pack('H*', $args[0]);
+  my $t = unpack('N', pack('H*', $args[1]));
   $totp = do_decode("$phrases/$user", $user, $totp);
   die("bad totp uri\n") unless $totp =~ /^otpauth:\/\/totp\/.*?\?(.*)$/;
   my %cgi;
@@ -2318,13 +2395,9 @@ sub cmd_privtotp {
     s/%([a-fA-F0-9]{2})/chr(hex($1))/sge;
     $cgi{$1} = $2 if /^([^=]+)=(.*)$/;
   }
-  for (qw{algorithm secret digits period}) {
-    die("missing totp parameter '$_'\n") unless defined $cgi{$_};
-  }
+  defined($cgi{$_}) || die("missing totp parameter '$_'\n") for qw{algorithm secret digits period};
   die("bad totp digits\n") unless $cgi{'digits'} =~ /^\d+$/ && $cgi{'digits'} > 0 && $cgi{'digits'} <= 10;
   die("bad totp period\n") unless $cgi{'period'} =~ /^\d+$/ && $cgi{'period'} > 0;
-  die("totp: bad time argument\n") unless $args[0] =~ /^(?:[0-9a-fA-F][0-9a-fA-F]){4}$/s;
-  my $t = unpack('N', pack('H*', $args[0]));
   my $now = time();
   if ($t) {
     my $skew = defined($cgi{'skew'}) ? 0 + $cgi{'skew'} : 3600;
@@ -2339,8 +2412,8 @@ sub cmd_privtotp {
   $secret = join('', map {unpack('B5', pack('C', $_ << 3))} unpack('C*', $secret));
   $secret = pack('B*', substr($secret, 0, int(length($secret) / 8) * 8));
   my $b = pack('NN', 0, int($t / $cgi{'period'}));
-  my $hmac;
   my $totpalgo = lc($cgi{'algorithm'});
+  my $hmac;
   $hmac = Digest::SHA::hmac_sha1($b, $secret) if $totpalgo eq 'sha1';
   $hmac = Digest::SHA::hmac_sha256($b, $secret) if $totpalgo eq 'sha256';
   $hmac = Digest::SHA::hmac_sha512($b, $secret) if $totpalgo eq 'sha512';
