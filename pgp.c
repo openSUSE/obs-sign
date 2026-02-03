@@ -59,7 +59,7 @@ write_crc(FILE *fp, const byte *buf, int length)
 void
 write_armored_signature(FILE *fp, const byte *signature, int length)
 {
-  fprintf(fp, "-----BEGIN PGP SIGNATURE-----\nVersion: GnuPG v1.0.7 (GNU/Linux)\n\n");
+  fprintf(fp, "-----BEGIN PGP SIGNATURE-----\nVersion: GnuPG v2.4.4 (GNU/Linux)\n\n");
   printr64(fp, signature, length);
   write_crc(fp, signature, length);
   fprintf(fp, "-----END PGP SIGNATURE-----\n");
@@ -68,7 +68,7 @@ write_armored_signature(FILE *fp, const byte *signature, int length)
 void
 write_armored_pubkey(FILE *fp, const byte *pubkey, int length)
 {
-  printf("-----BEGIN PGP PUBLIC KEY BLOCK-----\nVersion: GnuPG v1.4.5 (GNU/Linux)\n\n");
+  printf("-----BEGIN PGP PUBLIC KEY BLOCK-----\nVersion: GnuPG v2.4.4 (GNU/Linux)\n\n");
   printr64(fp, pubkey, length);
   write_crc(fp, pubkey, length);
   fprintf(fp, "-----END PGP PUBLIC KEY BLOCK-----\n");
