@@ -12,7 +12,7 @@ use FindBin;
 my $user     = 'defaultkey@localobs';
 my $prj_user = 'signd@localhost';
 my $comment  = "just for testing";
-my $tmp_dir  = "$FindBin::Bin/tmp";
+my $tmp_dir  = tempdir(CLEANUP => 1);
 my $var_dir  = "$tmp_dir/var";
 my $fixtures_dir = "$FindBin::Bin/fixtures";
 my $payload  = "test";
