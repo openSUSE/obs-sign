@@ -546,8 +546,10 @@ sub sign_with_openssl {
   my $sig = rungpg_fatal($file, [ $file ], $openssl, 'pkeyutl', @provider, '-inkey', "$opensslkeys/$user", '-sign', @args);
   unlink($file);
   my $fingerprint = "\0\0\0\0" x 10;
-  my $pgppubalgo = 100;
-  die("bad mldsa65 signature length\n") unless length($sig) == 3309;
+  my $pgppubalgo;
+  $pgppubalgo = 100 if length($sig) == 3309;
+  $pgppubalgo = 101 if length($sig) == 4627;
+  die("bad signature length\n") unless $pgppubalgo;
   my $sigdata = encodempi(pack('C', 0x40).$sig);
   return wrap_into_pgpsig_v4($extra, $fingerprint, $pgppubalgo, $pgphashalgo, $hash, $sigdata) if $replyv4;
   return wrap_into_pgpsig_v3($extra, $fingerprint, $pgppubalgo, $pgphashalgo, $hash, $sigdata);

@@ -54,7 +54,7 @@ char *ssl_verifydir;
 static const char *const hashname[] = {"SHA1", "SHA256", "SHA512"};
 static const int  hashlen[] = {20, 32, 64};
 
-static const char *const pubalgoname[] = {"DSA", "RSA", "EdDSA", "ECDSA", "MLDSA65"};
+static const char *const pubalgoname[] = {"DSA", "RSA", "EdDSA", "ECDSA", "MLDSA65", "MLDSA87"};
 
 int hashalgo = HASH_SHA1;
 static int assertpubalgo = -1;
@@ -269,7 +269,7 @@ getrawopensslsig(byte *sig, int sigl, struct x509 *sigcb)
     nmpis = 1;
   else if (sigalgo == PUB_DSA || sigalgo == PUB_ECDSA)
     nmpis = 2;
-  else if (sigalgo == PUB_MLDSA65)
+  else if (sigalgo == PUB_MLDSA65 || sigalgo == PUB_MLDSA87)
     nmpis = 1;
   else if (sigalgo == PUB_EDDSA)
     dodie("EdDSA openssl signing is not supported");
@@ -281,6 +281,13 @@ getrawopensslsig(byte *sig, int sigl, struct x509 *sigcb)
     {
       if (mpil[0] != 3309 + 1 || mpi[0][0] != 0x40)
         dodie("bad mldsa65 openssl signature");
+      x509_insert(sigcb, 0, mpi[0] + 1, mpil[0] - 1);
+      return sigalgo;
+    }
+  if (sigalgo == PUB_MLDSA87)
+    {
+      if (mpil[0] != 4627 + 1 || mpi[0][0] != 0x40)
+        dodie("bad mldsa87 openssl signature");
       x509_insert(sigcb, 0, mpi[0] + 1, mpil[0] - 1);
       return sigalgo;
     }
@@ -462,7 +469,7 @@ sign(char *filename, int isfilter, int mode)
   if (mode == MODE_CMSSIGN || mode == MODE_KOSIGN)
     {
       x509_init(&cms_signedattrs);
-      if (assertpubalgo == PUB_MLDSA65 || assertpubalgo == PUB_EDDSA)
+      if (assertpubalgo == PUB_MLDSA65 || assertpubalgo == PUB_MLDSA87 || assertpubalgo == PUB_EDDSA)
 	cmssig = 1;
       if (!cmssig)
 	{
@@ -1786,6 +1793,8 @@ main(int argc, char **argv)
 	    assertpubalgo = PUB_ECDSA;
 	  else if (!strcasecmp(argv[1], "mldsa65"))
 	    assertpubalgo = PUB_MLDSA65;
+	  else if (!strcasecmp(argv[1], "mldsa87"))
+	    assertpubalgo = PUB_MLDSA87;
 	  else
 	    {
 	      fprintf(stderr, "sign: unknown pubkey algorithm '%s'\n", argv[1]);
