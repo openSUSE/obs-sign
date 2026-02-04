@@ -22,7 +22,7 @@ my $user     = 'defaultkey@localobs';
 my $usersec  = 'defaultkeysec@localobs';
 my $prj_user = 'signd@localhost';
 my $comment  = "just for testing";
-my $tmp_dir  = "$FindBin::Bin/tmp";
+my $tmp_dir  = tempdir(CLEANUP => 1);
 my $var_dir  = "$tmp_dir/var";
 my $fixtures_dir = "$FindBin::Bin/fixtures";
 
@@ -80,7 +80,7 @@ is($?, 0, "Checking cmd 'keygen' return code");
 @keys = decode_reply($result);
 
 my $privkey = pack("H*", $keys[1]);
-my $tmpdir = "t/tmp";
+my $tmpdir = "$tmp_dir/tmp";
 
 ( -d $tmpdir ) || mkdir($tmpdir, 0700);
 
