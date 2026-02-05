@@ -2102,8 +2102,11 @@ require Compress::Raw::Zlib if $use_gcrypt_decrypt && $have_gcrypt;
 my @argv;
 
 if ($testmode) {
-  die("test mode needs phrases\n") unless $phrases;
   # test mode
+  die("test mode needs phrases\n") unless $phrases;
+  my @phrases_s = stat($phrases);
+  die("phrases directory does not exist\n") unless @phrases_s;
+  die("phrases directory owner does not match euid\n") unless $phrases_s[4] == $>;
   $| = 1;
   if ($testmode == 2) {
     *CLNT = *STDIN;
@@ -2232,6 +2235,7 @@ if ($proxysockproto eq 'ssl') {
   }
 }
 
+testit:
 
 ### commands
 
@@ -2663,6 +2667,7 @@ sub cmd_privileged_keytotpm {
   ### encrypt old keygrip with backup key
   switch_gnupghome($oldgnupghome);
   $oldgnupghome = privileged_switch_gnupghome('system', 0, 1);
+  unlink("$keybackup/$keygrip.key.enc");
   rungpg_fatal('/dev/null', $tdir, $gpg, '--batch', '--encrypt', '--no-verbose', '--no-secmem-warning', '--trust-model', 'always', '--no-auto-key-locate', '-o', "$keybackup/$keygrip.key.enc", '-r', $backup_user, $gripfile);
   switch_gnupghome($oldgnupghome);
   $oldgnupghome = privileged_switch_gnupghome($keyring);
@@ -2888,11 +2893,17 @@ sub cmd_privileged {
   die("privileged: bad keyring '$keyring'\n") if $keyring ne 'standard' && $keyring ne 'restricted' && $keyring ne 'privileged' && $keyring ne 'system';
   die("privileged: no system keyring configured\n") if $keyring eq 'system' && !$system_gnupghome;
   die("privileged: no restricted keyring configured\n") if $keyring eq 'restricted' && !$restricted_gnupghome;
-  die("bad signature\n") unless $signature =~ /^\A[0-9a-fA-F]+\z/s;
+  die("bad signature\n") unless ($testmode && $signature eq 'testmode') || $signature =~ /^\A[0-9a-fA-F]+\z/s;
   my $handler = $privileged_cmds{$pcmd};
   die("unknown command: $pcmd\n") unless $handler;
   die("please specify a user\n") if $user eq '-' && $handler->[1];
   die("$pcmd: keyring must be ".join('|', @{$handler->[2]})."\n") unless grep {$keyring eq $_} @{$handler->[2]};
+
+  if ($testmode) {
+    my ($status, $err, @out) = $handler->[0]->($pcmd, $user, $hashalgo, $keyring, @args);
+    exit(0) if !$status && ($pcmd eq 'backup' || $pcmd eq 'log');		# already replied
+    return ($status, $err, @out);
+  }
 
   my $logfd;
   open($logfd, '>>', $privileged_logfile) || die("$privileged_logfile: $!\n");
@@ -2923,6 +2934,7 @@ sub cmd_privileged {
 
 ################
 
+goto testit2 if $testmode;	# argv already read
 
 ## read the request, call the handler, reply the result
 @argv = readreq();
@@ -2945,7 +2957,7 @@ if (($argv[0] eq 'privsign' || $argv[0] eq 'certgen' || $argv[0] eq 'privtotp') 
   printlog("$peer: @argv");
 }
 
-testit:
+testit2:
 
 my %cmds = (
   'ping'	=> \&cmd_ping,

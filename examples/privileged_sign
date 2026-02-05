@@ -20,6 +20,7 @@ my $ssl_certfile;
 my $ssl_keyfile;
 my $ssl_verifyfile;
 my $ssl_verifydir;
+my $test_sign;
 
 my $algouser;
 my $tcpproto = getprotobyname('tcp');
@@ -244,13 +245,31 @@ sub copyfd {
 sub rpc {
   my (@args) = @_;
   die("bad number of args\n") unless @args >= 2;
+  local *S;
   splice(@args, 0, 2, 'privileged', $args[1], $args[0]);
+  if ($test_sign) {
+    splice(@args, 2, 0, $keyring, 'testmode') if $args[2] ne 'nonce';
+    my $pid = open(S, '-|');
+    die unless defined $pid;
+    if (!$pid) {
+      $pid = open(STDIN, '-|');
+      die unless defined $pid;
+      if (!$pid) {
+	my $pack = pack('n' x (1 + @args), scalar(@args), map {length($_)} @args).join('', @args);
+	$pack = pack('nn', length($pack), 0).$pack;
+	swrite(\*STDOUT, $pack);
+	POSIX::_exit(0);
+      }
+      exec($test_sign, '--test-sign');
+      die("$test_sign: $!\n");
+    }
+    goto rpc_testsign;
+  }
   splice(@args, 2, 0, $keyring, gensig(@args)) if $args[2] ne 'nonce';
   if (!$signaddr) {
     $signaddr = inet_aton($signhost);
     die("$signhost: unknown host\n") unless $signaddr;
   }
-  local *S;
   socket(S, PF_INET, SOCK_STREAM, $tcpproto) || die("socket: $!\n");
   bindreservedport(\*S) if $bindreservedport;
   connect(S, sockaddr_in($port, $signaddr)) || die("connect to $signhost:$port: $!\n");
@@ -270,6 +289,7 @@ sub rpc {
   my $pack = pack('n' x (1 + @args), scalar(@args), map {length($_)} @args).join('', @args);
   $pack = pack('nn', length($pack), 0).$pack;
   swrite(\*S, $pack);
+rpc_testsign:
   my $buf = '';
   while (1) {
     my $r = sysread(S, $buf, 8192, length($buf));
@@ -412,6 +432,8 @@ my %stringoptions = (
   '--config'	=> \$conf,
   '--sighelper'	=> \$sighelper,
 );
+
+(undef, $test_sign) = splice(@ARGV, 0, 2) if @ARGV > 2 && $ARGV[0] eq '--test-sign';
 
 my @modes;
 while (@ARGV && $ARGV[0] =~ /^-/) {
