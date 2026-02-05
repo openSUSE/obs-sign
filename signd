@@ -41,7 +41,14 @@ eval {
   Crypt::GCrypt::gcrypt_version();	# initialize lib
   $have_gcrypt = 1;
 };
+eval {
+  require Crypt::PKCS11;
+  require Crypt::PKCS11::Attributes;
+  *Crypt::PKCS11::CKK_EC_EDWARDS = sub {0x00000040} unless defined &Crypt::PKCS11::CKK_EC_EDWARDS;
+  *Crypt::PKCS11::CKM_EDDSA = sub {0x00001057} unless defined &Crypt::PKCS11::CKM_EDDSA;
+};
 my $have_tpm;
+my $have_pkcs11;
 
 my @allows;
 my @allow_subject;
@@ -71,6 +78,7 @@ my $use_gcrypt_sign;
 my $use_gcrypt_privsign;
 my $use_gcrypt_decrypt;
 my $use_tpm_sign;
+my $use_pkcs11_sign;
 my $ssl_certfile;
 my $ssl_keyfile;
 my $ssl_verifyfile;
@@ -80,6 +88,8 @@ my $tpm_device = '/dev/tpmrm0';
 my $tpm_rm;
 my $tpm_lock;
 my $tpm_lock_fd;
+my $pkcs11_config;
+my $pkcs11_handle;
 my $keybackup;
 my $proxyport;
 my $proxysockproto;
@@ -488,6 +498,11 @@ sub decode_decrypted_data {
   return substr($pkg, 2 + $fnl + 4);
 }
 
+
+##
+## openssl support (currently only usable for mldsa65/mldsa87 signing)
+##
+
 # this must match the code of x509_signedattrs() in x509.c
 sub create_cms_signer_info {
   my ($hash, $t) = @_;
@@ -513,10 +528,6 @@ sub create_cms_signer_info {
   die if $salen > 255;
   return ($salen < 128 ? pack('CC', 0x31, $salen) : pack('CCC', 0x31, 0x81, $salen)).$sa;
 }
-
-##
-## openssl support (currently only usable for mldsa65 signing)
-##
 
 sub sign_with_openssl {
   my ($phrasefile, $info, $hash, $hashalgo, $replyv4) = @_;
@@ -555,6 +566,7 @@ sub sign_with_openssl {
   return wrap_into_pgpsig_v3($extra, $fingerprint, $pgppubalgo, $pgphashalgo, $hash, $sigdata);
 }
 
+
 ##
 ## libgcrypt support
 ##
@@ -562,7 +574,6 @@ sub sign_with_openssl {
 sub sign_with_gcrypt {
   my ($info, $hash, $hashalgo, $replyv4) = @_;
   die("sign_with_gcrypt: missing fingerprint\n") unless $info->{'fingerprint'};
-  my $issuer = substr($info->{'fingerprint'}, -16);
   die("bad hash $hash\n") unless $hash =~ /^((?:[0-9a-fA-F][0-9a-fA-F])+)\@(0[01][0-9a-fA-F]{8})$/;
   my $extra = $2;
   $hash = $1;
@@ -825,7 +836,7 @@ sub tpm_initialize {
 sub can_sign_with_tpm {
   my ($info) = @_;
   return 0 unless $have_tpm && $info && $info->{'algo'};
-  return 0 unless $info->{'shadowed-tpm2-v1'};
+  return 0 unless $info->{'shadowed-tpm2-v1'} && $info->{'shadowed-tpm2-v1'}->[0] ne 'pkcs11';
   return 1 if $info->{'algo'} == 1;
   return 1 if $info->{'algo'} == 19;
   return 0;
@@ -1006,7 +1017,6 @@ sub tpm_key2handle {
 sub sign_with_tpm {
   my ($phrasefile, $info, $hash, $hashalgo, $replyv4) = @_;
   die("sign_with_tpm: missing fingerprint\n") unless $info->{'fingerprint'};
-  my $issuer = substr($info->{'fingerprint'}, -16);
   die("bad hash $hash\n") unless $hash =~ /^((?:[0-9a-fA-F][0-9a-fA-F])+)\@(0[01][0-9a-fA-F]{8})$/;
   my $extra = $2;
   $hash = $1;
@@ -1065,6 +1075,142 @@ sub do_sign_multiple_tpm {
   die($err) if $err;
   return @ret;
 }
+
+
+##
+## pkcs11 support
+##
+
+sub can_sign_with_pkcs11 {
+  my ($info) = @_;
+  return 0 unless $have_pkcs11 && $info && $info->{'algo'};
+  return 0 unless $info->{'shadowed-tpm2-v1'} && $info->{'shadowed-tpm2-v1'}->[0] eq 'pkcs11';
+  return 1 if $info->{'algo'} == 1;
+  return 1 if $info->{'algo'} == 22 && $info->{'curve'} eq $pgp_curve_ed25519;
+  return 1 if $info->{'algo'} == 19 && $info->{'curve'} eq $pgp_curve_nistp256;
+  return 1 if $info->{'algo'} == 19 && $info->{'curve'} eq $pgp_curve_nistp384;
+  return 0;
+}
+
+sub pkcs11_read_config {
+  my ($gpghomedir) = @_;
+  my $fd;
+  open($fd, '<', "$gpghomedir/gpg-pkcs11-tpm.conf") || die("$gpghomedir/gpg-pkcs11-tpm.conf: $!\n");
+  $pkcs11_config = {};
+  while (<$fd>) {
+    chomp;
+    s/^\s+//;
+    s/\s+$//;
+    next if $_ eq '' || $_ =~ /^#/;
+    $pkcs11_config->{$1} = 1 if /^(\S+)$/;
+    $pkcs11_config->{$1} = $2 if /^(\S+)\s+(.*?)$/;
+  }
+  close($fd);
+}
+
+sub pkcs11_initialize {
+  my ($gpghomedir) = @_;
+  pkcs11_read_config($gpghomedir);
+  die("No provider-library configured\n") unless $pkcs11_config->{'provider-library'};
+  die("Crypt::PKCS11 module not loaded\n") unless defined &Crypt::PKCS11::new;
+  $pkcs11_handle = Crypt::PKCS11->new;
+  $pkcs11_handle->load($pkcs11_config->{'provider-library'});
+  $pkcs11_handle->Initialize;
+  $have_pkcs11 = 1;
+}
+
+sub pkcs11_open_session {
+  my $slot_id = $pkcs11_config->{'slot-id'};
+  if (!defined $slot_id) {
+    my $slot_list = $pkcs11_handle->GetSlotList(1) or die "GetSlotList: " . $pkcs11_handle->errstr;
+    for my $sid (@$slot_list) {
+      next if $pkcs11_config->{'token'} && (pkcs11_generate_token_url($sid) || '') ne $pkcs11_config->{'token'};
+      $slot_id = $sid;
+      last;
+    }
+    die("no slot found\n") unless defined $slot_id;
+  }
+  my $session = $pkcs11_handle->OpenSession($slot_id, Crypt::PKCS11::CKF_SERIAL_SESSION()) or die "OpenSession: " . $pkcs11_handle->errstr;
+  if (defined $pkcs11_config->{'login'}) {
+    $session->Login(Crypt::PKCS11::CKU_USER(), $pkcs11_config->{'login'}) or die "login error: " . $session->errstr;
+  }
+  return $session;
+}
+
+sub pkcs11_mechanism {
+  my ($mechanism) = @_;
+  my $mech_obj = Crypt::PKCS11::CK_MECHANISM->new;
+  $mech_obj->set_mechanism($mechanism) if defined $mechanism;
+  return $mech_obj;
+}
+
+sub pkcs11_find_signing_key {
+  my ($session, $label) = @_;
+  my $object_template = Crypt::PKCS11::Attributes->new->push(
+    Crypt::PKCS11::Attribute::Label->new->set($label),
+    Crypt::PKCS11::Attribute::Sign->new->set(1),
+  );
+  $session->FindObjectsInit($object_template);
+  my $objects = $session->FindObjects(1);
+  return $objects && @$objects ? $objects->[0] : undef;
+}
+
+my %pkcs11_pkcs1prefix = (
+  'sha1'   => '3021300906052b0e03021a05000414',
+  'sha224' => '3031300d06096086480165030402040500041c',
+  'sha256' => '3031300d060960864801650304020105000420',
+  'sha384' => '3041300d060960864801650304020205000430',
+  'sha512' => '3051300d060960864801650304020305000440',
+);
+
+sub pkcs11_sign {
+  my ($session, $key, $hashalgo, $data) = @_;
+  my ($keytype) = $session->GetAttributeValue($key, Crypt::PKCS11::Attributes->new->push(Crypt::PKCS11::Attribute::KeyType->new->set(0)));
+  die("could not determine key type\n") unless defined $keytype;
+  $keytype = $keytype->get();
+  my $mech;
+  if ($keytype == Crypt::PKCS11::CKK_RSA()) {
+    $mech = Crypt::PKCS11::CKM_RSA_PKCS();
+    die("unsupported hash algorithm for rsa\n") unless $pkcs11_pkcs1prefix{$hashalgo};
+    $data = pack('H*', $pkcs11_pkcs1prefix{$hashalgo}).$data;
+  } elsif ($keytype == Crypt::PKCS11::CKK_EC()) {
+    $mech = Crypt::PKCS11::CKM_ECDSA();
+  } elsif ($keytype == Crypt::PKCS11::CKK_EC_EDWARDS()) {
+    $mech = Crypt::PKCS11::CKM_EDDSA();
+  }
+  die("unsupported key type $keytype\n") unless defined $mech;
+  $session->SignInit(pkcs11_mechanism($mech), $key) or die "Failed to init signing: " . $session->errstr;
+  my $sig = $session->Sign($data) or die "Failed to sign: " . $session->errstr;
+  if ($mech == Crypt::PKCS11::CKM_ECDSA() || $mech == Crypt::PKCS11::CKM_EDDSA()) {
+    my $s1 = substr($sig, 0, length($sig) / 2, '');
+    die("signature size must be even\n") if length($s1) != length($sig);
+    return ($s1, $sig);
+  }
+  return $sig;
+}
+
+sub sign_with_pkcs11 {
+  my ($phrasefile, $info, $hash, $hashalgo, $replyv4) = @_;
+  die("sign_with_tpm: missing fingerprint\n") unless $info->{'fingerprint'};
+  die("bad hash $hash\n") unless $hash =~ /^((?:[0-9a-fA-F][0-9a-fA-F])+)\@(0[01][0-9a-fA-F]{8})$/;
+  my $extra = $2;
+  $hash = $1;
+  $hashalgo = lc($hashalgo);
+  my $pgphashalgo = get_pgphashalgo($hashalgo);
+  die("sign_with_pkcs11: bad hashalgo $hashalgo\n") unless $pgphashalgo;
+  die("bad info\n") unless @{$info->{'shadowed-tpm2-v1'} || []} == 3 && $info->{'shadowed-tpm2-v1'}->[0] eq 'pkcs11';
+  my $session = $info->{'pkcs11_session'} || pkcs11_open_session();
+  $info->{'pkcs11_session'} = $session;		# so we can reuse it
+  my $label = $info->{'shadowed-tpm2-v1'}->[2];
+  my $key = $info->{'pkcs11_key'} || pkcs11_find_signing_key($session, $label);
+  die("could not find private key '$label'\n") unless $key;
+  $info->{'pkcs11_key'} = $key;		# so we can reuse it
+  my @sig = pkcs11_sign($session, $key, $hashalgo, pack('H*', $hash));
+  my $sigdata = join('', map {encodempi($_)} @sig);
+  return wrap_into_pgpsig_v4($extra, $info->{'fingerprint'}, $info->{'algo'}, $pgphashalgo, $hash, $sigdata) if $replyv4;
+  return wrap_into_pgpsig_v3($extra, $info->{'fingerprint'}, $info->{'algo'}, $pgphashalgo, $hash, $sigdata);
+}
+
 
 ##
 ## gnupg agent functions
@@ -1685,11 +1831,12 @@ sub do_sign_multiple {
     ($fingerprint, $keygrip) = $isprivsign ? find_key($user) : find_key_keycache($user);
     die("unknown pubkey for $user\n") unless $fingerprint;
   }
-  if (!$info && (($have_gcrypt && $use_gcrypt_sign) || ($have_tpm && $use_tpm_sign)) && $fingerprint && $keygrip) {
+  if (!$info && (($have_gcrypt && $use_gcrypt_sign) || ($have_tpm && $use_tpm_sign) || ($have_pkcs11 && $use_pkcs11_sign)) && $fingerprint && $keygrip) {
     my $have_phrase = defined($phrasefile) && $phrasefile ne '/dev/null' && -s $phrasefile;
-    $info = gpg_keygrip_to_info($ENV{'GNUPGHOME'}, $keygrip, $fingerprint) unless $have_phrase && !($have_tpm && $use_tpm_sign);
+    $info = gpg_keygrip_to_info($ENV{'GNUPGHOME'}, $keygrip, $fingerprint) unless $have_phrase && !(($have_tpm && $use_tpm_sign) || ($have_pkcs11 && $use_pkcs11_sign));
     undef $info if $info && $info->{'smpis'} && !($have_gcrypt && $use_gcrypt_sign);
-    undef $info if $info && $info->{'shadowed-tpm2-v1'} && !($have_tpm && $use_tpm_sign);
+    undef $info if $info && $info->{'shadowed-tpm2-v1'} && $info->{'shadowed-tpm2-v1'}->[0] ne 'pkcs11' && !($have_tpm && $use_tpm_sign);
+    undef $info if $info && $info->{'shadowed-tpm2-v1'} && $info->{'shadowed-tpm2-v1'}->[0] eq 'pkcs11' && !($have_pkcs11 && $use_pkcs11_sign);
     return do_sign_multiple_tpm($phrasefile, $user, $info, $hashalgo, $hashes, $isprivsign) if $info && @$hashes > 1 && !can_sign_with_gcrypt($info) && can_sign_with_tpm($info);
   }
   my ($status, $err, @out) = (0, '');
@@ -1705,6 +1852,9 @@ sub do_sign_multiple {
       ($status, $lout, $lerr) = (1, '', $@) if $@;
     } elsif ($info && can_sign_with_tpm($info)) {
       $lout = eval { sign_with_tpm($phrasefile, $info, $hash, $hashalgo, $replyv4) };
+      ($status, $lout, $lerr) = (1, '', $@) if $@;
+    } elsif ($info && can_sign_with_pkcs11($info)) {
+      $lout = eval { sign_with_pkcs11($phrasefile, $info, $hash, $hashalgo, $replyv4) };
       ($status, $lout, $lerr) = (1, '', $@) if $@;
     } elsif ($use_agent) {
       $lout = eval { sign_with_agent($phrasefile, $user, $fingerprint, $keygrip, $hashalgo, $hash, $isprivsign, $replyv4) };
@@ -2006,6 +2156,9 @@ while(<F>) {
   if ($s[0] eq 'use-tpm:') {
     $use_tpm_sign =  ($s[1] eq '1' || $s[1] eq 'sign' || $s[1] =~ /^true$/i) ? 1 : 0;
   }
+  if ($s[0] eq 'use-pkcs11:') {
+    $use_pkcs11_sign =  ($s[1] eq '1' || $s[1] eq 'sign' || $s[1] =~ /^true$/i) ? 1 : 0;
+  }
   if ($s[0] eq 'tpm_ctxcache:') {
     $tpm_ctxcache = $s[1];
     next;
@@ -2157,7 +2310,14 @@ if ($logfile) {
   open(STDERR, ">&STDOUT");
 }
 printlog("$myname started");
-tpm_initialize() if $use_tpm_sign;
+if ($use_tpm_sign) {
+  eval { tpm_initialize() };
+  warn($@) if $@;
+}
+if ($use_pkcs11_sign) {
+  eval { pkcs11_initialize($ENV{GNUPGHOME}) };
+  warn($@) if $@;
+}
 
 socket(MS , PF_INET, SOCK_STREAM, Socket::IPPROTO_TCP) || die "socket: $!\n";
 setsockopt(MS, SOL_SOCKET, SO_REUSEADDR, pack("l",1));
