@@ -1111,15 +1111,31 @@ sub pkcs11_read_config {
 sub pkcs11_initialize {
   my ($gpghomedir) = @_;
   pkcs11_read_config($gpghomedir);
-  die("No provider-library configured\n") unless $pkcs11_config->{'provider-library'};
-  die("Crypt::PKCS11 module not loaded\n") unless defined &Crypt::PKCS11::new;
+  die("pkcs11: no provider-library configured\n") unless $pkcs11_config->{'provider-library'};
+  die("pkcs11: Crypt::PKCS11 module not loaded\n") unless defined &Crypt::PKCS11::new;
   $pkcs11_handle = Crypt::PKCS11->new;
   $pkcs11_handle->load($pkcs11_config->{'provider-library'});
-  $pkcs11_handle->Initialize;
   $have_pkcs11 = 1;
 }
 
+sub pkcs11_generate_token_url {
+  my ($slot_id) = @_;
+  my $token_info = $pkcs11_handle->GetTokenInfo($slot_id) or die("pkcs11_generate_token_url: could not get token info for slot $slot_id\n");
+  return undef unless %$token_info;
+  my $uri = '';
+  for my $what (['model' => 'model'], ['manufacturerID' => 'manufacturer'], ['serialNumber' => 'serial'], ['label' => 'token']) {
+    my $d = $token_info->{$what->[0]};
+    $d = '' unless defined $d;
+    $d =~ s/\s+$//;
+    $d =~ s/([\000-\040<>;\"#\?&\+=%[\177-\377])/sprintf("%%%02X",ord($1))/sge;
+    $uri .= ";$what->[1]=$d";
+  }
+  $uri =~ s/^./pkcs11:/;
+  return $uri;
+}
+
 sub pkcs11_open_session {
+  $pkcs11_handle->Initialize;
   my $slot_id = $pkcs11_config->{'slot-id'};
   if (!defined $slot_id) {
     my $slot_list = $pkcs11_handle->GetSlotList(1) or die "GetSlotList: " . $pkcs11_handle->errstr;
@@ -1164,21 +1180,18 @@ my %pkcs11_pkcs1prefix = (
 );
 
 sub pkcs11_sign {
-  my ($session, $key, $hashalgo, $data) = @_;
-  my ($keytype) = $session->GetAttributeValue($key, Crypt::PKCS11::Attributes->new->push(Crypt::PKCS11::Attribute::KeyType->new->set(0)));
-  die("could not determine key type\n") unless defined $keytype;
-  $keytype = $keytype->get();
+  my ($session, $key, $keyalgo, $hashalgo, $data) = @_;
   my $mech;
-  if ($keytype == Crypt::PKCS11::CKK_RSA()) {
+  if ($keyalgo == 1) {
     $mech = Crypt::PKCS11::CKM_RSA_PKCS();
     die("unsupported hash algorithm for rsa\n") unless $pkcs11_pkcs1prefix{$hashalgo};
     $data = pack('H*', $pkcs11_pkcs1prefix{$hashalgo}).$data;
-  } elsif ($keytype == Crypt::PKCS11::CKK_EC()) {
+  } elsif ($keyalgo == 19) {
     $mech = Crypt::PKCS11::CKM_ECDSA();
-  } elsif ($keytype == Crypt::PKCS11::CKK_EC_EDWARDS()) {
+  } elsif ($keyalgo == 22) {
     $mech = Crypt::PKCS11::CKM_EDDSA();
   }
-  die("unsupported key type $keytype\n") unless defined $mech;
+  die("unsupported key type $keyalgo\n") unless defined $mech;
   $session->SignInit(pkcs11_mechanism($mech), $key) or die "Failed to init signing: " . $session->errstr;
   my $sig = $session->Sign($data) or die "Failed to sign: " . $session->errstr;
   if ($mech == Crypt::PKCS11::CKM_ECDSA() || $mech == Crypt::PKCS11::CKM_EDDSA()) {
@@ -1205,7 +1218,7 @@ sub sign_with_pkcs11 {
   my $key = $info->{'pkcs11_key'} || pkcs11_find_signing_key($session, $label);
   die("could not find private key '$label'\n") unless $key;
   $info->{'pkcs11_key'} = $key;		# so we can reuse it
-  my @sig = pkcs11_sign($session, $key, $hashalgo, pack('H*', $hash));
+  my @sig = pkcs11_sign($session, $key, $info->{'algo'}, $hashalgo, pack('H*', $hash));
   my $sigdata = join('', map {encodempi($_)} @sig);
   return wrap_into_pgpsig_v4($extra, $info->{'fingerprint'}, $info->{'algo'}, $pgphashalgo, $hash, $sigdata) if $replyv4;
   return wrap_into_pgpsig_v3($extra, $info->{'fingerprint'}, $info->{'algo'}, $pgphashalgo, $hash, $sigdata);
