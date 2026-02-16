@@ -2180,9 +2180,11 @@ while(<F>) {
   }
   if ($s[0] eq 'use-tpm:') {
     $use_tpm_sign =  ($s[1] eq '1' || $s[1] eq 'sign' || $s[1] =~ /^true$/i) ? 1 : 0;
+    next;
   }
   if ($s[0] eq 'use-pkcs11:') {
     $use_pkcs11_sign =  ($s[1] eq '1' || $s[1] eq 'sign' || $s[1] =~ /^true$/i) ? 1 : 0;
+    next;
   }
   if ($s[0] eq 'tpm_ctxcache:') {
     $tpm_ctxcache = $s[1];
