@@ -198,7 +198,7 @@ v3sig_skel[] = {
 #define V4SIG_HASHED_FPV4 (4 + 2 + 29)
 
 unsigned char *
-genv4sigtrail(int clearsign, int pubalgo, int hashalgo, u32 signtime, unsigned char *fp, int *v4sigtraillen)
+genv4sigtrail(int sigclass, int pubalgo, int hashalgo, u32 signtime, unsigned char *fp, int *v4sigtraillen)
 {
   int hlen;
   unsigned char *v4sigtrail;
@@ -207,7 +207,7 @@ genv4sigtrail(int clearsign, int pubalgo, int hashalgo, u32 signtime, unsigned c
   hlen = fp ? V4SIG_HASHED_FPV4 : V4SIG_HASHED;
   v4sigtrail = doalloc(hlen + 6);
   memcpy(v4sigtrail, fp ? v4sig_skel_fpv4 : v4sig_skel, hlen);
-  v4sigtrail[1] = clearsign ? 0x01 : 0x00;
+  v4sigtrail[1] = sigclass;
   v4sigtrail[2] = pubpgpalgo[pubalgo];
   v4sigtrail[3] = hashpgpalgo[hashalgo];
   if (fp)
@@ -480,29 +480,14 @@ byte *
 pkg2sig(byte *pk, int pkl, int *siglp)
 {
   byte *sig;
-  int l, ll, tag = 0;
+  int l, tag = 0;
   sig = nextpkg(&tag, &l, &pk, &pkl);
   if (!sig || l < 6 || tag != 2)
     {
       fprintf(stderr, "packet is not a signature [%d]\n", tag);
       exit(1);
     }
-  if (sig[0] == 3)
-    ll = 19;
-  else if (sig[0] == 4)
-    {
-      int ll = 4;
-      if (l < ll + 2)
-	dodie("signature packet is too small");
-      ll += 2 + (sig[ll] << 8) + sig[ll + 1];
-      if (l < ll + 2)
-	dodie("signature packet is too small");
-      ll += 2 + (sig[ll] << 8) + sig[ll + 1];
-    }
-  else
-    dodie("not a V3 or V4 signature");
-  if (l < ll + 2)
-    dodie("signature packet is too small");
+  (void)findsigmpioffset(sig, l);	/* checks if too small */
   *siglp = l;
   return sig;
 }
@@ -523,25 +508,43 @@ findsigissuer(byte *sig, int sigl)
   if (issuer)
     return issuer;
   fp = findsubpkg(sig + 4, sigl - 4, 33, &fplen, -1);
-  if (fp && fplen > 16 && *fp >= 4)
-    return fp + fplen - 8;
+  if (fp && fplen > 16 && (*fp == 4 || *fp == 5 || *fp == 6))
+    return *fp == 4 ? fp + fplen - 8 : fp + 1;
   hl = 4 + 2 + ((sig[4] << 8) | sig[5]);
   return findsubpkg(sig + hl, sigl - hl, 16, 0, 8);
 }
 
+/* note that the mpi data starts with the salt for v6 signatures */
 int
 findsigmpioffset(byte *sig, int sigl)
 {
-  if (sig[0] == 3)
-    return 19;
-  if (sig[0] == 4)
+  int off = -1;
+  if (sigl > 0 && sig[0] == 3)
+    off = 17;
+  else if (sigl > 0 && (sig[0] == 4 || sig[0] == 5))
     {
-      int off = 6 + (sig[4] << 8) + sig[5];
-      off += 2 + (sig[off] << 8) + sig[off + 1] + 2;
-      return off;
+      if (sigl < 8)
+        dodie("truncated signature");
+      off = 6 + (sig[4] << 8) + sig[5];
+      if (sigl < off + 2)
+        dodie("truncated signature");
+      off += 2 + (sig[off] << 8) + sig[off + 1];
     }
-  dodie("not a v3 or v4 signature");
-  return -1;
+  else if (sigl > 0 && sig[0] == 6)
+    {
+      if (sigl < 8 || sig[4] || sig[5])
+        dodie("truncated signature");
+      off = 8 + (sig[6] << 8) + sig[7];
+      if (sigl < off + 4 || sig[off] || sig[off + 1])
+        dodie("truncated signature");
+      off += 4 + (sig[off + 2] << 8) + sig[off + 3];
+    }
+  else
+    dodie("not a v3/4/5/6 signature");
+  if (sigl <= off + 2 || (sig[0] == 6 && sigl <= off + 2 + sig[off + 2] + 1))
+    dodie("truncated signature");
+  off += 2;	/* 16 bits of signed hash */
+  return off;
 }
 
 int
@@ -550,7 +553,7 @@ findsigpubalgo(byte *sig, int sigl)
   int algo = -1;
   if (sig[0] == 3)
     algo = sig[15];
-  else if (sig[0] == 4)
+  else if (sig[0] == 4 || sig[0] == 5 || sig[0] == 6)
     algo = sig[2];
   if (algo == 1)
     return PUB_RSA;

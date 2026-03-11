@@ -41,16 +41,16 @@ sign \- sign files or rpms
 .SH DESCRIPTION
 sign adds a cryptographic signature to a file. It can add a clearsign signature
 (-c option), create a detached signature (-d option), or add a signature block
-to a rpm package (-r option). If no mode is specified, sign does a rpm sign
-if the file name ends in ".rpm", otherwise it does a clearsign. If no
-file name is specified, sign reads from stdin and writes to stdout.
+to a rpm package (-r option). If no mode is specified, sign tries to deduce the
+signing mode from the file name. If no file name is specified, sign reads from
+stdin and writes to stdout.
 
 One can specify a specific user or hash method with the -u and -h option.
 Currently sign understands sha1, sha256, and sha512 hashes.
 
 sign does not create signatures by itself, it needs a running signing
 daemon (called signd) to do the work. The host and port information is read
-from the /etc/sign.conf file.
+from the /etc/sign.conf configuration file.
 
 The -k option makes sign print the keyid instead of signing a file, the
 -p option makes it print the public key.
@@ -60,9 +60,8 @@ to store the private key needs to be provided with the -P option. This
 private key can be used for signing by also using the -P option with the
 other modes. The pubkey of the generated key is printed to stdout.
 
-In case a X509 certificate
-is needed (e.g. for linux kernel modules), the key can be converted to
-a (self-signed) certificate by using the -C option.
+In case a X509 certificate is needed (e.g. for linux kernel module signing), the
+pgp key can be converted to a (self-signed) certificate by using the -C option.
 
 The expire time of existing keys can be extended with the -x option.
 
@@ -76,10 +75,10 @@ Clearsign
 Sign RPM package
 .TP
 .B \-d
-Create a detached gpg signature
+Create a detached pgp signature
 .TP
 .B \-D
-Create a unarmored detached gpg signature
+Create a unarmored detached pgp signature
 .TP
 .B \-O
 Create a raw X509 signature. Enforces RSA unless the -A option is used.
@@ -129,18 +128,25 @@ with the \-g option.
 .BI "\-S " checksumfile
 Usable only with \-r option: appends checksums into the file.
 .TP
+.B \-3
+Create a pgp v3 signature (default)
+.TP
 .B \-4
-Create a pgp v4 signature instead of v3
+Create a pgp v4 signature
 .TP
 .BI "\-A " pubkeyalgo
 Enforce that the specified algorithm (rsa, dsa, ecdsa, eddsa) is used for signing
 .TP
 .BI "\-\-cert " certfile
-Speficy a x509 certificate to use. A certificate is needed by some of the
+Specify the x509 certificate to use. A certificate is needed by some of the
 signing modes, like appx signing or kernel object signing.
 .TP
+.BI "\-\-othercerts " file
+Include a set of extra x509 certificates in the output. The specified file
+must contain a concatenation of DER encoded certificates.
+.TP
 .B \-\-cms-nocerts
-Do not include certificates in the pkcs7/cms signature
+Do not include any certificates in the pkcs7/cms signature
 .TP
 .B \-\-cms-keyid
 Identify the certificate with the keyid instead of the issuer/serial
@@ -176,7 +182,7 @@ to stdout.
 Extend key. Requires a private key to be specified with the \-P option.
 .TP
 .BI "\-C " pubkey
-Convert a gpg pubkey to a self-signed X509 certificate
+Convert a pgp pubkey to a self-signed X509 certificate
 
 
 .SH OTHER MODES
@@ -186,6 +192,9 @@ Ping signd. If ping was successful, return exit code 0.
 .TP
 .BR \-k
 Print the keyid of the key used for signing (root key or defined by \-u)
+.TP
+.BR \-\-fingerprint
+Print the fingerprint of the key used for signing (root key or defined by \-u)
 .TP
 .BR \-p
 Print the pubkey of of the key used for signing (root key or defined by \-u)
@@ -197,7 +206,7 @@ an encrypted totp uri ("otpath://totp/...").
 
 .SH SECURITY
 Unless the allow-unprivileged-ports option has been set to true for signd,
-sign needs to bind to a reserved port, in which case it works only for user
+sign needs to bind to a reserved port. In this case it works only for user
 root or needs to be installed suid-root. If the latter is the case, sign
 grants the users specified in the "allowuser" lines of the configuration
 the right to sign files.

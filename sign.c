@@ -74,6 +74,7 @@ int appxdetached = 0;
 static int cms_flags = 0;
 static int bulk_cpio;
 static int do_delsign;
+static int full_keyid;
 
 #define MODE_UNSET        0
 #define MODE_RPMSIGN      1
@@ -496,9 +497,10 @@ sign(char *filename, int isfilter, int mode)
     }
   else
     {
+      int sigclass = mode == MODE_CLEARSIGN ? 0x01 : 0x00;
       if (dov4sig)
-        v4sigtrail = genv4sigtrail(mode == MODE_CLEARSIGN ? 1 : 0, pubalgoprobe >= 0 ? pubalgoprobe : PUB_RSA, hashalgo, signtime, fingerprintprobe[0] ? fingerprintprobe : 0, &v4sigtraillen);
-      sigtrail[0] = mode == MODE_CLEARSIGN ? 0x01 : 0x00; /* class */
+        v4sigtrail = genv4sigtrail(sigclass, pubalgoprobe >= 0 ? pubalgoprobe : PUB_RSA, hashalgo, signtime, fingerprintprobe[0] ? fingerprintprobe : 0, &v4sigtraillen);
+      sigtrail[0] = sigclass;
       sigtrail[1] = signtime >> 24;
       sigtrail[2] = signtime >> 16;
       sigtrail[3] = signtime >> 8;
@@ -607,6 +609,8 @@ sign(char *filename, int isfilter, int mode)
       byte *issuer = findsigissuer(sig, sigl);
       if (!issuer)
 	dodie("issuer not found in signature");
+      if (full_keyid)
+        printf("%02X%02X%02X%02X", issuer[0], issuer[1], issuer[2], issuer[3]);
       printf("%02X%02X%02X%02X\n", issuer[4], issuer[5], issuer[6], issuer[7]);
       return 0;
     }
@@ -1660,17 +1664,20 @@ hashfile(char *filename, int isfilter)
 static void
 usage()
 {
-    fprintf(stderr, "usage:  sign [-v] [options]\n\n"
-            "  sign [-v] -c <file> [-u user] [-h hash]: add clearsign signature\n"
-            "  sign [-v] -d <file> [-u user] [-h hash]: create detached signature\n"
-            "  sign [-v] -r <file> [-u user] [-h hash]: add signature to rpm\n"
-            "  sign [-v] -a <file> [-u user] [-h hash]: add signature to appimage\n"
-            "  sign [-v] -k [-u user] [-h hash]: print key id\n"
-            "  sign [-v] -p [-u user] [-h hash]: print public key\n"
-            "  sign [-v] -g <type> <expire> <name> <email>: generate key\n"
-            "  sign [-v] -x <expire> <pubkey>: extend pubkey\n"
-            "  sign [-v] -C <pubkey>: create certificate\n"
-            "  sign [-v] -t: test connection to signd server\n"
+    fprintf(stderr, "usage:  sign [options] [file...]\n\n"
+            "  sign -c [file]: add clearsign signature\n"
+            "  sign -d [file]: create detached signature\n"
+            "  sign -r [file]: add signature to rpm\n"
+            "  sign -a <file>: add signature to appimage\n"
+            "  sign -k: print key id\n"
+            "  sign -p: print public key\n"
+            "  sign -g <type> <expire> <name> <email>: generate key\n"
+            "  sign -x <expire> <pubkey>: extend pubkey\n"
+            "  sign -C <pubkey>: create certificate from pubkey\n"
+            "  sign -t: test connection to signd server\n"
+            "       -v: be verbose\n"
+            "       -u user: select key to use\n"
+            "       -h hash: select digest\n"
             //"  -D: RAWDETACHEDSIGN\n"
             //"  -O: RAWOPENSSLSIGN\n"
             //"  --noheaderonly\n"
@@ -1856,6 +1863,8 @@ main(int argc, char **argv)
         }
       else if (!strcmp(opt, "--pkcs1pss"))
 	pkcs1pss = 1;
+      else if (!strcmp(opt, "-3"))
+	dov4sig = 0;
       else if (!strcmp(opt, "-4"))
 	dov4sig = 1;
       else if (argc > 1 && !strcmp(opt, "--cert"))
@@ -1895,6 +1904,11 @@ main(int argc, char **argv)
 	mode = MODE_TOTP;
       else if (!strcmp(opt, "--delsign"))
 	do_delsign = 1;
+      else if (!strcmp(opt, "--full-keyid"))
+	{
+	  mode = MODE_KEYID;
+	  full_keyid = 1;
+	}
       else if (!strcmp(opt, "--"))
 	break;
       else
