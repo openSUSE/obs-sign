@@ -316,7 +316,7 @@ doreq_raw(byte *buf, int inbufl, int bufl)
     reap_test_signd();
   if (l < 6)
     {
-      fprintf(stderr, "packet too small\n");
+      fprintf(stderr, l == 0 ? "empty reply from server\n" : "packet too small\n");
       return -1;
     }
   outl = buf[2] << 8 | buf[3];
