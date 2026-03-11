@@ -43,6 +43,7 @@ if (system("gpg --pinentry-mode=loopback --version >/dev/null 2>&1 </dev/null") 
 }
 
 my $sign_conf = "$tmp_dir/sign.conf";
+$ENV{SIGN_MODULEPATH} = "$FindBin::Bin/.." if -e "$FindBin::Bin/../signd_gcrypt";
 $ENV{SIGN_CONF} = $sign_conf;
 $ENV{SIGN_GCRYPT} = 'disable';
 spew("$sign_conf", "user: $user

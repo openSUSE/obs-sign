@@ -1,0 +1,110 @@
+##
+## SSL support
+##
+
+use IO::Socket::SSL ();
+use Net::SSLeay ();
+
+my $ssl_certfile;
+my $ssl_keyfile;
+my $ssl_verifyfile;
+my $ssl_verifydir;
+
+my $proxyssl_certfile;
+my $proxyssl_keyfile;
+my $proxyssl_verifyfile;
+my $proxyssl_verifydir;
+my $proxyssl_allow_certless;
+
+my @allow_subject;
+
+sub ssl_client {
+  my ($sock) = @_;
+  my %sslconf;
+  $sslconf{'SSL_verify_mode'} = &IO::Socket::SSL::SSL_VERIFY_PEER;
+  $sslconf{'SSL_key_file'} = $ssl_keyfile if $ssl_keyfile;
+  $sslconf{'SSL_cert_file'} = $ssl_certfile if $ssl_certfile;
+  $sslconf{'SSL_ca_file'} = $ssl_verifyfile if $ssl_verifyfile;
+  $sslconf{'SSL_ca_path'} = $ssl_verifydir if $ssl_verifydir;
+  my $ssl = IO::Socket::SSL->start_SSL($sock, %sslconf);
+  die("ssl handshake failed: $IO::Socket::SSL::SSL_ERROR\n") unless $ssl;
+  return $ssl;
+}
+
+sub ssl_server {
+  my ($sock) = @_;
+  my %sslconf = ( SSL_cert_file => $proxyssl_certfile, SSL_key_file => $proxyssl_keyfile );
+  $sslconf{'SSL_verify_mode'} = ($proxyssl_allow_certless ? 0 : &IO::Socket::SSL::SSL_VERIFY_FAIL_IF_NO_PEER_CERT) | &IO::Socket::SSL::SSL_VERIFY_PEER;
+  $sslconf{'SSL_ca_file'} = $proxyssl_verifyfile if $proxyssl_verifyfile;
+  $sslconf{'SSL_ca_path'} = $proxyssl_verifydir if $proxyssl_verifydir;
+  my $ssl = IO::Socket::SSL->start_SSL($sock, SSL_server => 1, %sslconf);
+  die("ssl handshake failed: $IO::Socket::SSL::SSL_ERROR\n") unless $ssl;
+  return $ssl;
+}
+
+sub ssl_checkclient {
+  my ($ssl) = @_;
+  return unless @allow_subject;
+  my $cert = $ssl->peer_certificate();
+  die("could not get peer certificate\n") unless $cert;
+  my $subject = Net::SSLeay::X509_get_subject_name($cert);
+  die("could not get subject from peer certificate\n") unless $subject;
+  $subject = Net::SSLeay::X509_NAME_print_ex($subject, &Net::SSLeay::XN_FLAG_RFC2253);
+  die("could not convert certificate subject to text\n") unless $subject;
+  for my $as (@allow_subject) {
+    if ($as =~ /^\/(.*)\/$/) {
+      my $as_re = $1;
+      return if $subject =~ /$as_re/;
+    } else {
+      return if $subject eq $as;
+    }
+  }
+  die("certificate denied: $subject\n");
+}
+
+sub ssl_config {
+  my ($cmd, @s) = @_;
+  if ($cmd eq 'ssl_keyfile:') {
+    $ssl_keyfile = $s[0];
+  } elsif ($cmd eq 'ssl_certfile:') {
+    $ssl_certfile = $s[0];
+  } elsif ($cmd eq 'ssl_verifyfile:') {
+    $ssl_verifyfile = $s[0];
+  } elsif ($cmd eq 'ssl_verifydir:') {
+    $ssl_verifydir = $s[0];
+  } elsif ($cmd eq 'proxyssl_keyfile:') {
+    $proxyssl_keyfile = $s[0] || '';
+  } elsif ($cmd eq 'proxyssl_certfile:') {
+    $proxyssl_certfile = $s[0] || '';
+  } elsif ($cmd eq 'proxyssl_verifyfile:') {
+    $proxyssl_verifyfile = $s[0] || '';
+  } elsif ($cmd eq 'proxyssl_verifydir:') {
+    $proxyssl_verifydir = $s[0] || '';
+  } elsif ($cmd eq 'ssl_allow_certless:' || $cmd eq 'proxyssl_allow_certless:') {
+    $proxyssl_allow_certless = ($s[0] eq '1' || $s[0] =~ /^true$/i) ? 1 : 0;
+  } elsif ($cmd eq 'allow_subject:') {
+    push @allow_subject, @s;
+  } else {
+    return 0;
+  }
+  return 1;
+}
+
+sub ssl_init {
+  my ($config) = @_;
+  $proxyssl_certfile = $ssl_certfile unless defined $proxyssl_certfile;
+  $proxyssl_keyfile = $ssl_keyfile unless defined $proxyssl_keyfile;
+  $proxyssl_verifyfile = $ssl_verifyfile unless defined $proxyssl_verifyfile;
+  $proxyssl_verifydir = $ssl_verifydir unless defined $proxyssl_verifydir;
+  if (($config->{'proxysockproto'} || '') eq 'ssl') {
+    die("no ssl_keyfile specified\n") unless $proxyssl_keyfile;
+    die("keyfile '$proxyssl_keyfile' does not exist\n") unless -f $proxyssl_keyfile;
+    die("no ssl_certfile specified\n") unless $proxyssl_certfile;
+    die("certfile '$proxyssl_certfile' does not exist\n") unless -f $proxyssl_certfile;
+    die("cannot use both proxyssl_allow_certless and allow_subject options\n") if $proxyssl_allow_certless && @allow_subject;
+  }
+  return 1;
+}
+
+return { 'init' => \&ssl_init, 'config' => \&ssl_config };
+# vim: syntax=perl

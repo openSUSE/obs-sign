@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 #
-# Copyright (c) 2022 SUSE LLC
+# Copyright (c) 2022-2026 SUSE LLC
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 as
@@ -21,8 +21,6 @@
 use Socket;
 use POSIX;
 use Fcntl qw(:DEFAULT :flock);
-use Math::BigInt;
-use MIME::Base64;
 use Encode;
 use bytes;
 use File::Temp qw/tempdir/;
@@ -32,26 +30,7 @@ use Digest::SHA;
 use strict;
 use warnings;
 
-my $have_gcrypt;
-eval {
-  require Crypt::GCrypt::Sexp;
-  require Crypt::GCrypt::MPI;
-  require Crypt::GCrypt;
-  die unless defined &Crypt::GCrypt::pk_sign;
-  Crypt::GCrypt::gcrypt_version();	# initialize lib
-  $have_gcrypt = 1;
-};
-eval {
-  require Crypt::PKCS11;
-  require Crypt::PKCS11::Attributes;
-  *Crypt::PKCS11::CKK_EC_EDWARDS = sub {0x00000040} unless defined &Crypt::PKCS11::CKK_EC_EDWARDS;
-  *Crypt::PKCS11::CKM_EDDSA = sub {0x00001057} unless defined &Crypt::PKCS11::CKM_EDDSA;
-};
-my $have_tpm;
-my $have_pkcs11;
-
 my @allows;
-my @allow_subject;
 my %map;
 my $signhost = '127.0.0.1';
 my $port = 5167;
@@ -61,8 +40,6 @@ my $gpg = '/usr/bin/gpg';
 my $phrases = '';
 my $aliases = '';
 my $encryptionkeys = '';
-my $openssl = 'openssl';
-my $opensslkeys = '';
 my $tmpdir = '/run/signd';
 my $patchclasstime;
 my $conf = '/etc/sign.conf';
@@ -72,47 +49,25 @@ my $logfile;
 my $pidfile = '/run/signd.pid';
 my $use_agent;
 my $agentsocket = [];
-my @pinentrymode;
 my $keycache = '';
 my $use_gcrypt_sign;
 my $use_gcrypt_privsign;
 my $use_gcrypt_decrypt;
 my $use_tpm_sign;
 my $use_pkcs11_sign;
-my $ssl_certfile;
-my $ssl_keyfile;
-my $ssl_verifyfile;
-my $ssl_verifydir;
-my $tpm_ctxcache = '';
-my $tpm_device = '/dev/tpmrm0';
-my $tpm_rm;
-my $tpm_lock;
-my $tpm_lock_fd;
-my $pkcs11_config;
-my $pkcs11_handle;
-my $keybackup;
 my $proxyport;
 my $proxysockproto;
-my $proxyssl_certfile;
-my $proxyssl_keyfile;
-my $proxyssl_verifyfile;
-my $proxyssl_verifydir;
+my $modulepath = '/usr/lib/signd';
+my %modules;
 
-my $restricted_gnupghome = '';
-my $restricted_phrases = '';
-my $restricted_aliases = '';
-my $privileged_gnupghome = '';
-my $privileged_logfile;
-my $system_gnupghome = '';
-my $extranonce = '';
-my $backup_user = '';
-my @backup_locations;
-
+my $testmode;
+my @pinentrymode;
 my $signaddr;
 
 # request data
 my $oldproto = 0;
 my $peer = 'unknown';
+
 
 
 ##
@@ -498,745 +453,6 @@ sub decode_decrypted_data {
   return substr($pkg, 2 + $fnl + 4);
 }
 
-
-##
-## openssl support (currently only usable for mldsa65/mldsa87 signing)
-##
-
-# this must match the code of x509_signedattrs() in x509.c
-sub create_cms_signer_info {
-  my ($hash, $t) = @_;
-  my @sa;
-  my $hl = length($hash);
-  die if $hl == 0 || $hl + 15 >= 128;
-  push @sa, pack('H*', '301806092a864886f70d010903310b06092a864886f70d010701');	# content type
-  if ($t) {
-    my @gt = gmtime($t);
-    if ($gt[5] >= 50 && $gt[5] < 150) {
-      $t = sprintf "%02d%02d%02d%02d%02d%02dZ", $gt[5] % 100, $gt[4] + 1, @gt[3,2,1,0];
-      die unless length($t) == 13;
-      push @sa, pack('H*', '301c06092a864886f70d010905310f170d').$t;		# sign time
-    } else {
-      $t = sprintf "%04d%02d%02d%02d%02d%02dZ", $gt[5] + 1900, $gt[4] + 1, @gt[3,2,1,0];
-      die unless length($t) == 15;
-      push @sa, pack('H*', '301e06092a864886f70d0109053111180f').$t;		# sign time
-    }
-  }
-  push @sa, pack('CCH*CCC', 0x30, $hl + 15, '06092a864886f70d01090431', $hl + 2, 4, $hl).$hash;
-  my $sa = join('', sort(@sa));
-  my $salen = length($sa);
-  die if $salen > 255;
-  return ($salen < 128 ? pack('CC', 0x31, $salen) : pack('CCC', 0x31, 0x81, $salen)).$sa;
-}
-
-sub openssl_find_key {
-  my ($user) = @_;
-  die("no opensslkeys directory configured\n") unless $opensslkeys;
-  die("illegal openssl key $user\n") if $user =~ /\.prv$/;
-  die("unknown openssl key $user\n") unless -s "$opensslkeys/$user";
-  my @provider;
-  if (-s "$opensslkeys/$user.prv") {
-    my $provider = slurp_first_line("$opensslkeys/$user.prv");
-    push @provider, '-provider', $1, '-provider', 'default' if $provider =~ /(\S+)/;
-  }
-  return "$opensslkeys/$user", @provider;
-}
-
-sub sign_with_openssl {
-  my ($phrasefile, $info, $hash, $hashalgo, $replyv4) = @_;
-  die("bad hash $hash\n") unless $hash =~ /^((?:[0-9a-fA-F][0-9a-fA-F])+)\@((?:00|01|43)[0-9a-fA-F]{8})$/;
-  my $extra = $2;
-  $hash = $1;
-  $hashalgo = lc($hashalgo);
-  my $pgphashalgo = get_pgphashalgo($hashalgo);
-  die("sign_with_openssl: bad hashalgo $hashalgo\n") unless $pgphashalgo;
-  my ($keyfile, @provider) = openssl_find_key($info->{'user'});
-  my $file = "$tmpdir/opensslin.$$";
-  my @args = ('-pkeyopt', "digest:$hashalgo");
-  if (substr($extra, 0, 2) eq '43') {
-    # create and sign cms signer info block
-    $hash = unpack('H*', create_cms_signer_info(pack('H*', $hash), unpack('N', pack('H*', substr($extra, 2, 8)))));
-    @args = ('-rawin', '-in', $file);
-  }
-  spew($file, pack('H*', $hash));
-  push @args, '-passin', "file:$phrasefile" if $phrasefile ne '/dev/null' && -s $phrasefile;
-  my $sig = rungpg_fatal($file, [ $file ], $openssl, 'pkeyutl', @provider, '-inkey', $keyfile, '-sign', @args);
-  unlink($file);
-  my $fingerprint = "\0\0\0\0" x 10;
-  my $pgppubalgo;
-  $pgppubalgo = 100 if length($sig) == 3309;
-  $pgppubalgo = 101 if length($sig) == 4627;
-  die("bad signature length\n") unless $pgppubalgo;
-  my $sigdata = encodempi(pack('C', 0x40).$sig);
-  return wrap_into_pgpsig_v4($extra, $fingerprint, $pgppubalgo, $pgphashalgo, $hash, $sigdata) if $replyv4;
-  return wrap_into_pgpsig_v3($extra, $fingerprint, $pgppubalgo, $pgphashalgo, $hash, $sigdata);
-}
-
-sub openssl_pubkey {
-  my ($user) = @_;
-  my ($keyfile, @provider) = openssl_find_key($user);
-  return rungpg_fatal("/dev/null", undef, $openssl, 'pkey', @provider, '-in', $keyfile, '-pubout');
-}
-
-
-##
-## libgcrypt support
-##
-
-sub sign_with_gcrypt {
-  my ($info, $hash, $hashalgo, $replyv4) = @_;
-  die("sign_with_gcrypt: missing fingerprint\n") unless $info->{'fingerprint'};
-  die("bad hash $hash\n") unless $hash =~ /^((?:[0-9a-fA-F][0-9a-fA-F])+)\@(0[01][0-9a-fA-F]{8})$/;
-  my $extra = $2;
-  $hash = $1;
-  $hashalgo = lc($hashalgo);
-  my $pgphashalgo = get_pgphashalgo($hashalgo);
-  die("sign_with_gcrypt: bad hashalgo $hashalgo\n") unless $pgphashalgo;
-  my $sigdata;
-  if ($info->{'algo'} == 1) {
-    die("sign_with_gcrypt: missing MPIs\n") unless @{$info->{'mpis'} || []} == 2 && @{$info->{'smpis'} || []} == 4;
-    my ($n, $e, $d, $p, $q, $u) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$info->{'mpis'}}, @{$info->{'smpis'}};
-    my $data = Crypt::GCrypt::Sexp->build("(data (flags pkcs1) (hash $hashalgo %b))", pack('H*', $hash));
-    my $skey = Crypt::GCrypt::Sexp->build("(private-key (rsa (n %M) (e %M) (d %M) (p %M) (q %M) (u %M)))", $n, $e, $d, $p, $q, $u);
-    my $res = Crypt::GCrypt::pk_sign($data, $skey);
-    my $sv = $res->nth_mpi(1, Crypt::GCrypt::MPI::FMT_USG(), 's');
-    die("could not extract sign result\n") unless $sv;
-    $sigdata = $sv->print(Crypt::GCrypt::MPI::FMT_PGP());
-  } elsif ($info->{'algo'} == 17) {
-    die("sign_with_gcrypt: missing MPIs\n") unless @{$info->{'mpis'} || []} == 4 && @{$info->{'smpis'} || []} == 1;
-    my $qlen = length($info->{'mpis'}->[1]);
-    my $hashraw = substr(pack('H*', $hash), 0, $qlen < 20 ? 20 : $qlen);
-    my ($p, $q, $g, $y, $x) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$info->{'mpis'}}, @{$info->{'smpis'}};
-    my $data = Crypt::GCrypt::Sexp->build("(data (flags raw) (value %b))", $hashraw);
-    my $skey = Crypt::GCrypt::Sexp->build("(private-key (dsa (p %M) (q %M) (g %M) (y %M) (x %M)))", $p, $q, $g, $y, $x);
-    my $res = Crypt::GCrypt::pk_sign($data, $skey);
-    my $rv = $res->nth_mpi(1, Crypt::GCrypt::MPI::FMT_USG(), 'r');
-    my $sv = $res->nth_mpi(1, Crypt::GCrypt::MPI::FMT_USG(), 's');
-    $sigdata = $rv->print(Crypt::GCrypt::MPI::FMT_PGP()).$sv->print(Crypt::GCrypt::MPI::FMT_PGP());
-  } elsif ($info->{'algo'} == 19) {
-    die("sign_with_gcrypt: missing MPIs\n") unless @{$info->{'mpis'} || []} == 1 && @{$info->{'smpis'} || []} == 1;
-    my $curve;
-    $curve = 'NIST P-256' if $info->{'curve'} eq $pgp_curve_nistp256;
-    $curve = 'NIST P-384' if $info->{'curve'} eq $pgp_curve_nistp384;
-    die("sign_with_gcrypt: unsupported ECDSA curve\n") unless $curve;
-    my $hashraw = pack('H*', $hash);
-    $hashraw = substr($hashraw, 0, 32) if $curve eq 'NIST P-256';
-    $hashraw = substr($hashraw, 0, 48) if $curve eq 'NIST P-384';
-    my ($q, $d) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$info->{'mpis'}}, @{$info->{'smpis'}};
-    my $data = Crypt::GCrypt::Sexp->build("(data (flags raw) (value %b))", $hashraw);
-    my $skey = Crypt::GCrypt::Sexp->build("(private-key (ecc (curve \"$curve\") (q %M) (d %M)))", $q, $d);
-    my $res = Crypt::GCrypt::pk_sign($data, $skey);
-    my $rv = $res->nth_mpi(1, Crypt::GCrypt::MPI::FMT_USG(), 'r');
-    my $sv = $res->nth_mpi(1, Crypt::GCrypt::MPI::FMT_USG(), 's');
-    $sigdata = $rv->print(Crypt::GCrypt::MPI::FMT_PGP()).$sv->print(Crypt::GCrypt::MPI::FMT_PGP());
-  } elsif ($info->{'algo'} == 22) {
-    my $curve;
-    $curve = 'Ed25519' if $info->{'curve'} eq $pgp_curve_ed25519;
-    die("sign_with_gcrypt: unsupported EdDSA curve\n") unless $curve;
-    die("sign_with_gcrypt: missing MPIs\n") unless @{$info->{'mpis'} || []} == 1 && @{$info->{'smpis'} || []} == 1;
-    my ($d) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$info->{'smpis'}};
-    my $data = Crypt::GCrypt::Sexp->build("(data (flags eddsa) (hash-algo sha512) (value %b))", pack('H*', $hash));
-    my $skey = Crypt::GCrypt::Sexp->build("(private-key (ecc (curve \"$curve\") (d %M)))", $d);
-    my $res = Crypt::GCrypt::pk_sign($data, $skey);
-    my $rv = $res->nth_mpi(1, Crypt::GCrypt::MPI::FMT_USG(), 'r');
-    my $sv = $res->nth_mpi(1, Crypt::GCrypt::MPI::FMT_USG(), 's');
-    $sigdata = $rv->print(Crypt::GCrypt::MPI::FMT_PGP()).$sv->print(Crypt::GCrypt::MPI::FMT_PGP());
-  } else {
-    die("sign_with_gcrypt: unsupported pubkey algorithm $info->{'algo'}\n");
-  }
-  return wrap_into_pgpsig_v4($extra, $info->{'fingerprint'}, $info->{'algo'}, $pgphashalgo, $hash, $sigdata) if $replyv4;
-  return wrap_into_pgpsig_v3($extra, $info->{'fingerprint'}, $info->{'algo'}, $pgphashalgo, $hash, $sigdata);
-}
-
-sub can_sign_with_gcrypt {
-  my ($info) = @_;
-  return 0 unless $have_gcrypt && $info && $info->{'algo'};
-  return 0 unless $info->{'smpis'};
-  return 1 if $info->{'algo'} == 1;
-  return 1 if $info->{'algo'} == 17;
-  return 1 if $info->{'algo'} == 22 && $info->{'curve'} eq $pgp_curve_ed25519;
-  return 1 if $info->{'algo'} == 19 && $info->{'curve'} eq $pgp_curve_nistp256;
-  return 1 if $info->{'algo'} == 19 && $info->{'curve'} eq $pgp_curve_nistp384;
-  return 0;
-}
-
-sub decrypt_cfb_with_gcrypt {
-  my ($cipheralgo, $key, $edata) = @_;
-  my ($cipher, $blklen);
-  if ($cipheralgo == 7) {	# AES128
-    die("bad cipher key length\n") unless length($key) == 16;
-    $blklen = 16;
-    $cipher = Crypt::GCrypt->new('type' => 'cipher', 'algorithm' => 'aes128', 'mode' => 'cfb', 'padding' => 'none');
-  } elsif ($cipheralgo == 9) {	# AES256
-    die("bad cipher key length\n") unless length($key) == 32;
-    $blklen = 16;
-    $cipher = Crypt::GCrypt->new('type' => 'cipher', 'algorithm' => 'aes256', 'mode' => 'cfb', 'padding' => 'none');
-  }
-  die("decrypt_with_gcrypt: unsupported cipher algorithm $cipheralgo\n") unless $cipher && $blklen;
-  $cipher->start('decrypting');
-  $cipher->setkey($key);
-  my $encrypted = $edata->{'encrypted'};
-  my $padlen = length($encrypted) % $blklen;
-  my $pad = $padlen ? ("\0" x ($blklen - $padlen)) : '';
-  my $plain = $cipher->decrypt("$encrypted$pad");
-  $plain .= $cipher->finish();
-  $plain = substr($plain, 0, length($encrypted)) if $padlen;
-  die("bad DEK data\n") if length($plain) < $blklen + 2;
-  my @chk = unpack('nn', substr($plain, $blklen - 2, 4));
-  die("DEK mismatch\n") if $chk[0] != $chk[1];
-  if ($edata->{'mdc'}) {
-    die("MDC mismatch\n") if length($plain) < $blklen + 2 + 22 || unpack('n', substr($plain, -22, 2)) != 0xd314;
-    die("MDC mismatch\n") if substr($plain, -20) ne Digest::SHA::sha1(substr($plain, 0, -20));
-    substr($plain, -22, 22, '');
-  }
-  return substr($plain, $blklen + 2);
-}
-
-sub decrypt_aead_with_gcrypt {
-  my ($cipheralgo, $key, $edata) = @_;
-  die("cipher algo mismatch\n") if $edata->{'aead_cipher'} != $cipheralgo;
-  my $chunksize = $edata->{'aead_chunksize'};
-  die("illegal chunk size\n") unless $chunksize >= 0 && $chunksize <= 56;
-  $chunksize = 1 << ($chunksize + 6);
-  my ($ciphermode, $iv_size);
-  ($ciphermode, $iv_size) = ('eax', 16) if $edata->{'aead_algo'} == 1;
-  ($ciphermode, $iv_size) = ('ocb', 15) if $edata->{'aead_algo'} == 2;
-  die("decrypt_with_gcrypt: unsupported aead algorithm $edata->{'aead_algo'}\n") unless $ciphermode && $iv_size;
-  my $encrypted = $edata->{'encrypted'};
-  die("truncated encrypted data\n") unless length($encrypted) >= $iv_size + 16;
-  my $aead_iv = substr($encrypted, 0, $iv_size, '');
-  my $finaltag = substr($encrypted, -16, 16, '');
-  my $cipher;
-  if ($cipheralgo == 7) {	# AES128
-    $cipher = Crypt::GCrypt->new('type' => 'cipher', 'algorithm' => 'aes128', 'mode' => $ciphermode, 'padding' => 'none');
-  } elsif ($cipheralgo == 9) {	# AES256
-    $cipher = Crypt::GCrypt->new('type' => 'cipher', 'algorithm' => 'aes256', 'mode' => $ciphermode, 'padding' => 'none');
-  }
-  die("decrypt_with_gcrypt: unsupported cipher algorithm $cipheralgo\n") unless $cipher;
-  $cipher->start('decrypting');
-  $cipher->setkey($key);
-  my $plain = '';
-  my $chunkindex = 0;
-  while (length($encrypted)) {
-    my $chunk = substr($encrypted, 0, $chunksize + 16, '');
-    die("truncated data\n") unless length($chunk) >= 16;
-    my $tag = substr($chunk, -16, 16, '');
-    my $nonce = $aead_iv;
-    substr($nonce, -8, 8) ^= pack('NN', 0, $chunkindex);
-    $cipher->setiv($nonce);
-    my $ad = pack('CCCCCNN', 0xd4, 1, $edata->{'aead_cipher'}, $edata->{'aead_algo'}, $edata->{'aead_chunksize'}, 0, $chunkindex);
-    $cipher->authenticate($ad);
-    $cipher->final();
-    my $decrypted = $cipher->decrypt_raw($chunk);
-    $cipher->checktag($tag);
-    $plain .= $decrypted;
-    $chunkindex++;
-  }
-  my $nonce = $aead_iv;
-  substr($nonce, -8, 8) ^= pack('NN', 0, $chunkindex);
-  $cipher->setiv($nonce);
-  my $ad = pack('CCCCCNNNN', 0xd4, 1, $edata->{'aead_cipher'}, $edata->{'aead_algo'}, $edata->{'aead_chunksize'}, 0, $chunkindex, 0, length($plain));
-  $cipher->authenticate($ad);
-  $cipher->final();
-  $cipher->decrypt_raw('');
-  $cipher->checktag($finaltag);
-  $cipher->finish();
-  return $plain;
-}
-
-sub decrypt_cipher_with_gcrypt {
-  my ($cipheralgo, $key, $edata) = @_;
-  return decrypt_cfb_with_gcrypt($cipheralgo, $key, $edata) if $edata->{'method'} eq 'cfb';
-  return decrypt_aead_with_gcrypt($cipheralgo, $key, $edata) if $edata->{'method'} eq 'aead';
-  die("decrypt_with_gcrypt: unsupported method $edata->{'method'}\n");
-}
-
-sub decrypt_with_gcrypt {
-  my ($info, $einfo, $edata) = @_;
-  die("decrypt_with_gcrypt: encryption algo mismatch\n") if $info->{'algo'} != $einfo->{'algo'};
-  my $value;
-  if ($info->{'algo'} == 1) {
-    die("decrypt_with_gcrypt: missing MPIs\n") unless @{$info->{'mpis'} || []} == 2 && @{$info->{'smpis'} || []} == 4 && @{$einfo->{'mpis'} || []} == 1;
-    my ($av) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$einfo->{'mpis'}};
-    my ($n, $e, $d, $p, $q, $u) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$info->{'mpis'}}, @{$info->{'smpis'}};
-    my $encval = Crypt::GCrypt::Sexp->build("(enc-val (flags) (rsa (a %M)))", $av);
-    my $skey = Crypt::GCrypt::Sexp->build("(private-key (rsa (n %M) (e %M) (d %M) (p %M) (q %M) (u %M)))", $n, $e, $d, $p, $q, $u);
-    my $res = Crypt::GCrypt::pk_decrypt($encval, $skey);
-    $value = $res->nth_data(1, 'value');
-  } elsif ($info->{'algo'} == 16) {
-    die("decrypt_with_gcrypt: missing MPIs\n") unless @{$info->{'mpis'} || []} == 3 && @{$info->{'smpis'} || []} == 1 && @{$einfo->{'mpis'} || []} == 2;
-    my ($av, $bv) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$einfo->{'mpis'}};
-    my ($p, $g, $y, $x) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$info->{'mpis'}}, @{$info->{'smpis'}};
-    my $encval = Crypt::GCrypt::Sexp->build("(enc-val (flags) (elg (a %M) (b %M)))", $av, $bv);
-    my $skey = Crypt::GCrypt::Sexp->build("(private-key (elg (p %M) (g %M) (y %M) (x %M)))", $p, $g, $y, $x);
-    my $res = Crypt::GCrypt::pk_decrypt($encval, $skey);
-    $value = $res->nth_data(1, 'value');
-  } else {
-    die("decrypt_with_gcrypt: unsupported encryption algorithm $info->{'algo'}\n");
-  }
-  $value = substr($value, 1) if unpack('C', $value) == 0;
-  die("decryption error\n") unless unpack('C', $value) == 2;
-  my $idx = index($value, "\0");
-  die("decryption error\n") unless $idx >= 0;
-  $value = substr($value, $idx + 1);
-  my $cipheralgo = unpack('C', substr($value, 0, 1, ''));
-  my $csum = unpack('n', substr($value, -2, 2, ''));
-  my $csum2 = 0;
-  $csum2 += $_ for unpack('C*', $value);
-  die("decryption error\n") unless $csum == ($csum2 % 65536);
-  return decrypt_cipher_with_gcrypt($cipheralgo, $value, $edata);
-}
-
-sub can_decrypt_with_gcrypt {
-  my ($einfo, $edata) = @_;
-  return 0 unless $have_gcrypt && $einfo && $einfo->{'algo'};
-  return 0 unless $einfo->{'algo'} == 1 || $einfo->{'algo'} == 16;
-  if ($edata && $edata->{'method'} eq 'aead') {
-    return 0 unless defined &Crypt::GCrypt::authenticate;
-    return 0 unless $edata->{'aead_algo'} == 1 || $edata->{'aead_algo'} == 2;
-    return 0 unless $edata->{'aead_cipher'} == 7 || $edata->{'aead_cipher'} == 9;
-  }
-  return 1;
-}
-
-sub pgp_s2k_is {
-  my ($hashalgo, $salt, $passphrase, $count, $outsize) = @_;
-  die("unsupported s2k_is params\n") if $hashalgo != 10 || length($salt) != 8 || $count < 1024 || $outsize > 32 || $count > 131072;
-  my $l = length($salt) + length($passphrase);
-  $count = $l if $count < $l;
-  my $blob = "$salt$passphrase" x (1 + int($count / $l));
-  substr($blob, $count, length($blob), '');
-  return substr(Digest::SHA::sha512($blob), 0, $outsize);
-}
-
-sub decrypt_sym_with_gcrypt {
-  my ($info, $salt, $edata) = @_;
-  my $keylen;
-  $keylen = 32 if $info->{'cipheralgo'} == 9;
-  die("decrypt_sym_with_gcrypt: unsupported cipher algorithm $info->{'cipheralgo'}\n") unless $keylen;
-  my $s2kcnt = (16 + ($info->{'s2kcnt'} & 0x0f)) << (6 + (($info->{'s2kcnt'} >> 4) & 0x0f));
-  my $secret = pgp_s2k_is($info->{'s2kalgo'}, $salt, $info->{'secret'}, $s2kcnt, $keylen);
-  my $decrypted = decrypt_cipher_with_gcrypt($info->{'cipheralgo'}, $secret, $edata);
-  return decode_decrypted_data($decrypted);
-}
-
-sub can_decrypt_sym_with_gcrypt {
-  my ($info, $edata) = @_;
-  return 0 unless $have_gcrypt && $info && defined($info->{'secret'});
-  return 0 if ($info->{'s2kalgo'} || 0) != 10;
-  return 0 if ($info->{'cipheralgo'} || 0) != 9;
-  return 0 if ($info->{'s2kcnt'} || 0) > 0x70;
-  return 1;
-}
-
-
-##
-## tpm support
-##
-
-sub tpm_initialize {
-  return unless $have_gcrypt;	# needed to parse private key
-  my $tpmfd;
-  return unless open($tpmfd, '+<', $tpm_device);
-  close $tpmfd;
-  $tpm_rm = 1 if $tpm_device =~ /tpmrm/;
-  tpm_flush_keyctx() if $tpm_ctxcache;
-  die("need a tpm lock file\n") if !$tpm_rm && !$tpm_lock;
-  $have_tpm = 1;
-}
-
-sub can_sign_with_tpm {
-  my ($info) = @_;
-  return 0 unless $have_tpm && $info && $info->{'algo'};
-  return 0 unless $info->{'shadowed-tpm2-v1'} && $info->{'shadowed-tpm2-v1'}->[0] ne 'pkcs11';
-  return 1 if $info->{'algo'} == 1;
-  return 1 if $info->{'algo'} == 19;
-  return 0;
-}
-
-sub tpm_open {
-  my $tpmfd;
-  if (!$tpm_rm) {
-    open($tpm_lock_fd, '>>', $tpm_lock) || die("$tpm_lock: $!\n");
-    flock($tpm_lock_fd, LOCK_EX) || die("tpm lock flock: $!\n");
-  }
-  open($tpmfd, '+<', $tpm_device) || die("$tpm_device: $!\n");
-  fcntl($tpmfd, F_SETFD, FD_CLOEXEC);
-  return $tpmfd;
-}
-
-sub tpm_close {
-  my ($tpmfd) = @_;
-  close($tpmfd);
-  close($tpm_lock_fd) unless $tpm_rm;
-}
-
-my $tpm_auth_null_pw = pack('NnCn', 0x40000009, 0, 0, 0);
-my $tpm_ticket_null_hashcheck = pack('nNn', 0x8024, 0x40000007, 0);
-
-my $tpm_alg_sha1   = 0x04;
-my $tpm_alg_aes    = 0x06;
-my $tpm_alg_sha256 = 0x0b;
-my $tpm_alg_sha512 = 0x0d;
-my $tpm_alg_null   = 0x10;
-my $tpm_alg_rsassa = 0x14;
-my $tpm_alg_ecdsa  = 0x18;
-my $tpm_alg_ecc    = 0x23;
-my $tpm_alg_cfb    = 0x43;
-
-my $tpm_ecc_nist_p256 = 0x03;
-
-sub tpm_pw_auth {
-  my ($pw) = @_;
-  return pack('NnCn', 0x40000009, 0, 0, length($pw)).$pw;
-}
-
-sub tpm_send {
-  my ($fd, $cmd, $handle, $param, $auth) = @_;
-  my $tag = $auth ? 0x8002  : 0x8001;
-  die("tpm_send: need a handle for auth\n") if $auth && !$handle;
-  my $c = $param;
-  $c = pack('N', length($auth)).$auth.$c if $auth;
-  $c = pack('N', $handle).$c if $handle;
-  $c = pack('nNN', $tag, length($c) + 10, $cmd).$c;
-  my $r = syswrite($fd, $c);
-  die("tpm write: $!\n") unless $r && $r == length($c);
-}
-
-sub tpm_recv {
-  my ($fd, $auth, $nhandle) = @_;
-  my $c = '';
-  my $r = sysread($fd, $c, 65536);
-  die("tpm read: $!\n") unless $r && $r >= 10;
-  my ($tag, $len, $res) = unpack('nNN', substr($c, 0, 10, ''));
-  die("tpm read length mismatch\n") unless $r == $len;
-  die("tpm read tag mismatch\n") unless $tag == ($auth && !$res ? 0x8002  : 0x8001);
-  die(sprintf("tpm error: 0x%04x\n", $res)) if $res;
-  die("unsupported nhandler size\n") unless defined($nhandle) && ($nhandle == 0 || $nhandle == 1);
-  my $rhandle = $nhandle ? unpack('N', substr($c, 0, 4, '')) : undef;
-  if ($tag == 0x8002) {
-    die("tpm read length error\n") unless $r >= 4;
-    my $pl = unpack('N', $c);
-    die("tpm read length error\n") unless length($c) >= 4 + $pl;
-    return $rhandle, substr($c, 4, $pl), substr($c, 4 + $pl);
-  }
-  return $rhandle, $c;
-}
-
-sub tpm_cmd {
-  my ($fd, $cmd, $handle, $param, $auth, $nhandle) = @_;
-  tpm_send($fd, $cmd, $handle, $param, $auth);
-  return tpm_recv($fd, $auth, $nhandle);
-}
-
-sub tpm_getcap {
-  my ($fd, $cap, $prop, $maxcnt) = @_;
-  my $param = pack('NNN', $cap, $prop, $maxcnt);
-  my $d = (tpm_cmd($fd, 0x017a, undef, pack('NNN', $cap, $prop, $maxcnt), undef, 0))[1];
-  my ($more, $rcap, $rcnt) = unpack('CNN', $d);
-  die("bad answer\n") unless $rcap == $cap;
-  $d = substr($d, 9);
-  return unpack('N*', $d) if $cap == 1;
-  die("tpm_getcap: unsupported query\n");
-}
-
-sub tpm_flush_context {
-  my ($fd, $handle) = @_;
-  tpm_cmd($fd, 0x165, $handle, '', undef, 0);
-}
-
-sub tpm_context_save {
-  my ($fd, $handle) = @_;
-  return (tpm_cmd($fd, 0x162, $handle, '', undef, 0))[1];
-}
-
-sub tpm_context_load {
-  my ($fd, $c) = @_;
-  return (tpm_cmd($fd, 0x161, undef, $c, undef, 1))[0];
-}
-
-sub tpm_create_primary {
-  my ($fd, $handle, $auth) = @_;
-  my $sensitive = pack('nn', 0, 0);
-  my $public = pack('nnNnnnnnnnN', $tpm_alg_ecc, $tpm_alg_sha256, 0x30472, 0, $tpm_alg_aes, 128, $tpm_alg_cfb, $tpm_alg_null, $tpm_ecc_nist_p256, $tpm_alg_null, 0);
-  my $outside_info = '';
-  my $param = pack('n', length($sensitive)).$sensitive.pack('n', length($public)).$public.pack('n', length($outside_info)).$outside_info.pack('N', 0);
-  return (tpm_cmd($fd, 0x131, $handle, $param, $auth, 1))[0];
-}
-
-sub tpm_load {
-  my ($fd, $handle, $private, $public, $auth) = @_;
-  return (tpm_cmd($fd, 0x157, $handle, "$private$public", $auth, 1))[0];
-}
-
-sub tpm_sign {
-  my ($fd, $handle, $sig_scheme, $sig_scheme_details, $digest, $auth) = @_;
-  my $scheme = pack('nn', $sig_scheme, $sig_scheme_details);
-  my $validation = $tpm_ticket_null_hashcheck;
-  my $param = pack('n', length($digest)).$digest.$scheme.$validation;
-  my ($rhandle, $rparam, $rauth) = tpm_cmd($fd, 0x15d, $handle, $param, $auth, 0);
-  my ($rsig_scheme, $rdigest_alg, $siglen) = unpack('nnn', $rparam);
-  die("reply signature scheme does not match request\n") if $rsig_scheme != $sig_scheme;
-  if ($rsig_scheme == $tpm_alg_rsassa) {
-    return substr($rparam, 6, $siglen);
-  } elsif ($rsig_scheme == $tpm_alg_ecdsa) {
-    my $siglen2 = unpack('n', substr($rparam, 6 + $siglen, 2));
-    return substr($rparam, 6, $siglen), substr($rparam, 6 + $siglen + 2, $siglen2);
-  }
-  die("unsupported signature scheme\n");
-}
-
-sub tpm_flush_all_transient {
-  my ($tpmfd) = @_;
-  tpm_flush_context($tpmfd, $_) for tpm_getcap($tpmfd, 0x00000001, 0x80000000, 1024);
-}
-
-sub tpm_load_keyctx {
-  my ($tpmfd, $keygrip) = @_;
-  return undef unless $keygrip && $tpm_ctxcache && -s "$tpm_ctxcache/$keygrip";
-  my $ctx = slurp("$tpm_ctxcache/$keygrip");
-  return tpm_context_load($tpmfd, $ctx);
-}
-
-sub tpm_save_keyctx {
-  my ($tpmfd, $handle, $keygrip) = @_;
-  return unless $keygrip && $tpm_ctxcache && -d $tpm_ctxcache;
-  my $ctx = tpm_context_save($tpmfd, $handle);
-  spew("$tpm_ctxcache/.$$.$keygrip", $ctx);
-  rename("$tpm_ctxcache/.$$.$keygrip", "$tpm_ctxcache/$keygrip");
-}
-
-sub tpm_flush_keyctx {
-  return unless $tpm_ctxcache && -d $tpm_ctxcache;
-  unlink("$tpm_ctxcache/$_") for ls($tpm_ctxcache);
-}
-
-sub tpm_key2handle {
-  my ($tpmfd, $tpmdata, $keygrip) = @_;
-  die unless @{$tpmdata || []} == 3;
-  my $handle;
-  $handle = eval { tpm_load_keyctx($tpmfd, $keygrip) } if $keygrip;
-  return $handle if $handle;
-  my $h = tpm_create_primary($tpmfd, 0 + $tpmdata->[0], $tpm_auth_null_pw);
-  $handle = eval { tpm_load($tpmfd, $h, $tpmdata->[2], $tpmdata->[1], $tpm_auth_null_pw) };
-  my $err = $@;
-  tpm_flush_context($tpmfd, $h);
-  die $err if $err;
-  eval { tpm_save_keyctx($tpmfd, $handle, $keygrip) } if $keygrip;
-  return $handle;
-}
-
-sub sign_with_tpm {
-  my ($phrasefile, $info, $hash, $hashalgo, $replyv4) = @_;
-  die("sign_with_tpm: missing fingerprint\n") unless $info->{'fingerprint'};
-  die("bad hash $hash\n") unless $hash =~ /^((?:[0-9a-fA-F][0-9a-fA-F])+)\@(0[01][0-9a-fA-F]{8})$/;
-  my $extra = $2;
-  $hash = $1;
-  $hashalgo = lc($hashalgo);
-  my $pgphashalgo = get_pgphashalgo($hashalgo);
-  die("sign_with_tpm: bad hashalgo $hashalgo\n") unless $pgphashalgo;
-  my $digest = pack('H*', $hash);
-  my $digest_alg;
-  $digest_alg = $tpm_alg_sha1 if $hashalgo eq 'sha1';
-  $digest_alg = $tpm_alg_sha256 if $hashalgo eq 'sha256';
-  $digest_alg = $tpm_alg_sha512 if $hashalgo eq 'sha512';
-  die("sign_with_tpm: unsupported hash algo '$hashalgo'\n") unless $digest_alg;
-  my $scheme;
-  $scheme = $tpm_alg_rsassa if $info->{'algo'} == 1;
-  $scheme = $tpm_alg_ecdsa if $info->{'algo'} == 19;
-  die("sign_with_tpm: unsupported pubkey algo '$info->{'algo'}'\n") unless $scheme;
-  my $passphrase = '';
-  $passphrase = slurp_first_line($phrasefile) if defined $phrasefile;
-  my ($tpmfd, $handle);
-  if ($info->{'tpm_keep_open'} && $info->{'tpm_keep_open_fd'}) {
-    $tpmfd = delete $info->{'tpm_keep_open_fd'};
-    $handle = delete $info->{'tpm_keep_open_handle'};
-  } else {
-    $tpmfd = tpm_open();
-    tpm_flush_all_transient($tpmfd) unless $tpm_rm;
-    $handle = tpm_key2handle($tpmfd, $info->{'shadowed-tpm2-v1'}, $info->{'keygrip'});
-  }
-  my @sig;
-  eval { @sig = tpm_sign($tpmfd, $handle, $scheme, $digest_alg, pack('H*', $hash), tpm_pw_auth($passphrase)) };
-  if ($@) {
-    tpm_flush_context($tpmfd, $handle) unless $tpm_rm;
-    tpm_close($tpmfd);
-    die($@);
-  }
-  if ($info->{'tpm_keep_open'}) {
-    $info->{'tpm_keep_open_fd'} = $tpmfd;
-    $info->{'tpm_keep_open_handle'} = $handle;
-  } else {
-    tpm_flush_context($tpmfd, $handle) unless $tpm_rm;
-    tpm_close($tpmfd);
-  }
-  my $sigdata = join('', map {encodempi($_)} @sig);
-  return wrap_into_pgpsig_v4($extra, $info->{'fingerprint'}, $info->{'algo'}, $pgphashalgo, $hash, $sigdata) if $replyv4;
-  return wrap_into_pgpsig_v3($extra, $info->{'fingerprint'}, $info->{'algo'}, $pgphashalgo, $hash, $sigdata);
-}
-
-sub do_sign_multiple_tpm {
-  my ($phrasefile, $user, $info, $hashalgo, $hashes, $isprivsign) = @_;
-  $info->{'tpm_keep_open'} = 1;
-  my @ret = eval { do_sign_multiple($phrasefile, $user, $info, $hashalgo, $hashes, $isprivsign) };
-  my $err = $@;
-  my $tpmfd = delete $info->{'tpm_keep_open_fd'};
-  my $handle = delete $info->{'tpm_keep_open_handle'};
-  tpm_flush_context($tpmfd, $handle) if $tpmfd && $handle && !$tpm_rm;
-  tpm_close($tpmfd) if $tpmfd;
-  die($err) if $err;
-  return @ret;
-}
-
-
-##
-## pkcs11 support
-##
-
-sub can_sign_with_pkcs11 {
-  my ($info) = @_;
-  return 0 unless $have_pkcs11 && $info && $info->{'algo'};
-  return 0 unless $info->{'shadowed-tpm2-v1'} && $info->{'shadowed-tpm2-v1'}->[0] eq 'pkcs11';
-  return 1 if $info->{'algo'} == 1;
-  return 1 if $info->{'algo'} == 22 && $info->{'curve'} eq $pgp_curve_ed25519;
-  return 1 if $info->{'algo'} == 19 && $info->{'curve'} eq $pgp_curve_nistp256;
-  return 1 if $info->{'algo'} == 19 && $info->{'curve'} eq $pgp_curve_nistp384;
-  return 0;
-}
-
-sub pkcs11_read_config {
-  my ($gpghomedir) = @_;
-  my $fd;
-  open($fd, '<', "$gpghomedir/gpg-pkcs11-tpm.conf") || die("$gpghomedir/gpg-pkcs11-tpm.conf: $!\n");
-  $pkcs11_config = {};
-  while (<$fd>) {
-    chomp;
-    s/^\s+//;
-    s/\s+$//;
-    next if $_ eq '' || $_ =~ /^#/;
-    $pkcs11_config->{$1} = 1 if /^(\S+)$/;
-    $pkcs11_config->{$1} = $2 if /^(\S+)\s+(.*?)$/;
-  }
-  close($fd);
-}
-
-sub pkcs11_initialize {
-  my ($gpghomedir) = @_;
-  pkcs11_read_config($gpghomedir);
-  die("pkcs11: no provider-library configured\n") unless $pkcs11_config->{'provider-library'};
-  die("pkcs11: Crypt::PKCS11 module not loaded\n") unless defined &Crypt::PKCS11::new;
-  $pkcs11_handle = Crypt::PKCS11->new;
-  $pkcs11_handle->load($pkcs11_config->{'provider-library'});
-  $have_pkcs11 = 1;
-}
-
-sub pkcs11_generate_token_url {
-  my ($slot_id) = @_;
-  my $token_info = $pkcs11_handle->GetTokenInfo($slot_id) or die("pkcs11_generate_token_url: could not get token info for slot $slot_id\n");
-  return undef unless %$token_info;
-  my $uri = '';
-  for my $what (['model' => 'model'], ['manufacturerID' => 'manufacturer'], ['serialNumber' => 'serial'], ['label' => 'token']) {
-    my $d = $token_info->{$what->[0]};
-    $d = '' unless defined $d;
-    $d =~ s/\s+$//;
-    $d =~ s/([\000-\040<>;\"#\?&\+=%[\177-\377])/sprintf("%%%02X",ord($1))/sge;
-    $uri .= ";$what->[1]=$d";
-  }
-  $uri =~ s/^./pkcs11:/;
-  return $uri;
-}
-
-sub pkcs11_open_session {
-  $pkcs11_handle->Initialize;
-  my $slot_id = $pkcs11_config->{'slot-id'};
-  if (!defined $slot_id) {
-    my $slot_list = $pkcs11_handle->GetSlotList(1) or die "GetSlotList: " . $pkcs11_handle->errstr;
-    for my $sid (@$slot_list) {
-      next if $pkcs11_config->{'token'} && (pkcs11_generate_token_url($sid) || '') ne $pkcs11_config->{'token'};
-      $slot_id = $sid;
-      last;
-    }
-    die("no slot found\n") unless defined $slot_id;
-  }
-  my $session = $pkcs11_handle->OpenSession($slot_id, Crypt::PKCS11::CKF_SERIAL_SESSION()) or die "OpenSession: " . $pkcs11_handle->errstr;
-  if (defined $pkcs11_config->{'login'}) {
-    $session->Login(Crypt::PKCS11::CKU_USER(), $pkcs11_config->{'login'}) or die "login error: " . $session->errstr;
-  }
-  return $session;
-}
-
-sub pkcs11_mechanism {
-  my ($mechanism) = @_;
-  my $mech_obj = Crypt::PKCS11::CK_MECHANISM->new;
-  $mech_obj->set_mechanism($mechanism) if defined $mechanism;
-  return $mech_obj;
-}
-
-sub pkcs11_find_signing_key {
-  my ($session, $label) = @_;
-  my $object_template = Crypt::PKCS11::Attributes->new->push(
-    Crypt::PKCS11::Attribute::Label->new->set($label),
-    Crypt::PKCS11::Attribute::Sign->new->set(1),
-  );
-  $session->FindObjectsInit($object_template);
-  my $objects = $session->FindObjects(1);
-  return $objects && @$objects ? $objects->[0] : undef;
-}
-
-my %pkcs11_pkcs1prefix = (
-  'sha1'   => '3021300906052b0e03021a05000414',
-  'sha224' => '3031300d06096086480165030402040500041c',
-  'sha256' => '3031300d060960864801650304020105000420',
-  'sha384' => '3041300d060960864801650304020205000430',
-  'sha512' => '3051300d060960864801650304020305000440',
-);
-
-sub pkcs11_sign {
-  my ($session, $key, $keyalgo, $hashalgo, $data) = @_;
-  my $mech;
-  if ($keyalgo == 1) {
-    $mech = Crypt::PKCS11::CKM_RSA_PKCS();
-    die("unsupported hash algorithm for rsa\n") unless $pkcs11_pkcs1prefix{$hashalgo};
-    $data = pack('H*', $pkcs11_pkcs1prefix{$hashalgo}).$data;
-  } elsif ($keyalgo == 19) {
-    $mech = Crypt::PKCS11::CKM_ECDSA();
-  } elsif ($keyalgo == 22) {
-    $mech = Crypt::PKCS11::CKM_EDDSA();
-  }
-  die("unsupported key type $keyalgo\n") unless defined $mech;
-  $session->SignInit(pkcs11_mechanism($mech), $key) or die "Failed to init signing: " . $session->errstr;
-  my $sig = $session->Sign($data) or die "Failed to sign: " . $session->errstr;
-  if ($mech == Crypt::PKCS11::CKM_ECDSA() || $mech == Crypt::PKCS11::CKM_EDDSA()) {
-    my $s1 = substr($sig, 0, length($sig) / 2, '');
-    die("signature size must be even\n") if length($s1) != length($sig);
-    return ($s1, $sig);
-  }
-  return $sig;
-}
-
-sub sign_with_pkcs11 {
-  my ($phrasefile, $info, $hash, $hashalgo, $replyv4) = @_;
-  die("sign_with_tpm: missing fingerprint\n") unless $info->{'fingerprint'};
-  die("bad hash $hash\n") unless $hash =~ /^((?:[0-9a-fA-F][0-9a-fA-F])+)\@(0[01][0-9a-fA-F]{8})$/;
-  my $extra = $2;
-  $hash = $1;
-  $hashalgo = lc($hashalgo);
-  my $pgphashalgo = get_pgphashalgo($hashalgo);
-  die("sign_with_pkcs11: bad hashalgo $hashalgo\n") unless $pgphashalgo;
-  die("bad info\n") unless @{$info->{'shadowed-tpm2-v1'} || []} == 3 && $info->{'shadowed-tpm2-v1'}->[0] eq 'pkcs11';
-  my $session = $info->{'pkcs11_session'} || pkcs11_open_session();
-  $info->{'pkcs11_session'} = $session;		# so we can reuse it
-  my $label = $info->{'shadowed-tpm2-v1'}->[2];
-  my $key = $info->{'pkcs11_key'} || pkcs11_find_signing_key($session, $label);
-  die("could not find private key '$label'\n") unless $key;
-  $info->{'pkcs11_key'} = $key;		# so we can reuse it
-  my @sig = pkcs11_sign($session, $key, $info->{'algo'}, $hashalgo, pack('H*', $hash));
-  my $sigdata = join('', map {encodempi($_)} @sig);
-  return wrap_into_pgpsig_v4($extra, $info->{'fingerprint'}, $info->{'algo'}, $pgphashalgo, $hash, $sigdata) if $replyv4;
-  return wrap_into_pgpsig_v3($extra, $info->{'fingerprint'}, $info->{'algo'}, $pgphashalgo, $hash, $sigdata);
-}
-
-
 ##
 ## gnupg agent functions
 ##
@@ -1245,7 +461,7 @@ my $agent_sock;
 
 sub find_agentsocket_with_gpgconf {
   $agentsocket = [];
-  for (split("\n", `gpgconf --list-dirs`)) {
+  for (split("\n", `gpgconf --list-dirs </dev/null`)) {
     $agentsocket = [ $1 ] if /^agent-socket:(.*)/;
   }
   die("could not determine agent socket\n") unless @$agentsocket;
@@ -1531,6 +747,10 @@ sub write_keycache {
   }
 }
 
+sub disable_keycache {
+  undef $keycache;
+}
+
 sub find_key_keycache {
   my ($user, $purpose) = @_;
   $purpose ||= 's';
@@ -1687,10 +907,10 @@ sub do_decode_gcrypt {
   my $gnupghome = $ENV{'GNUPGHOME'};
   return undef unless $gnupghome;
   my ($einfo, $edata) = parse_encryted_data($encodeddata);
-  return undef unless $einfo && $edata && can_decrypt_with_gcrypt($einfo, $edata);
+  return undef unless $einfo && $edata && $use_gcrypt_decrypt && can_decrypt_with_gcrypt($einfo, $edata);
   my ($fingerprint, $keygrip) = find_key_keycache($einfo->{'keyid'}, 'e');
   my $info = gpg_keygrip_to_info($gnupghome, $keygrip, $fingerprint);
-  return undef unless $info;
+  return undef unless $info && $info->{'smpis'};
   my $decrypted = decrypt_with_gcrypt($info, $einfo, $edata);
   return decode_decrypted_data($decrypted);
 }
@@ -1720,13 +940,14 @@ sub do_decode_sym {
   die("bad encoded data\n") if $version != 1 || length($encodeddata) < 10 + $xdl + 2 + 8;
   $keyid = uc($keyid);
   my $phrasefile =  $encryptionkeys ? "$encryptionkeys/$keyid" : undef;
-  my $info = read_encparams_sym($phrasefile, $keyid, $use_gcrypt_decrypt && $have_gcrypt ? 1 : 0);
+  my $withsecret = $use_gcrypt_decrypt ? 1 : 0;
+  my $info = read_encparams_sym($phrasefile, $keyid, $withsecret);
   my $file = "$tmpdir/privkey.$$";
   my $edata = substr($encodeddata, 10 + $xdl);
   die("truncated encoded data\n") if unpack('@8n', $edata) != length($edata) - 10;
   my $s2ksalt = substr($edata, 0, 8);
   $edata = { 'method' => 'cfb', 'encrypted' => substr($edata, 10), 'mdc' => 1 };
-  if ($use_gcrypt_decrypt && $have_gcrypt && can_decrypt_sym_with_gcrypt($info, $edata)) {
+  if ($use_gcrypt_decrypt && can_decrypt_sym_with_gcrypt($info, $edata)) {
     return decrypt_sym_with_gcrypt($info, $s2ksalt, $edata);
   }
   # create gpg symmetric session and integrity proteced encrypted data packets
@@ -1782,7 +1003,7 @@ sub do_decode {
   my ($phrasefile, $user, $encodeddata) = @_;
 
   return do_decode_sym($encodeddata) if unpack('C', $encodeddata) < 128;
-  if ($use_gcrypt_decrypt && $have_gcrypt) {
+  if ($use_gcrypt_decrypt) {
     my $have_phrase = defined($phrasefile) && $phrasefile ne '/dev/null' && -s $phrasefile;
     if (!$have_phrase) {
       my $decoded = eval { do_decode_gcrypt($encodeddata) };
@@ -1819,8 +1040,8 @@ sub sign_with_agent {
   agent_rpc("SIGKEY $keygrip");
   agent_rpc("SETHASH $pgphashalgo $hash");
   agent_rpc("OPTION pinentry-mode=loopback") if $have_phrase;
-  my $sig = agent_rpc("PKSIGN", $phrasefile);
-  my ($pgppubalgo, @mpis) = parse_sexp_signature($sig);
+  my $sigsexp = agent_rpc("PKSIGN", $phrasefile);
+  my ($pgppubalgo, @mpis) = parse_sexp_signature($sigsexp);
   my $sigdata = join('', map {encodempi($_)} @mpis);
   return wrap_into_pgpsig_v4($extra, $fingerprint, $pgppubalgo, $pgphashalgo, $hash, $sigdata) if $replyv4;
   return wrap_into_pgpsig_v3($extra, $fingerprint, $pgppubalgo, $pgphashalgo, $hash, $sigdata);
@@ -1856,29 +1077,30 @@ sub do_sign_multiple {
     ($fingerprint, $keygrip) = $isprivsign ? find_key($user) : find_key_keycache($user);
     die("unknown pubkey for $user\n") unless $fingerprint;
   }
-  if (!$info && (($have_gcrypt && $use_gcrypt_sign) || ($have_tpm && $use_tpm_sign) || ($have_pkcs11 && $use_pkcs11_sign)) && $fingerprint && $keygrip) {
+  if (!$info && ($use_gcrypt_sign || $use_tpm_sign || $use_pkcs11_sign) && $fingerprint && $keygrip) {
     my $have_phrase = defined($phrasefile) && $phrasefile ne '/dev/null' && -s $phrasefile;
-    $info = gpg_keygrip_to_info($ENV{'GNUPGHOME'}, $keygrip, $fingerprint) unless $have_phrase && !(($have_tpm && $use_tpm_sign) || ($have_pkcs11 && $use_pkcs11_sign));
-    undef $info if $info && $info->{'smpis'} && !($have_gcrypt && $use_gcrypt_sign);
-    undef $info if $info && $info->{'shadowed-tpm2-v1'} && $info->{'shadowed-tpm2-v1'}->[0] ne 'pkcs11' && !($have_tpm && $use_tpm_sign);
-    undef $info if $info && $info->{'shadowed-tpm2-v1'} && $info->{'shadowed-tpm2-v1'}->[0] eq 'pkcs11' && !($have_pkcs11 && $use_pkcs11_sign);
-    return do_sign_multiple_tpm($phrasefile, $user, $info, $hashalgo, $hashes, $isprivsign) if $info && @$hashes > 1 && !can_sign_with_gcrypt($info) && can_sign_with_tpm($info);
+    $info = gpg_keygrip_to_info($ENV{'GNUPGHOME'}, $keygrip, $fingerprint) unless $have_phrase && !($use_tpm_sign || $use_pkcs11_sign);
+    undef $info if $info && $info->{'smpis'} && !$use_gcrypt_sign;
+    undef $info if $info && $info->{'shadowed-tpm2-v1'} && $info->{'shadowed-tpm2-v1'}->[0] ne 'pkcs11' && !$use_tpm_sign;
+    undef $info if $info && $info->{'shadowed-tpm2-v1'} && $info->{'shadowed-tpm2-v1'}->[0] eq 'pkcs11' && !$use_pkcs11_sign;
   }
+  $info->{'will_sign_multiple'} = 1 if $info && @$hashes > 1;
   my ($status, $err, @out) = (0, '');
   for my $hash (@$hashes) {
     my $replyv4 = 0;
     $replyv4 = 1 if $hash =~ /^(?:04040404)+\@/;	# special v4 algo probe
     my ($lout, $lerr) = ('', '');
     if ($info && $info->{'opensslkey'}) {
+      die("openssl module not loaded\n") unless $modules{'openssl'};
       $lout = eval { sign_with_openssl($phrasefile, $info, $hash, $hashalgo, $replyv4) };
       ($status, $lout, $lerr) = (1, '', $@) if $@;
-    } elsif ($info && can_sign_with_gcrypt($info)) {
+    } elsif ($info && $use_gcrypt_sign && can_sign_with_gcrypt($info)) {
       $lout = eval { sign_with_gcrypt($info, $hash, $hashalgo, $replyv4) };
       ($status, $lout, $lerr) = (1, '', $@) if $@;
-    } elsif ($info && can_sign_with_tpm($info)) {
+    } elsif ($info && $use_tpm_sign && can_sign_with_tpm($info)) {
       $lout = eval { sign_with_tpm($phrasefile, $info, $hash, $hashalgo, $replyv4) };
       ($status, $lout, $lerr) = (1, '', $@) if $@;
-    } elsif ($info && can_sign_with_pkcs11($info)) {
+    } elsif ($info && $use_pkcs11_sign && can_sign_with_pkcs11($info)) {
       $lout = eval { sign_with_pkcs11($phrasefile, $info, $hash, $hashalgo, $replyv4) };
       ($status, $lout, $lerr) = (1, '', $@) if $@;
     } elsif ($use_agent) {
@@ -2003,17 +1225,7 @@ sub doproxy {
   }
   setsockopt(CS, SOL_SOCKET, SO_KEEPALIVE, pack("l",1));
   connect(CS, $signaddr) || die("connect: $!\n");
-  if ($sockproto && $sockproto eq 'ssl') {
-    my %sslconf;
-    $sslconf{'SSL_verify_mode'} = &IO::Socket::SSL::SSL_VERIFY_PEER;
-    $sslconf{'SSL_key_file'} = $ssl_keyfile if $ssl_keyfile;
-    $sslconf{'SSL_cert_file'} = $ssl_certfile if $ssl_certfile;
-    $sslconf{'SSL_ca_file'} = $ssl_verifyfile if $ssl_verifyfile;
-    $sslconf{'SSL_ca_path'} = $ssl_verifydir if $ssl_verifydir;
-    my $ssl = IO::Socket::SSL->start_SSL(\*CS, %sslconf);
-    die("ssl handshake failed: $IO::Socket::SSL::SSL_ERROR\n") unless $ssl;
-    *CS = $ssl;
-  }
+  *CS = ssl_client(\*CS) if $sockproto && $sockproto eq 'ssl';
   swrite(*CS, $pack);
   while (1) {
     my $buf = '';
@@ -2028,20 +1240,49 @@ sub doproxy {
   close(CS);
 }
 
+sub load_module {
+  my ($module) = @_;
+  die("Illegal module name $module\n") unless $module =~ /^[a-zA-Z][a-zA-Z0-9_-]*$/;
+  return if exists $modules{$module};
+  $modules{$module} = do "$modulepath/signd_$module";
+  die("$modulepath/signd_$module: ".($@ || $!)."\n") unless $modules{$module};
+}
+
+sub initialize_modules {
+  my $config = { 'sockproto' => $sockproto, 'proxysockproto' => $proxysockproto,
+                 'tmpdir' => $tmpdir, 'testmode' => $testmode,
+                 'gpg' => $gpg, 'pinentrymode' => \@pinentrymode,
+                 'aliases' => $aliases, 'phrases' => $phrases, 'encryptionkeys' => $encryptionkeys };
+  my %ret;
+  for my $module (grep {$modules{$_}} sort keys %modules) {
+    $ret{$module} = $modules{$module}->{'init'}->($config);
+  }
+  # turn off options if we do not have support
+  die("gcrypt module initialization failed\n") if $testmode && ($ENV{'SIGN_GCRYPT'} || '') eq 'force' && !$ret{'gcrypt'};
+  $use_gcrypt_sign = $use_gcrypt_privsign = $use_gcrypt_decrypt = 0 unless $ret{'gcrypt'};
+  $use_tpm_sign = 0 unless $ret{'tpm'};
+  $use_pkcs11_sign = 0 unless $ret{'pkcs11'};
+}
 
 ##
 ## main server code follows
 ##
 
-my $testmode = (($ARGV[0] || '') eq '-t') ? 1 : 0;
+$testmode = (($ARGV[0] || '') eq '-t') ? 1 : 0;
 $testmode = 2 if ($ARGV[0] || '') eq '--test-sign';
 if ($testmode) {
   shift @ARGV;
-  $conf = $ENV{SIGN_CONF} if $ENV{SIGN_CONF};
-  die("Crypt::GCrypt is not available\n") if ($ENV{SIGN_GCRYPT} || '') eq 'force' && !$have_gcrypt;
-  undef $have_gcrypt if ($ENV{SIGN_GCRYPT} || '') eq 'disable';
+  $conf = $ENV{'SIGN_CONF'} if $ENV{'SIGN_CONF'};
+  $modulepath = $ENV{'SIGN_MODULEPATH'} if $ENV{'SIGN_MODULEPATH'};
   $use_agent = 1 if $ENV{SIGN_USE_AGENT};
+  if (($ENV{'SIGN_GCRYPT'} || '') eq 'disable') {
+    $modules{'gcrypt'} = 0;
+  } elsif (($ENV{'SIGN_GCRYPT'} || '') eq 'force') {
+    load_module('gcrypt');
+    $use_gcrypt_sign = $use_gcrypt_privsign = $use_gcrypt_decrypt = 1;
+  }
 }
+
 (undef, $conf) = splice(@ARGV, 0, 2) if ($ARGV[0] || '') eq '--config';
 
 local *F;
@@ -2051,219 +1292,91 @@ while(<F>) {
   next if /^#/;
   my @s = split(' ', $_);
   next unless @s;
-  if ($s[0] eq 'server:') {
-    $signhost = $s[1];
-    next;
-  }
-  if ($s[0] eq 'port:') {
-    $port = $s[1];
-    next;
-  }
-  if ($s[0] eq 'proto:') {
-    $sockproto = $s[1];
-    next;
-  }
-  if ($s[0] eq 'ssl_keyfile:') {
-    $ssl_keyfile = $s[1];
-    next;
-  }
-  if ($s[0] eq 'ssl_certfile:') {
-    $ssl_certfile = $s[1];
-    next;
-  }
-  if ($s[0] eq 'ssl_verifyfile:') {
-    $ssl_verifyfile = $s[1];
-    next;
-  }
-  if ($s[0] eq 'ssl_verifydir:') {
-    $ssl_verifydir = $s[1];
-    next;
-  }
-  if ($s[0] eq 'proxyport:') {
-    $proxyport = $s[1];
-    next;
-  }
-  if ($s[0] eq 'proxyproto:') {
-    $proxysockproto = $s[1] || '';
-    next;
-  }
-  if ($s[0] eq 'proxyssl_keyfile:') {
-    $proxyssl_keyfile = $s[1] || '';
-    next;
-  }
-  if ($s[0] eq 'proxyssl_certfile:') {
-    $proxyssl_certfile = $s[1] || '';
-    next;
-  }
-  if ($s[0] eq 'proxyssl_verifyfile:') {
-    $proxyssl_verifyfile = $s[1] || '';
-    next;
-  }
-  if ($s[0] eq 'proxyssl_verifydir:') {
-    $proxyssl_verifydir = $s[1] || '';
-    next;
-  }
-  if ($s[0] eq 'allow:') {
-    shift @s;
+  @s = split(' ', $_, 2) if $s[0] eq 'allow_subject:';	# hack
+  my $cmd = shift @s;
+  if ($cmd eq 'modulepath:') {
+    $modulepath = $s[0];
+  } elsif ($cmd eq 'module:') {
+    load_module($_) for @s;
+  } elsif ($cmd eq 'server:') {
+    $signhost = $s[0];
+  } elsif ($cmd eq 'port:') {
+    $port = $s[0];
+  } elsif ($cmd eq 'proto:') {
+    $sockproto = $s[0];
+  } elsif ($cmd eq 'proxyport:') {
+    $proxyport = $s[0];
+  } elsif ($cmd eq 'proxyproto:') {
+    $proxysockproto = $s[0] || '';
+  } elsif ($cmd eq 'allow:') {
     push @allows, @s;
-    next;
-  }
-  if ($s[0] eq 'allow_subject:') {
-    @s = split(' ', $_, 2);
-    shift @s;
-    push @allow_subject, @s;
-    next;
-  }
-  if ($s[0] eq 'map:') {
-    $map{$s[1]} = defined($s[2]) ? $s[2] : '';
-    next;
-  }
-  if ($s[0] eq 'user:') {
-    $signuser = $s[1];
-    next;
-  }
-  if ($s[0] eq 'gpg:') {
-    $gpg = $s[1];
-    next;
-  }
-  if ($s[0] eq 'openssl:') {
-    $openssl = $s[1];
-    next;
-  }
-  if ($s[0] eq 'phrases:') {
-    $phrases = $s[1];
-    next;
-  }
-  if ($s[0] eq 'aliases:') {
-    $aliases = $s[1];
-    next;
-  }
-  if ($s[0] eq 'encryptionkeys:') {
-    $encryptionkeys = $s[1];
-    next;
-  }
-  if ($s[0] eq 'opensslkeys:') {
-    $opensslkeys = $s[1];
-    next;
-  }
-  if ($s[0] eq 'tmpdir:') {
-    $tmpdir = $s[1];
-    next;
-  }
-  if ($s[0] eq 'keycache:') {
-    $keycache = $s[1];
-    next;
-  }
-  if ($s[0] eq 'patchclasstime:') {
-    $patchclasstime = ($s[1] eq '1' || $s[1] =~ /^true$/i) ? 1 : 0;
-    next;
-  }
-  if ($s[0] eq 'allow-unprivileged-ports:') {
-    $allow_unprivileged_ports = ($s[1] eq '1' || $s[1] =~ /^true$/i) ? 1 : 0;
-    next;
-  }
-  if ($s[0] eq 'use-unprivileged-ports:') {
-    $use_unprivileged_ports = ($s[1] eq '1' || $s[1] =~ /^true$/i) ? 1 : 0;
-    next;
-  }
-  if ($s[0] eq 'use-agent:') {
-    $use_agent = ($s[1] eq '1' || $s[1] =~ /^true$/i) ? 1 : 0;
-    next;
-  }
-  if ($s[0] eq 'use-gcrypt:') {
-    $s[1] = 1 if $s[1] =~ /^true$/i;
-    @s = split(',', $s[1]);
+  } elsif ($cmd eq 'map:') {
+    $map{$s[0]} = defined($s[1]) ? $s[1] : '';
+  } elsif ($cmd eq 'user:') {
+    $signuser = $s[0];
+  } elsif ($cmd eq 'gpg:') {
+    $gpg = $s[0];
+  } elsif ($cmd eq 'phrases:') {
+    $phrases = $s[0];
+  } elsif ($cmd eq 'aliases:') {
+    $aliases = $s[0];
+  } elsif ($cmd eq 'encryptionkeys:') {
+    $encryptionkeys = $s[0];
+  } elsif ($cmd eq 'tmpdir:') {
+    $tmpdir = $s[0];
+  } elsif ($cmd eq 'keycache:') {
+    $keycache = $s[0];
+  } elsif ($cmd eq 'patchclasstime:') {
+    $patchclasstime = ($s[0] eq '1' || $s[0] =~ /^true$/i) ? 1 : 0;
+  } elsif ($cmd eq 'allow-unprivileged-ports:') {
+    $allow_unprivileged_ports = ($s[0] eq '1' || $s[0] =~ /^true$/i) ? 1 : 0;
+  } elsif ($cmd eq 'use-unprivileged-ports:') {
+    $use_unprivileged_ports = ($s[0] eq '1' || $s[0] =~ /^true$/i) ? 1 : 0;
+  } elsif ($cmd eq 'use-agent:') {
+    $use_agent = ($s[0] eq '1' || $s[0] =~ /^true$/i) ? 1 : 0;
+  } elsif ($cmd eq 'use-gcrypt:') {
+    $s[0] = 1 if $s[0] =~ /^true$/i;
+    @s = split(',', $s[0]);
     $use_gcrypt_sign = 1 if grep {$_ eq '1' || $_ eq 'sign'} @s;
     $use_gcrypt_privsign = 1 if grep {$_ eq '1' || $_ eq 'privsign'} @s;
     $use_gcrypt_decrypt = 1 if grep {$_ eq '1' || $_ eq 'decrypt'} @s;
-    next;
-  }
-  if ($s[0] eq 'use-tpm:') {
-    $use_tpm_sign =  ($s[1] eq '1' || $s[1] eq 'sign' || $s[1] =~ /^true$/i) ? 1 : 0;
-    next;
-  }
-  if ($s[0] eq 'use-pkcs11:') {
-    $use_pkcs11_sign =  ($s[1] eq '1' || $s[1] eq 'sign' || $s[1] =~ /^true$/i) ? 1 : 0;
-    next;
-  }
-  if ($s[0] eq 'tpm_ctxcache:') {
-    $tpm_ctxcache = $s[1];
-    next;
-  }
-  if ($s[0] eq 'tpm_device:') {
-    $tpm_device = $s[1];
-    next;
-  }
-  if ($s[0] eq 'tpm_lock:') {
-    $tpm_lock = $s[1];
-    next;
-  }
-  if ($s[0] eq 'keybackup:') {
-    $keybackup = $s[1];
-    next;
-  }
-  if ($s[0] eq 'logfile:') {
-    $logfile = $s[1];
-    next;
-  }
-  if ($s[0] eq 'pidfile:') {
-    $pidfile = $s[1];
-    next;
-  }
-  if ($s[0] eq 'gnupghome:') {
-    $ENV{GNUPGHOME} = $s[1];
-    next;
-  }
-  if ($s[0] eq 'agentsocket:') {
-    shift @s;
+  } elsif ($cmd eq 'use-tpm:') {
+    $use_tpm_sign =  ($s[0] eq '1' || $s[0] eq 'sign' || $s[0] =~ /^true$/i) ? 1 : 0;
+  } elsif ($cmd eq 'use-pkcs11:') {
+    $use_pkcs11_sign =  ($s[0] eq '1' || $s[0] eq 'sign' || $s[0] =~ /^true$/i) ? 1 : 0;
+  } elsif ($cmd eq 'logfile:') {
+    $logfile = $s[0];
+  } elsif ($cmd eq 'pidfile:') {
+    $pidfile = $s[0];
+  } elsif ($cmd eq 'gnupghome:') {
+    $ENV{GNUPGHOME} = $s[0];
+  } elsif ($cmd eq 'agentsocket:') {
     $agentsocket = \@s;
-    next;
-  }
-  if ($s[0] eq 'restricted_gnupghome:') {
-    $restricted_gnupghome = $s[1];
-    next;
-  }
-  if ($s[0] eq 'restricted_phrases:') {
-    $restricted_phrases = $s[1];
-    next;
-  }
-  if ($s[0] eq 'restricted_aliases:') {
-    $restricted_aliases = $s[1];
-    next;
-  }
-  if ($s[0] eq 'privileged_gnupghome:') {
-    $privileged_gnupghome = $s[1];
-    next;
-  }
-  if ($s[0] eq 'system_gnupghome:') {
-    $system_gnupghome = $s[1];
-    next;
-  }
-  if ($s[0] eq 'privileged_logfile:') {
-    $privileged_logfile = $s[1];
-    next;
-  }
-  if ($s[0] eq 'extranonce:') {
-    $extranonce = $s[1];
-    next;
-  }
-  if ($s[0] eq 'backup:') {
-    shift @s;
-    push @backup_locations, @s;
-    next;
-  }
-  if ($s[0] eq 'backup_user:') {
-    $backup_user = $s[1];
-    next;
+  } elsif ($cmd eq 'hash:' || $cmd eq 'allowuser:') {
+    # only used in sign client
+  } else {
+    my $known;
+    for my $module (grep {$modules{$_}} sort keys %modules) {
+      if ($modules{$module}->{'config'} && $modules{$module}->{'config'}->($cmd, @s)) {
+	$known = 1;
+	last;
+      }
+    }
+    warn("Unknown keyword '$cmd'\n") unless $known;
   }
 }
+close F;
 
 $proxyport = $port unless defined $proxyport;
 $proxysockproto = $sockproto unless defined $proxysockproto;
-$proxyssl_certfile = $ssl_certfile unless defined $proxyssl_certfile;
-$proxyssl_keyfile = $ssl_keyfile unless defined $proxyssl_keyfile;
-$proxyssl_verifyfile = $ssl_verifyfile unless defined $proxyssl_verifyfile;
-$proxyssl_verifydir = $ssl_verifydir unless defined $proxyssl_verifydir;
+die("unknown sockproto $sockproto\n") if $sockproto && $sockproto ne 'unprotected' && $sockproto ne 'ssl';
+die("unknown proxysockproto $proxysockproto\n") if $proxysockproto && $proxysockproto ne 'unprotected' && $proxysockproto ne 'ssl';
+
+# compat: try to load modules
+load_module('gcrypt') if ($use_gcrypt_sign || $use_gcrypt_privsign || $use_gcrypt_decrypt) && !exists($modules{'gcrypt'});
+die("Please enable the 'ssl' module in sign.conf\n") if (($sockproto || '') eq 'ssl' || ($proxysockproto || '') eq 'ssl') && !exists($modules{'ssl'});
+die("Please enable the 'tpm' module in sign.conf\n") if $use_tpm_sign && !exists($modules{'tpm'});
+die("Please enable the 'pkcs11' module in sign.conf\n") if $use_pkcs11_sign && !exists($modules{'pkcs11'});
 
 my $myname = $phrases ? 'signd' : 'signproxy';
 
@@ -2276,9 +1389,6 @@ $signaddr = sockaddr_in($port, $signaddr);
 @pinentrymode = ( '--pinentry-mode=loopback' ) if have_pinentry_mode();
 $use_agent = 1 unless have_files_are_digests();
 
-# we need zlib to decompress gpg's compressed data packet
-require Compress::Raw::Zlib if $use_gcrypt_decrypt && $have_gcrypt;
-
 my @argv;
 
 if ($testmode) {
@@ -2288,6 +1398,7 @@ if ($testmode) {
   die("phrases directory does not exist\n") unless @phrases_s;
   die("phrases directory owner does not match euid\n") unless $phrases_s[4] == $>;
   $| = 1;
+  initialize_modules();
   if ($testmode == 2) {
     *CLNT = *STDIN;
     @argv = readreq();
@@ -2311,16 +1422,6 @@ if (@ARGV && $ARGV[0] eq '--gen-enckey') {
   exit(0);
 }
 
-die("unknown sockproto $sockproto\n") if $sockproto && $sockproto ne 'unprotected' && $sockproto ne 'ssl';
-die("unknown proxysockproto $proxysockproto\n") if $proxysockproto && $proxysockproto ne 'unprotected' && $proxysockproto ne 'ssl';
-if (($proxysockproto || '') eq 'ssl') {
-  die("no ssl_keyfile specified\n") unless $proxyssl_keyfile;
-  die("keyfile '$proxyssl_keyfile' does not exist\n") unless -f $proxyssl_keyfile;
-  die("no ssl_certfile specified\n") unless $proxyssl_certfile;
-  die("certfile '$proxyssl_certfile' does not exist\n") unless -f $proxyssl_certfile;
-}
-require IO::Socket::SSL if ($sockproto || '') eq 'ssl' || ($proxysockproto || '') eq 'ssl';
-
 if (($ARGV[0] || '') eq '-f') {
   my $pid = fork();
   die("fork") if  !defined($pid) || $pid < 0;
@@ -2337,14 +1438,9 @@ if ($logfile) {
   open(STDERR, ">&STDOUT");
 }
 printlog("$myname started");
-if ($use_tpm_sign) {
-  eval { tpm_initialize() };
-  warn($@) if $@;
-}
-if ($use_pkcs11_sign) {
-  eval { pkcs11_initialize($ENV{GNUPGHOME}) };
-  warn($@) if $@;
-}
+
+# initialize our modules
+initialize_modules();
 
 socket(MS , PF_INET, SOCK_STREAM, Socket::IPPROTO_TCP) || die "socket: $!\n";
 setsockopt(MS, SOL_SOCKET, SO_REUSEADDR, pack("l",1));
@@ -2352,7 +1448,7 @@ setsockopt(MS, SOL_SOCKET, SO_KEEPALIVE, pack("l",1));
 bind(MS, sockaddr_in($proxyport, INADDR_ANY)) || die "bind: $!\n";
 listen(MS , 512) || die "listen: $!\n";
 
-my %chld = ();
+my %chld;
 my $clntaddr;
 
 while (1) {
@@ -2392,37 +1488,9 @@ for my $allow (@allows) {
 die("illegal host $peer\n") unless $allowed;
 
 if ($proxysockproto eq 'ssl') {
-  #$IO::Socket::SSL::DEBUG = 4;
-  my %sslconf = ( SSL_cert_file => $proxyssl_certfile, SSL_key_file => $proxyssl_keyfile );
-  $sslconf{'SSL_verify_mode'} = &IO::Socket::SSL::SSL_VERIFY_FAIL_IF_NO_PEER_CERT | &IO::Socket::SSL::SSL_VERIFY_PEER;
-  $sslconf{'SSL_ca_file'} = $proxyssl_verifyfile if $proxyssl_verifyfile;
-  $sslconf{'SSL_ca_path'} = $proxyssl_verifydir if $proxyssl_verifydir;
-  my $ssl = IO::Socket::SSL->start_SSL(\*CLNT, SSL_server => 1, %sslconf);
-  die("ssl handshake failed: $IO::Socket::SSL::SSL_ERROR\n") unless $ssl;
-  *CLNT = $ssl;
-  if (@allow_subject) {
-    my $cert = $ssl->peer_certificate();
-    die("could not get peer certificate\n") unless $cert;
-    my $subject = Net::SSLeay::X509_get_subject_name($cert);
-    die("could not get subject from peer certificate\n") unless $subject;
-    $subject = Net::SSLeay::X509_NAME_print_ex($subject, &Net::SSLeay::XN_FLAG_RFC2253);
-    die("could not convert certificate subject to text\n") unless $subject;
-    $allowed = undef;
-    for my $as (@allow_subject) {
-      if ($as =~ /^\/(.*)\/$/) {
-	my $as_re = $1;
-        next unless $subject =~ /$as_re/;
-      } else {
-        next unless $subject eq $as;
-      }
-      $allowed = 1;
-      last;
-    }
-    die("certificate denied: $subject\n") unless $allowed;
-  }
+  *CLNT = ssl_server(\*CLNT);
+  ssl_checkclient(\*CLNT);
 }
-
-testit:
 
 ### commands
 
@@ -2433,19 +1501,11 @@ sub cmd_ping {
 
 sub split_length_from_type {
   my ($type) = @_;
-  my $length;
-  if ($type eq 'ed25519' || $type eq 'eddsa@ed25519') {
-    ($type, $length) = ('eddsa', 'ed25519');
-  } elsif ($type eq 'nistp256' || $type eq 'ecdsa@nistp256') {
-    ($type, $length) = ('ecdsa', 'nistp256');
-  } elsif ($type eq 'nistp384' || $type eq 'ecdsa@nistp384') {
-    ($type, $length) = ('ecdsa', 'nistp384');
-  } else {
-    die("bad type: $type\n") unless $type =~ /^(dsa|rsa)\@(1024|2048|4096)$/s;
-    $length = $2;
-    $type = $1;
-  }
-  return ($type, $length);
+  return ('eddsa', 'ed25519') if $type eq 'ed25519' || $type eq 'eddsa@ed25519';
+  return ('ecdsa', 'nistp256') if $type eq 'nistp256' || $type eq 'ecdsa@nistp256';
+  return ('ecdsa', 'nistp384') if $type eq 'nistp384' || $type eq 'ecdsa@nistp384';
+  die("bad type: $type\n") unless $type =~ /^(dsa|rsa)\@(1024|2048|4096)$/s;
+  return ($1, $2);
 }
 
 sub cmd_keygen {
@@ -2453,9 +1513,9 @@ sub cmd_keygen {
   die("keygen: four arguments expected\n") if @args != 4;
   my $type = $args[0];
   my $expire = $args[1];
-  die("bad expire format\n") unless $expire =~ /^\d{1,10}$/s;
   my $real = $args[2];
   my $email = $args[3];
+  die("bad expire format\n") unless $expire =~ /^\d{1,10}$/s;
   checkbadchar($real, 'real name');
   checkbadchar($email, 'email');
   my $length;
@@ -2540,7 +1600,10 @@ sub cmd_certgen {
 sub cmd_pubkey {
   my ($cmd, $user, $hashalgo, @args) = @_;
   die("pubkey: no argument expected\n") if @args;
-  return (0, '', openssl_pubkey($1)) if $user =~ /^openssl:(.+)/;
+  if ($user =~ /^openssl:(.+)/) {
+    die("openssl module not loaded\n") unless $modules{'openssl'};
+    return (0, '', openssl_pubkey($1));
+  }
   my $pubkey = rungpg_fatal('/dev/null', undef, $gpg, '--export', '-a', $user);
   return (0, '', $pubkey);
 }
@@ -2551,9 +1614,9 @@ sub cmd_privsign {
   die("bad private key\n") if $args[0] !~ /^(?:[0-9a-fA-F][0-9a-fA-F])+$/s;
   my $privkey = pack('H*', shift @args);
   $privkey = do_decode("$phrases/$user", $user, $privkey);
-  $privkey = striptofirst($privkey);	# just use the first packet
-  my $info = $use_gcrypt_privsign && $have_gcrypt ? {} : undef;
-  my $pubkey = priv2pub($privkey, $info);
+  $privkey = striptofirst($privkey);		# just use the first packet
+  my $info = $use_gcrypt_privsign ? {} : undef;
+  my $pubkey = priv2pub($privkey, $info);	# also fills $info
   if ($use_gcrypt_privsign && can_sign_with_gcrypt($info)) {
     return do_sign_multiple('/dev/null', undef, $info, $hashalgo, \@args, 1);
   }
@@ -2641,488 +1704,6 @@ sub write_alias {
 
 ################
 
-# cmd => [ handler, needuser, allowed_keyrings ]
-my %privileged_cmds = (
-  'sign'	=> [ \&cmd_privileged_sign,       1, [ 'restricted' ] ],
-  'pubkey'	=> [ \&cmd_privileged_pubkey,     1, [ 'restricted' ] ],
-  'keylist'	=> [ \&cmd_privileged_keylist,    0, [ 'standard', 'restricted', 'privileged' ] ],
-  'keyphrases'	=> [ \&cmd_privileged_keyphrases, 0, [ 'standard', 'restricted' ] ],
-  'keygen'	=> [ \&cmd_privileged_keygen,     0, [ 'standard', 'restricted' ] ],
-  'keydel'	=> [ \&cmd_privileged_keydel,     1, [ 'standard', 'restricted', 'privileged' ] ],
-  'keyextend'	=> [ \&cmd_privileged_keyextend,  1, [ 'standard', 'restricted' ] ],
-  'keycvt'	=> [ \&cmd_privileged_keycvt,     1, [ 'standard', 'restricted' ] ],
-  'keytotpm'	=> [ \&cmd_privileged_keytotpm,   1, [ 'standard', 'restricted' ] ],
-  'aliaslist'	=> [ \&cmd_privileged_aliaslist,  0, [ 'standard', 'restricted' ] ],
-  'aliasgen'	=> [ \&cmd_privileged_aliasgen,   1, [ 'standard', 'restricted' ] ],
-  'aliasdel'	=> [ \&cmd_privileged_aliasdel,   1, [ 'standard', 'restricted' ] ],
-  'enckeylist'	=> [ \&cmd_privileged_enckeylist, 0, [ 'standard' ] ],
-  'enckeygen'	=> [ \&cmd_privileged_enckeygen,  0, [ 'standard' ] ],
-  'enckeydel'	=> [ \&cmd_privileged_enckeydel,  1, [ 'standard' ] ],
-  'backup'	=> [ \&cmd_privileged_backup,     0, [ 'system' ] ],
-  'log'		=> [ \&cmd_privileged_log,        0, [ 'system' ] ],
-);
-
-sub privileged_switch_gnupghome {
-  my ($keyring, $allow_privileged, $allow_system) = @_;
-  my $oldgnupghome = $ENV{'GNUPGHOME'};
-  die("bad keyring in privileged_switch_gnupghome\n") if $keyring eq 'privileged' && !$allow_privileged;
-  die("bad keyring in privileged_switch_gnupghome\n") if $keyring eq 'system' && !$allow_system;
-  my $gnupghome;
-  $gnupghome = $oldgnupghome if $keyring eq 'standard';
-  $gnupghome = $restricted_gnupghome if $keyring eq 'restricted';
-  $gnupghome = $system_gnupghome if $keyring eq 'system';
-  $gnupghome = $privileged_gnupghome if $keyring eq 'privileged';
-  die("keyring $keyring is not configured\n") unless $gnupghome;
-  switch_gnupghome($gnupghome);
-  return $oldgnupghome;
-}
-
-sub privileged_get_aliasdir {
-  my ($keyring, $mustexist) = @_;
-  my $aliasdir;
-  $aliasdir = $restricted_aliases if $keyring eq 'restricted';
-  $aliasdir = $aliases if $keyring eq 'standard';
-  if ($mustexist) {
-    die("aliases are not configured for keyring $keyring\n") unless $aliasdir;
-    die("aliases directory $aliasdir does not exist\n") unless -d $aliasdir;
-  }
-  return $aliasdir;
-}
-
-sub privileged_get_phrasedir {
-  my ($keyring, $mustexist) = @_;
-  my $phrasedir;
-  $phrasedir = $restricted_phrases if $keyring eq 'restricted';
-  $phrasedir = $phrases if $keyring eq 'standard';
-  if ($mustexist) {
-    die("phrases are not configured for keyring $keyring\n") unless $phrasedir;
-    die("phrases directory $phrasedir does not exist\n") unless -d $phrasedir;
-  }
-  return $phrasedir;
-}
-
-sub privileged_map_user {
-  my ($keyring, $user) = @_;
-  my $phrasedir = privileged_get_phrasedir($keyring);
-  my $aliasdir = privileged_get_aliasdir($keyring);
-  $user = read_alias($aliasdir, $user) if $aliasdir && -e "$aliasdir/$user";
-  die("unknown key: $user\n") unless $phrasedir && -e "$phrasedir/$user";
-  return ($user, $phrasedir, $aliasdir);
-}
-
-sub cmd_privileged_sign {
-  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
-  die("usage: sign <arg>\n") unless @args == 1;
-  my $phrasedir;
-  ($user, $phrasedir) = privileged_map_user($keyring, $user);
-  my $oldgnupghome = privileged_switch_gnupghome($keyring);
-  undef $keycache;	# hack
-  undef $tpm_ctxcache;	# hack
-  my ($status, $err, @out) = do_sign_multiple("$phrasedir/$user", $user, undef, $hashalgo, \@args);
-  switch_gnupghome($oldgnupghome);
-  return ($status, $err, @out);
-}
-
-sub cmd_privileged_pubkey {
-  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
-  die("excess arguments\n") unless @args == 0;
-  ($user) = privileged_map_user($keyring, $user);
-  my $oldgnupghome = privileged_switch_gnupghome($keyring);
-  my $pubkey = rungpg_fatal('/dev/null', undef, $gpg, '--export', '-a', $user);
-  switch_gnupghome($oldgnupghome);
-  return (0, '', $pubkey);
-}
-
-sub cmd_privileged_keylist {
-  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
-  die("excess arguments\n") unless @args == 0;
-  my $oldgnupghome = privileged_switch_gnupghome($keyring, 1);
-  my $result= rungpg_fatal('/dev/null', undef, $gpg, '--list-keys');
-  switch_gnupghome($oldgnupghome);
-  return (0, '', $result);
-}
-
-sub cmd_privileged_keyphrases {
-  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
-  die("excess arguments\n") unless @args == 0;
-  my $phrasedir = privileged_get_phrasedir($keyring);
-  my $result = '';
-  $result .= "$_\n" for ls($phrasedir);
-  return (0, '', $result);
-}
-
-sub cmd_privileged_keydel {
-  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
-  die("excess arguments\n") unless @args == 0;
-  my $phrasedir;
-  ($user, $phrasedir) = privileged_map_user($keyring, $user);
-  my $oldgnupghome = privileged_switch_gnupghome($keyring, 1);
-  my ($efpr) = find_key($user, 'e');
-  die("key '$user' has an encrytion subkey\n") if $efpr;
-  my ($fpr) = find_key($user);
-  die("could not determine fingerprint of key '$user'\n") unless $fpr;
-  rungpg_fatal('/dev/null', undef, $gpg, '--batch', '--yes', '--delete-secret-and-public-key', $fpr);
-  unlink("$phrasedir/$user");
-  switch_gnupghome($oldgnupghome);
-  return (0, '', '');
-}
-
-sub cmd_privileged_keygen {
-  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
-  die("usage: keygen <type> <days> <name> <email> [alias]\n") unless @args == 4 || @args == 5;
-  my $type = $args[0];
-  my $expire = $args[1];
-  die("bad expire format\n") unless $expire =~ /^\d{1,10}$/s;
-  my $real = $args[2];
-  my $email = $args[3];
-  checkbadchar($real, 'real name');
-  checkbadchar($email, 'email');
-  my $alias = $args[4];
-  my $aliasdir = privileged_get_aliasdir($keyring, $alias ? 1 : 0);
-  my $phrasedir = privileged_get_phrasedir($keyring, 1);
-  my ($tdir) = prepare_tmp_gnupghome();
-  my $length;
-  ($type, $length) = split_length_from_type($type);
-  my $batch = "Key-Type: $type\n";
-  $batch .= ($type eq 'ecdsa' || $type eq 'eddsa' ? "Key-Curve: " : "Key-Length: "). "$length\n";
-  $batch .= "Key-Usage: sign\nName-Real: $real\nName-Email: $email\nExpire-Date: ${expire}d\n%no-protection\n";
-  spew("$tdir/params", $batch);
-  my $oldgnupghome = privileged_switch_gnupghome($keyring);
-  my $out = rungpg_fatal('/dev/null', $tdir, $gpg, '--batch', '--status-fd=1', '--no-secmem-warning', '--gen-key', "$tdir/params");
-  remove_tree($tdir);
-  die("could not determine key id of generated key\n") if $out !~ /KEY_CREATED P ([0-9A-F]{40,})/s;
-  my $keyid = substr($1, -16);
-  spew("$phrasedir/$keyid", '');
-  write_alias($aliasdir, $keyid, $alias) if $alias;
-  my $pubkey = rungpg_fatal('/dev/null', undef, $gpg, '--export', '-a', $keyid);
-  switch_gnupghome($oldgnupghome);
-  return (0, '', $pubkey);
-}
-
-sub cmd_privileged_keyextend {
-  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
-  die("usage: keyextend <days>\n") unless @args == 1;
-  my $expire = $args[0];
-  die("bad expire format\n") unless $expire =~ /^\d{1,10}$/s;
-  my $phrasedir;
-  ($user, $phrasedir) = privileged_map_user($keyring, $user);
-  # gpg does not support to specify the expire as argument on the cmd line
-  my ($tdir) = prepare_tmp_gnupghome();
-  spew("$tdir/params", "expire\n${expire}d\nsave\n");
-  my $oldgnupghome = privileged_switch_gnupghome($keyring);
-  rungpg_fatal("$phrasedir/$user", $tdir, $gpg, '--batch', '--no-secmem-warning', '--passphrase-fd=0', '--command-file', "$tdir/params", '--edit-key', $user);
-  remove_tree($tdir);
-  my $pubkey = rungpg_fatal('/dev/null', undef, $gpg, '--export', '-a', $user);
-  switch_gnupghome($oldgnupghome);
-  return (0, '', $pubkey);
-}
-
-sub cmd_privileged_keycvt {
-  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
-  die("excess arguments\n") unless @args == 0;
-  my $aliasdir = privileged_get_aliasdir($keyring);
-  $aliasdir = privileged_get_aliasdir($keyring, 1) if $aliasdir;
-  my $phrasedir = privileged_get_phrasedir($keyring, 1);
-  die("unknown key: $user\n") unless $phrasedir && -e "$phrasedir/$user";
-  my $oldgnupghome = privileged_switch_gnupghome($keyring);
-  my ($fpr) = find_key($user);
-  die("could not determine fingerprint of key '$user'\n") unless $fpr;
-  my $keyid = substr($fpr, -16);
-  die("phrases entry for $keyid already exists\n") if -e "$phrasedir/$keyid";
-  rename("$phrasedir/$user", "$phrasedir/$keyid") || die("rename $phrasedir/$user $phrasedir/$keyid: $!\n");
-  switch_gnupghome($oldgnupghome);
-  write_alias($aliasdir, $keyid, $user) if $aliasdir && ! -e "$aliasdir/$user";
-  return (0, '', '');
-}
-
-sub cmd_privileged_keytotpm {
-  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
-  die("no backup key configured\n") unless $backup_user;
-  die("no key backup directory configured\n") unless $keybackup;
-  die("key backup directory does not exist\n") unless -d $keybackup;
-  my $phrasedir;
-  ($user, $phrasedir) = privileged_map_user($keyring, $user);
-  die("key has a passphrase\n") if -s "$phrasedir/$user";
-  my ($tdir) = prepare_tmp_gnupghome();
-  spew("$tdir/params", "keytotpm\ny\nsave\n");
-  my $oldgnupghome = privileged_switch_gnupghome($keyring);
-  my ($fpr, $keygrip) = find_key($user);
-  die("could not determine fingerprint of key '$user'\n") unless $fpr;
-  die("could not determine keygrip of key '$user'\n") unless $keygrip;
-  my $gripfile = "$ENV{'GNUPGHOME'}/private-keys-v1.d/$keygrip.key";
-  my $grip = slurp($gripfile);
-  die("private key is not unprotected\n") unless $grip =~ /Key: \(private-key /m;
-  ### encrypt old keygrip with backup key
-  switch_gnupghome($oldgnupghome);
-  $oldgnupghome = privileged_switch_gnupghome('system', 0, 1);
-  unlink("$keybackup/$keygrip.key.enc");
-  rungpg_fatal('/dev/null', $tdir, $gpg, '--batch', '--encrypt', '--no-verbose', '--no-secmem-warning', '--trust-model', 'always', '--no-auto-key-locate', '-o', "$keybackup/$keygrip.key.enc", '-r', $backup_user, $gripfile);
-  switch_gnupghome($oldgnupghome);
-  $oldgnupghome = privileged_switch_gnupghome($keyring);
-  my $random = rungpg_fatal('/dev/null', undef, $gpg, '--gen-random', '--armor', '2', '24');
-  chomp $random;
-  $random = substr($random, 0, 32);
-  spew("$phrasedir/$user", "$random\n");
-  eval {
-    rungpg_fatal("$phrasedir/$user", $tdir, $gpg, '--batch', '--no-secmem-warning', @pinentrymode, '--passphrase-fd=0', '--command-file', "$tdir/params", '--edit-key', $user);
-    $grip = slurp($gripfile);
-    die("private key is not shadowed after keytotpm operation\n") unless $grip =~ /Key: \(shadowed-private-key /m;
-  };
-  if ($@) {
-    spew("$phrasedir/$user", '');
-    die($@);
-  }
-  switch_gnupghome($oldgnupghome);
-  return (0, '', '');
-}
-
-sub cmd_privileged_enckeygen {
-  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
-  if (@args && $args[0] eq 'sym') {
-    my $keyid = do_keygen_sym();
-    return(0, '', "$keyid\n");
-  }
-  die("please specify a user\n") if $user eq '-';
-  die("usage: enckeygen <type> <days>\n") unless @args == 2;
-  my $type = $args[0];
-  my $expire = $args[1];
-  die("bad expire format\n") unless $expire =~ /^\d{1,10}$/s;
-  if ($type =~ /^(rsa|elg)\@(2048|4096)$/) {
-    $type =~ s/\@//;
-  } elsif ($type ne 'cv25519') {
-    die("bad type: $type\n");
-  }
-  my $phrasedir;
-  ($user, $phrasedir) = privileged_map_user($keyring, $user);
-  my $oldgnupghome = privileged_switch_gnupghome($keyring);
-  my ($fpr) = find_key($user);
-  die("could not determine fingerprint of key '$user'\n") unless $fpr;
-  my ($efpr) = find_key($user, 'e');
-  die("key '$user' already has an encryption key\n") if $efpr;
-  rungpg_fatal("$phrasedir/$user", undef, $gpg, '--batch', '--no-secmem-warning', '--passphrase-fd=0', '--quick-add-key', $fpr, $type, 'encr', "${expire}d");
-  my $pubkey = rungpg_fatal('/dev/null', undef, $gpg, '--export', '-a', $user);
-  switch_gnupghome($oldgnupghome);
-  return (0, '', $pubkey);
-}
-
-sub cmd_privileged_enckeydel {
-  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
-  die("excess arguments\n") unless @args == 0;
-  if ($encryptionkeys && -e "$encryptionkeys/$user") {
-    unlink("$encryptionkeys/$user");
-    return (0, '', '');
-  }
-  my $phrasedir;
-  ($user, $phrasedir) = privileged_map_user($keyring, $user);
-  my $oldgnupghome = privileged_switch_gnupghome($keyring);
-  my ($fpr) = find_key($user);
-  die("could not determine fingerprint of key '$user'\n") unless $fpr;
-  my ($efpr) = find_key($user, 'e');
-  die("key '$user' does not have an encryption key\n") unless $efpr;
-  die("the enctyption key for '$user' is the primary key\n") if $fpr eq $efpr;
-  rungpg_fatal('/dev/null', undef, $gpg, '--batch', '--yes', '--delete-secret-and-public-key', "$efpr!");
-  switch_gnupghome($oldgnupghome);
-  return (0, '', '');
-}
-
-sub cmd_privileged_enckeylist {
-  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
-  my $result = '';
-  for my $keyid (ls($encryptionkeys)) {
-    my $info = eval { read_encparams_sym("$encryptionkeys/$keyid", $keyid) };
-    my $istr = '';
-    $istr .= "$_=$info->{$_}," for grep {$info && defined($info->{$_})} qw{version created s2kalgo s2kcnt cipheralgo};
-    $result .= "$keyid  ".substr($istr || 'broken,', 0, -1)."\n";
-  }
-  return (0, '', $result);
-}
-
-sub cmd_privileged_aliaslist {
-  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
-  die("excess arguments\n") unless @args == 0;
-  my $aliasdir = privileged_get_aliasdir($keyring);
-  my $phrasedir = privileged_get_phrasedir($keyring);
-  my $result = '';
-  for my $alias (ls($aliasdir)) {
-    my $isenc = $alias =~ /^:enc/ ? 1 : 0;
-    my $user = read_alias($aliasdir, $alias, $isenc);
-    my $dead = ' (dead)';
-    $dead = '' if $isenc && $encryptionkeys && -e "$encryptionkeys/$user";
-    $dead = '' if $phrasedir && -e "$phrasedir/$user";
-    $result .= "$alias -> $user$dead\n";
-  }
-  return (0, '', $result);
-}
-
-sub cmd_privileged_aliasgen {
-  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
-  die("usage: aliasgen <alias>\n") unless @args == 1;
-  my $alias = $args[0];
-  my $aliasdir = privileged_get_aliasdir($keyring, 1);
-  write_alias($aliasdir, $user, $alias);
-  return (0, '', '');
-}
-
-sub cmd_privileged_aliasdel {
-  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
-  die("excess arguments\n") unless @args == 0;
-  my $aliasdir = privileged_get_aliasdir($keyring);
-  die("unknown alias: $user\n") unless $aliasdir && -e "$aliasdir/$user";
-  unlink("$aliasdir/$user");
-  return (0, '', '');
-}
-
-sub cmd_privileged_backup {
-  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
-  die("no backup key configured\n") unless $backup_user;
-  die("no backup locations configured\n") unless @backup_locations;
-  my @bl = @backup_locations;
-  for (@bl) {
-    s/^\/+//;
-    die("cannot backup complete filesystem\n") unless $_;
-  }
-  # create backup tar
-  my $tdir = create_tmpdir();
-  my $tarfile = "$tdir/backup.tar";
-  my $encfile = "$tdir/backup.enc";
-  unlink($tarfile);
-  unlink($encfile);
-  rungpg_fatal('/dev/null', $tdir, 'tar', '-C', '/', '-cf', $tarfile, @bl);
-
-  # encrypt file
-  my $oldgnupghome = privileged_switch_gnupghome('system', 0, 1);
-  rungpg_fatal('/dev/null', $tdir, $gpg, '--batch', '--encrypt', '--no-verbose', '--no-secmem-warning', '--trust-model', 'always', '--no-auto-key-locate', '-o', $encfile, '-r', $backup_user, $tarfile);
-  switch_gnupghome($oldgnupghome);
-  unlink($tarfile);
-
-  my $fd;
-  open($fd, '<', $encfile) || die("$encfile: $!\n");
-  remove_tree($tdir);
-  privileged_replyfile($fd, $encfile);
-  close($fd);
-  return (0, '', '');
-}
-
-sub cmd_privileged_log {
-  my ($cmd, $user, $hashalgo, $keyring, @args) = @_;
-  my $fd;
-  open($fd, '<', $privileged_logfile) || die("$privileged_logfile: $!\n");
-  privileged_replyfile($fd, $privileged_logfile);
-  close($fd);
-  return (0, '', '');
-}
-
-sub privileged_replyfile {
-  my ($fd, $filename) = @_;
-  my $size = -s $fd;
-  # send back reply (cannot use reply() as it closes the socket)
-  my $ret = pack('nn', 1, length($size)).$size;
-  $ret = pack("nnn", 0, length($ret), 0).$ret;
-  swrite(*CLNT, $ret);
-  # send back file
-  while ($size > 0) {
-    my $buf = '';
-    my $r = sysread($fd, $buf, $size > 8192 ? 8192 : $size);
-    die("$filename: $!\n") unless defined $r;
-    die("$filename: unexpected EOF\n") unless $r;
-    swrite(*CLNT, $buf);
-    $size -= length($buf);
-  }
-  close CLNT;
-}
-
-sub privileged_generate_nonce {
-  my ($now, $logfdlen) = @_;
-  $now = int($now / 600);
-  return Digest::SHA::sha256_hex("$extranonce/$now/$logfdlen");
-}
-
-sub privileged_verify_signature {
-  my ($signature, $now, $logfdlen, $algouser, $keyring, @args) = @_;
-  my $oldgnupghome = privileged_switch_gnupghome('privileged', 1);
-  my $tdir = create_tmpdir();
-  my ($status, $out, $err);
-  spew("$tdir/sig", pack('H*', $signature));
-  for my $tdelta (0, 600) {
-    spew("$tdir/data", "privileged\0$algouser\0$keyring\0".privileged_generate_nonce($now - $tdelta, $logfdlen)."\0".join("\0", @args));
-    ($status, $out, $err) = rungpg('/dev/null', undef, $gpg, '--no-secmem-warning', '--batch', '--status-fd=1', '--verify', "$tdir/sig", "$tdir/data");
-    last unless $status;
-  }
-  switch_gnupghome($oldgnupghome);
-  remove_tree($tdir);
-  die("bad signature\n") if $status;
-  die("bad status output\n") unless $out =~ /^\[GNUPG:\] GOODSIG ([0-9A-F]+) (.*)$/m;
-  my ($keyid, $user) = ($1, $2);
-  die("cannot extract email from user $user\n") unless $user =~ /(\<\S+\>)/;
-  return "$keyid$1";
-}
-
-sub privileged_log {
-  my ($logfd, $logline) = @_;
-  $logline =~ s/[\r\n].*//s;
-  $logline =~ s/[\000-\037\177]//g;
-  $logline = "$logline\n";
-  die("privlog write: $!\n") unless syswrite($logfd, $logline) == length($logline);
-}
-
-sub cmd_privileged {
-  my ($cmd, $user, $hashalgo, @args) = @_;
-  die("privileged mode is not configured\n") unless $privileged_logfile && $privileged_gnupghome;
-  if (@args == 1 && $args[0] eq 'nonce') {
-    my $logfdlen = (-s $privileged_logfile) || 0;
-    my $nonce = privileged_generate_nonce(time(), $logfdlen);
-    return (0, '', $nonce);
-  }
-  -d $tmpdir || mkdir($tmpdir, 0700) || die("$tmpdir: $!\n");
-  die("privileged: please specify a user\n") unless $user;
-  die("privileged: bad number of arguments\n") unless @args >= 3;
-  die("privileged: oldproto is not supported\n") if $oldproto;
-  my ($keyring, $signature, $pcmd) = splice(@args, 0, 3);
-  die("privileged: bad keyring '$keyring'\n") if $keyring ne 'standard' && $keyring ne 'restricted' && $keyring ne 'privileged' && $keyring ne 'system';
-  die("privileged: no system keyring configured\n") if $keyring eq 'system' && !$system_gnupghome;
-  die("privileged: no restricted keyring configured\n") if $keyring eq 'restricted' && !$restricted_gnupghome;
-  die("bad signature\n") unless ($testmode && $signature eq 'testmode') || $signature =~ /^\A[0-9a-fA-F]+\z/s;
-  my $handler = $privileged_cmds{$pcmd};
-  die("unknown command: $pcmd\n") unless $handler;
-  die("please specify a user\n") if $user eq '-' && $handler->[1];
-  die("$pcmd: keyring must be ".join('|', @{$handler->[2]})."\n") unless grep {$keyring eq $_} @{$handler->[2]};
-
-  if ($testmode) {
-    my ($status, $err, @out) = $handler->[0]->($pcmd, $user, $hashalgo, $keyring, @args);
-    exit(0) if !$status && ($pcmd eq 'backup' || $pcmd eq 'log');		# already replied
-    return ($status, $err, @out);
-  }
-
-  my $logfd;
-  open($logfd, '>>', $privileged_logfile) || die("$privileged_logfile: $!\n");
-  flock($logfd, LOCK_EX) || die("flock $privileged_logfile: $!\n");
-  my $now = time();
-  my $logfdlen = -s $logfd;
-  my $privileged_user = eval { privileged_verify_signature($signature, $now, $logfdlen, "$hashalgo:$user", $keyring, $pcmd, @args) };
-  if ($@) {
-    privileged_log($logfd, "auth $now $@");
-    sleep(5);
-    close($logfd);
-    die($@);
-  }
-  privileged_log($logfd, "req $now $privileged_user $user $hashalgo $keyring $pcmd @args");
-  my ($status, $err, @out);
-  eval { ($status, $err, @out) = $handler->[0]->($pcmd, $user, $hashalgo, $keyring, @args) };
-  ($status, $err) = (1, $@) if $@;
-  $now = time();
-  if ($status) {
-    privileged_log($logfd, "fail $now $status ".(split(/[\r\n]/, $err || 'unknown error'))[-1]);
-  } else {
-    privileged_log($logfd, "ok $now");
-  }
-  close($logfd);
-  exit(0) if !$status && ($pcmd eq 'backup' || $pcmd eq 'log');		# already replied
-  return ($status, $err, @out);
-}
-
-################
-
-goto testit2 if $testmode;	# argv already read
 
 ## read the request, call the handler, reply the result
 @argv = readreq();
@@ -3145,7 +1726,7 @@ if (($argv[0] eq 'privsign' || $argv[0] eq 'certgen' || $argv[0] eq 'privtotp') 
   printlog("$peer: @argv");
 }
 
-testit2:
+testit:
 
 my %cmds = (
   'ping'	=> \&cmd_ping,
@@ -3169,6 +1750,8 @@ $hashalgo ||= 'SHA1';	# historic default, maybe die() instead?
 die("illegal user $user\n") if $user ne '' && ($user =~ /[\000-\037\/]/s || $user =~ /^\./s);
 die("illegal hashalgo $hashalgo\n") if $hashalgo ne '' && $hashalgo =~ /[\000-\037]/s;
 if ($cmd eq 'privileged') {
+  die("privileged module is not loaded\n") unless defined &cmd_privileged;
+  die("privileged: oldproto is not supported\n") if $oldproto;
   reply(cmd_privileged($cmd, $user, $hashalgo, @argv));
   exit(0);
 }

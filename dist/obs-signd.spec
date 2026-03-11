@@ -78,12 +78,19 @@ for k in 5 8; do
   install -m 0644 sig*.${k}.gz %{buildroot}%{_mandir}/man${k}/
 done
 
-# binaries and configuration
+# binaries, modules and configuration
 install -d -m 0755 %{buildroot}/etc/permissions.d
 install -m 0755 signd %{buildroot}/usr/sbin/
 install -m 0750 sign %{buildroot}/usr/bin/
 install -m 0644 sign.conf %{buildroot}/etc/
 install -m 0644 dist/sign.permission %{buildroot}/etc/permissions.d/sign
+install -d -m 0755 %{buildroot}/usr/lib/signd
+install -m 0644 signd_gcrypt %{buildroot}/usr/lib/signd/
+install -m 0644 signd_openssl %{buildroot}/usr/lib/signd/
+install -m 0644 signd_pkcs11 %{buildroot}/usr/lib/signd/
+install -m 0644 signd_privileged %{buildroot}/usr/lib/signd/
+install -m 0644 signd_ssl %{buildroot}/usr/lib/signd/
+install -m 0644 signd_tpm %{buildroot}/usr/lib/signd/
 
 # install fillups
 FILLUP_DIR=%{buildroot}%{_fillupdir}
@@ -114,6 +121,7 @@ install -m 0644 dist/sysconfig.signd $FILLUP_DIR/
 %attr(0755,root,root) /usr/sbin/signd
 %attr(0755,root,root) /usr/sbin/rcobssignd
 %attr(0644,root,root) %{_unitdir}/obssignd.service
+/usr/lib/signd
 %{_fillupdir}/sysconfig.signd
 /etc/permissions.d/sign
 %doc %{_mandir}/man*/*

@@ -1,0 +1,269 @@
+##
+## libgcrypt support
+##
+
+use Crypt::GCrypt::Sexp;
+use Crypt::GCrypt::MPI;
+use Crypt::GCrypt;
+
+use Compress::Raw::Zlib ();	# we need zlib to decompress gpg's compressed data packet
+
+my $pgp_curve_nistp256 = "\x2a\x86\x48\xce\x3d\x03\x01\x07";
+my $pgp_curve_nistp384 = "\x2b\x81\x04\x00\x22";
+my $pgp_curve_ed25519  = "\x2b\x06\x01\x04\x01\xda\x47\x0f\x01";
+my $pgp_curve_cv25519  = "\x2b\x06\x01\x04\x01\x97\x55\x01\x05\x01";
+
+Crypt::GCrypt::gcrypt_version();	# initialize lib
+
+sub sign_with_gcrypt {
+  my ($info, $hash, $hashalgo, $replyv4) = @_;
+  die("sign_with_gcrypt: missing fingerprint\n") unless $info->{'fingerprint'};
+  die("bad hash $hash\n") unless $hash =~ /^((?:[0-9a-fA-F][0-9a-fA-F])+)\@(0[01][0-9a-fA-F]{8})$/;
+  my $extra = $2;
+  $hash = $1;
+  $hashalgo = lc($hashalgo);
+  my $pgphashalgo = get_pgphashalgo($hashalgo);
+  die("sign_with_gcrypt: bad hashalgo $hashalgo\n") unless $pgphashalgo;
+  my $sigdata;
+  if ($info->{'algo'} == 1) {
+    die("sign_with_gcrypt: missing MPIs\n") unless @{$info->{'mpis'} || []} == 2 && @{$info->{'smpis'} || []} == 4;
+    my ($n, $e, $d, $p, $q, $u) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$info->{'mpis'}}, @{$info->{'smpis'}};
+    my $data = Crypt::GCrypt::Sexp->build("(data (flags pkcs1) (hash $hashalgo %b))", pack('H*', $hash));
+    my $skey = Crypt::GCrypt::Sexp->build("(private-key (rsa (n %M) (e %M) (d %M) (p %M) (q %M) (u %M)))", $n, $e, $d, $p, $q, $u);
+    my $res = Crypt::GCrypt::pk_sign($data, $skey);
+    my $sv = $res->nth_mpi(1, Crypt::GCrypt::MPI::FMT_USG(), 's');
+    die("could not extract sign result\n") unless $sv;
+    $sigdata = $sv->print(Crypt::GCrypt::MPI::FMT_PGP());
+  } elsif ($info->{'algo'} == 17) {
+    die("sign_with_gcrypt: missing MPIs\n") unless @{$info->{'mpis'} || []} == 4 && @{$info->{'smpis'} || []} == 1;
+    my $qlen = length($info->{'mpis'}->[1]);
+    my $hashraw = substr(pack('H*', $hash), 0, $qlen < 20 ? 20 : $qlen);
+    my ($p, $q, $g, $y, $x) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$info->{'mpis'}}, @{$info->{'smpis'}};
+    my $data = Crypt::GCrypt::Sexp->build("(data (flags raw) (value %b))", $hashraw);
+    my $skey = Crypt::GCrypt::Sexp->build("(private-key (dsa (p %M) (q %M) (g %M) (y %M) (x %M)))", $p, $q, $g, $y, $x);
+    my $res = Crypt::GCrypt::pk_sign($data, $skey);
+    my $rv = $res->nth_mpi(1, Crypt::GCrypt::MPI::FMT_USG(), 'r');
+    my $sv = $res->nth_mpi(1, Crypt::GCrypt::MPI::FMT_USG(), 's');
+    $sigdata = $rv->print(Crypt::GCrypt::MPI::FMT_PGP()).$sv->print(Crypt::GCrypt::MPI::FMT_PGP());
+  } elsif ($info->{'algo'} == 19) {
+    die("sign_with_gcrypt: missing MPIs\n") unless @{$info->{'mpis'} || []} == 1 && @{$info->{'smpis'} || []} == 1;
+    my $curve;
+    $curve = 'NIST P-256' if $info->{'curve'} eq $pgp_curve_nistp256;
+    $curve = 'NIST P-384' if $info->{'curve'} eq $pgp_curve_nistp384;
+    die("sign_with_gcrypt: unsupported ECDSA curve\n") unless $curve;
+    my $hashraw = pack('H*', $hash);
+    $hashraw = substr($hashraw, 0, 32) if $curve eq 'NIST P-256';
+    $hashraw = substr($hashraw, 0, 48) if $curve eq 'NIST P-384';
+    my ($q, $d) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$info->{'mpis'}}, @{$info->{'smpis'}};
+    my $data = Crypt::GCrypt::Sexp->build("(data (flags raw) (value %b))", $hashraw);
+    my $skey = Crypt::GCrypt::Sexp->build("(private-key (ecc (curve \"$curve\") (q %M) (d %M)))", $q, $d);
+    my $res = Crypt::GCrypt::pk_sign($data, $skey);
+    my $rv = $res->nth_mpi(1, Crypt::GCrypt::MPI::FMT_USG(), 'r');
+    my $sv = $res->nth_mpi(1, Crypt::GCrypt::MPI::FMT_USG(), 's');
+    $sigdata = $rv->print(Crypt::GCrypt::MPI::FMT_PGP()).$sv->print(Crypt::GCrypt::MPI::FMT_PGP());
+  } elsif ($info->{'algo'} == 22) {
+    my $curve;
+    $curve = 'Ed25519' if $info->{'curve'} eq $pgp_curve_ed25519;
+    die("sign_with_gcrypt: unsupported EdDSA curve\n") unless $curve;
+    die("sign_with_gcrypt: missing MPIs\n") unless @{$info->{'mpis'} || []} == 1 && @{$info->{'smpis'} || []} == 1;
+    my ($d) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$info->{'smpis'}};
+    my $data = Crypt::GCrypt::Sexp->build("(data (flags eddsa) (hash-algo sha512) (value %b))", pack('H*', $hash));
+    my $skey = Crypt::GCrypt::Sexp->build("(private-key (ecc (curve \"$curve\") (d %M)))", $d);
+    my $res = Crypt::GCrypt::pk_sign($data, $skey);
+    my $rv = $res->nth_mpi(1, Crypt::GCrypt::MPI::FMT_USG(), 'r');
+    my $sv = $res->nth_mpi(1, Crypt::GCrypt::MPI::FMT_USG(), 's');
+    $sigdata = $rv->print(Crypt::GCrypt::MPI::FMT_PGP()).$sv->print(Crypt::GCrypt::MPI::FMT_PGP());
+  } else {
+    die("sign_with_gcrypt: unsupported pubkey algorithm $info->{'algo'}\n");
+  }
+  return wrap_into_pgpsig_v4($extra, $info->{'fingerprint'}, $info->{'algo'}, $pgphashalgo, $hash, $sigdata) if $replyv4;
+  return wrap_into_pgpsig_v3($extra, $info->{'fingerprint'}, $info->{'algo'}, $pgphashalgo, $hash, $sigdata);
+}
+
+sub can_sign_with_gcrypt {
+  my ($info) = @_;
+  return 0 unless $info && $info->{'algo'};
+  return 0 unless $info->{'smpis'};
+  return 1 if $info->{'algo'} == 1;
+  return 1 if $info->{'algo'} == 17;
+  return 1 if $info->{'algo'} == 22 && $info->{'curve'} eq $pgp_curve_ed25519;
+  return 1 if $info->{'algo'} == 19 && $info->{'curve'} eq $pgp_curve_nistp256;
+  return 1 if $info->{'algo'} == 19 && $info->{'curve'} eq $pgp_curve_nistp384;
+  return 0;
+}
+
+sub decrypt_cfb_with_gcrypt {
+  my ($cipheralgo, $key, $edata) = @_;
+  my ($cipher, $blklen);
+  if ($cipheralgo == 7) {	# AES128
+    die("bad cipher key length\n") unless length($key) == 16;
+    $blklen = 16;
+    $cipher = Crypt::GCrypt->new('type' => 'cipher', 'algorithm' => 'aes128', 'mode' => 'cfb', 'padding' => 'none');
+  } elsif ($cipheralgo == 9) {	# AES256
+    die("bad cipher key length\n") unless length($key) == 32;
+    $blklen = 16;
+    $cipher = Crypt::GCrypt->new('type' => 'cipher', 'algorithm' => 'aes256', 'mode' => 'cfb', 'padding' => 'none');
+  }
+  die("decrypt_with_gcrypt: unsupported cipher algorithm $cipheralgo\n") unless $cipher && $blklen;
+  $cipher->start('decrypting');
+  $cipher->setkey($key);
+  my $encrypted = $edata->{'encrypted'};
+  my $padlen = length($encrypted) % $blklen;
+  my $pad = $padlen ? ("\0" x ($blklen - $padlen)) : '';
+  my $plain = $cipher->decrypt("$encrypted$pad");
+  $plain .= $cipher->finish();
+  $plain = substr($plain, 0, length($encrypted)) if $padlen;
+  die("bad DEK data\n") if length($plain) < $blklen + 2;
+  my @chk = unpack('nn', substr($plain, $blklen - 2, 4));
+  die("DEK mismatch\n") if $chk[0] != $chk[1];
+  if ($edata->{'mdc'}) {
+    die("MDC mismatch\n") if length($plain) < $blklen + 2 + 22 || unpack('n', substr($plain, -22, 2)) != 0xd314;
+    die("MDC mismatch\n") if substr($plain, -20) ne Digest::SHA::sha1(substr($plain, 0, -20));
+    substr($plain, -22, 22, '');
+  }
+  return substr($plain, $blklen + 2);
+}
+
+sub decrypt_aead_with_gcrypt {
+  my ($cipheralgo, $key, $edata) = @_;
+  die("cipher algo mismatch\n") if $edata->{'aead_cipher'} != $cipheralgo;
+  my $chunksize = $edata->{'aead_chunksize'};
+  die("illegal chunk size\n") unless $chunksize >= 0 && $chunksize <= 56;
+  $chunksize = 1 << ($chunksize + 6);
+  my ($ciphermode, $iv_size);
+  ($ciphermode, $iv_size) = ('eax', 16) if $edata->{'aead_algo'} == 1;
+  ($ciphermode, $iv_size) = ('ocb', 15) if $edata->{'aead_algo'} == 2;
+  die("decrypt_with_gcrypt: unsupported aead algorithm $edata->{'aead_algo'}\n") unless $ciphermode && $iv_size;
+  my $encrypted = $edata->{'encrypted'};
+  die("truncated encrypted data\n") unless length($encrypted) >= $iv_size + 16;
+  my $aead_iv = substr($encrypted, 0, $iv_size, '');
+  my $finaltag = substr($encrypted, -16, 16, '');
+  my $cipher;
+  if ($cipheralgo == 7) {	# AES128
+    $cipher = Crypt::GCrypt->new('type' => 'cipher', 'algorithm' => 'aes128', 'mode' => $ciphermode, 'padding' => 'none');
+  } elsif ($cipheralgo == 9) {	# AES256
+    $cipher = Crypt::GCrypt->new('type' => 'cipher', 'algorithm' => 'aes256', 'mode' => $ciphermode, 'padding' => 'none');
+  }
+  die("decrypt_with_gcrypt: unsupported cipher algorithm $cipheralgo\n") unless $cipher;
+  $cipher->start('decrypting');
+  $cipher->setkey($key);
+  my $plain = '';
+  my $chunkindex = 0;
+  while (length($encrypted)) {
+    my $chunk = substr($encrypted, 0, $chunksize + 16, '');
+    die("truncated data\n") unless length($chunk) >= 16;
+    my $tag = substr($chunk, -16, 16, '');
+    my $nonce = $aead_iv;
+    substr($nonce, -8, 8) ^= pack('NN', 0, $chunkindex);
+    $cipher->setiv($nonce);
+    my $ad = pack('CCCCCNN', 0xd4, 1, $edata->{'aead_cipher'}, $edata->{'aead_algo'}, $edata->{'aead_chunksize'}, 0, $chunkindex);
+    $cipher->authenticate($ad);
+    $cipher->final();
+    my $decrypted = $cipher->decrypt_raw($chunk);
+    $cipher->checktag($tag);
+    $plain .= $decrypted;
+    $chunkindex++;
+  }
+  my $nonce = $aead_iv;
+  substr($nonce, -8, 8) ^= pack('NN', 0, $chunkindex);
+  $cipher->setiv($nonce);
+  my $ad = pack('CCCCCNNNN', 0xd4, 1, $edata->{'aead_cipher'}, $edata->{'aead_algo'}, $edata->{'aead_chunksize'}, 0, $chunkindex, 0, length($plain));
+  $cipher->authenticate($ad);
+  $cipher->final();
+  $cipher->decrypt_raw('');
+  $cipher->checktag($finaltag);
+  $cipher->finish();
+  return $plain;
+}
+
+sub decrypt_cipher_with_gcrypt {
+  my ($cipheralgo, $key, $edata) = @_;
+  return decrypt_cfb_with_gcrypt($cipheralgo, $key, $edata) if $edata->{'method'} eq 'cfb';
+  return decrypt_aead_with_gcrypt($cipheralgo, $key, $edata) if $edata->{'method'} eq 'aead';
+  die("decrypt_with_gcrypt: unsupported method $edata->{'method'}\n");
+}
+
+sub decrypt_with_gcrypt {
+  my ($info, $einfo, $edata) = @_;
+  die("decrypt_with_gcrypt: encryption algo mismatch\n") if $info->{'algo'} != $einfo->{'algo'};
+  my $value;
+  if ($info->{'algo'} == 1) {
+    die("decrypt_with_gcrypt: missing MPIs\n") unless @{$info->{'mpis'} || []} == 2 && @{$info->{'smpis'} || []} == 4 && @{$einfo->{'mpis'} || []} == 1;
+    my ($av) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$einfo->{'mpis'}};
+    my ($n, $e, $d, $p, $q, $u) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$info->{'mpis'}}, @{$info->{'smpis'}};
+    my $encval = Crypt::GCrypt::Sexp->build("(enc-val (flags) (rsa (a %M)))", $av);
+    my $skey = Crypt::GCrypt::Sexp->build("(private-key (rsa (n %M) (e %M) (d %M) (p %M) (q %M) (u %M)))", $n, $e, $d, $p, $q, $u);
+    my $res = Crypt::GCrypt::pk_decrypt($encval, $skey);
+    $value = $res->nth_data(1, 'value');
+  } elsif ($info->{'algo'} == 16) {
+    die("decrypt_with_gcrypt: missing MPIs\n") unless @{$info->{'mpis'} || []} == 3 && @{$info->{'smpis'} || []} == 1 && @{$einfo->{'mpis'} || []} == 2;
+    my ($av, $bv) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$einfo->{'mpis'}};
+    my ($p, $g, $y, $x) = map {Crypt::GCrypt::MPI->new('format' => Crypt::GCrypt::MPI::FMT_USG(), 'value' => $_)} @{$info->{'mpis'}}, @{$info->{'smpis'}};
+    my $encval = Crypt::GCrypt::Sexp->build("(enc-val (flags) (elg (a %M) (b %M)))", $av, $bv);
+    my $skey = Crypt::GCrypt::Sexp->build("(private-key (elg (p %M) (g %M) (y %M) (x %M)))", $p, $g, $y, $x);
+    my $res = Crypt::GCrypt::pk_decrypt($encval, $skey);
+    $value = $res->nth_data(1, 'value');
+  } else {
+    die("decrypt_with_gcrypt: unsupported encryption algorithm $info->{'algo'}\n");
+  }
+  $value = substr($value, 1) if unpack('C', $value) == 0;
+  die("decryption error\n") unless unpack('C', $value) == 2;
+  my $idx = index($value, "\0");
+  die("decryption error\n") unless $idx >= 0;
+  $value = substr($value, $idx + 1);
+  my $cipheralgo = unpack('C', substr($value, 0, 1, ''));
+  my $csum = unpack('n', substr($value, -2, 2, ''));
+  my $csum2 = 0;
+  $csum2 += $_ for unpack('C*', $value);
+  die("decryption error\n") unless $csum == ($csum2 % 65536);
+  return decrypt_cipher_with_gcrypt($cipheralgo, $value, $edata);
+}
+
+sub can_decrypt_with_gcrypt {
+  my ($einfo, $edata) = @_;
+  return 0 unless $einfo && $einfo->{'algo'};
+  return 0 unless $einfo->{'algo'} == 1 || $einfo->{'algo'} == 16;
+  if ($edata && $edata->{'method'} eq 'aead') {
+    return 0 unless defined &Crypt::GCrypt::authenticate;
+    return 0 unless $edata->{'aead_algo'} == 1 || $edata->{'aead_algo'} == 2;
+    return 0 unless $edata->{'aead_cipher'} == 7 || $edata->{'aead_cipher'} == 9;
+  }
+  return 1;
+}
+
+sub pgp_s2k_is {
+  my ($hashalgo, $salt, $passphrase, $count, $outsize) = @_;
+  die("unsupported s2k_is params\n") if $hashalgo != 10 || length($salt) != 8 || $count < 1024 || $outsize > 32 || $count > 131072;
+  my $l = length($salt) + length($passphrase);
+  $count = $l if $count < $l;
+  my $blob = "$salt$passphrase" x (1 + int($count / $l));
+  substr($blob, $count, length($blob), '');
+  return substr(Digest::SHA::sha512($blob), 0, $outsize);
+}
+
+sub decrypt_sym_with_gcrypt {
+  my ($info, $salt, $edata) = @_;
+  my $keylen;
+  $keylen = 32 if $info->{'cipheralgo'} == 9;
+  die("decrypt_sym_with_gcrypt: unsupported cipher algorithm $info->{'cipheralgo'}\n") unless $keylen;
+  my $s2kcnt = (16 + ($info->{'s2kcnt'} & 0x0f)) << (6 + (($info->{'s2kcnt'} >> 4) & 0x0f));
+  my $secret = pgp_s2k_is($info->{'s2kalgo'}, $salt, $info->{'secret'}, $s2kcnt, $keylen);
+  my $decrypted = decrypt_cipher_with_gcrypt($info->{'cipheralgo'}, $secret, $edata);
+  return decode_decrypted_data($decrypted);
+}
+
+sub can_decrypt_sym_with_gcrypt {
+  my ($info, $edata) = @_;
+  return 0 unless $info && defined($info->{'secret'});
+  return 0 if ($info->{'s2kalgo'} || 0) != 10;
+  return 0 if ($info->{'cipheralgo'} || 0) != 9;
+  return 0 if ($info->{'s2kcnt'} || 0) > 0x70;
+  return 1;
+}
+
+sub gcrypt_init {
+  return 1;
+}
+
+return { 'init' => \&gcrypt_init };
+# vim: syntax=perl

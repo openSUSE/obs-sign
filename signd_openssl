@@ -1,0 +1,108 @@
+##
+## openssl support (currently only usable for mldsa65/mldsa87 signing)
+##
+
+# configuration
+
+my $openssl = 'openssl';
+my $opensslkeys = '';
+
+
+# copied from main config
+my $tmpdir;
+
+# this must match the code of x509_signedattrs() in x509.c
+sub create_cms_signer_info {
+  my ($hash, $t) = @_;
+  my @sa;
+  my $hl = length($hash);
+  die if $hl == 0 || $hl + 15 >= 128;
+  push @sa, pack('H*', '301806092a864886f70d010903310b06092a864886f70d010701');	# content type
+  if ($t) {
+    my @gt = gmtime($t);
+    if ($gt[5] >= 50 && $gt[5] < 150) {
+      $t = sprintf "%02d%02d%02d%02d%02d%02dZ", $gt[5] % 100, $gt[4] + 1, @gt[3,2,1,0];
+      die unless length($t) == 13;
+      push @sa, pack('H*', '301c06092a864886f70d010905310f170d').$t;		# sign time
+    } else {
+      $t = sprintf "%04d%02d%02d%02d%02d%02dZ", $gt[5] + 1900, $gt[4] + 1, @gt[3,2,1,0];
+      die unless length($t) == 15;
+      push @sa, pack('H*', '301e06092a864886f70d0109053111180f').$t;		# sign time
+    }
+  }
+  push @sa, pack('CCH*CCC', 0x30, $hl + 15, '06092a864886f70d01090431', $hl + 2, 4, $hl).$hash;
+  my $sa = join('', sort(@sa));
+  my $salen = length($sa);
+  die if $salen > 255;
+  return ($salen < 128 ? pack('CC', 0x31, $salen) : pack('CCC', 0x31, 0x81, $salen)).$sa;
+}
+
+sub openssl_find_key {
+  my ($user) = @_;
+  die("no opensslkeys directory configured\n") unless $opensslkeys;
+  die("illegal openssl key $user\n") if $user =~ /\.prv$/;
+  die("unknown openssl key $user\n") unless -s "$opensslkeys/$user";
+  my @provider;
+  if (-s "$opensslkeys/$user.prv") {
+    my $provider = slurp_first_line("$opensslkeys/$user.prv");
+    push @provider, '-provider', $1, '-provider', 'default' if $provider =~ /(\S+)/;
+  }
+  return "$opensslkeys/$user", @provider;
+}
+
+sub sign_with_openssl {
+  my ($phrasefile, $info, $hash, $hashalgo, $replyv4) = @_;
+  die("bad hash $hash\n") unless $hash =~ /^((?:[0-9a-fA-F][0-9a-fA-F])+)\@((?:00|01|43)[0-9a-fA-F]{8})$/;
+  my $extra = $2;
+  $hash = $1;
+  $hashalgo = lc($hashalgo);
+  my $pgphashalgo = get_pgphashalgo($hashalgo);
+  die("sign_with_openssl: bad hashalgo $hashalgo\n") unless $pgphashalgo;
+  my ($keyfile, @provider) = openssl_find_key($info->{'user'});
+  my $file = "$tmpdir/opensslin.$$";
+  my @args = ('-pkeyopt', "digest:$hashalgo");
+  if (substr($extra, 0, 2) eq '43') {
+    # create and sign cms signer info block
+    $hash = unpack('H*', create_cms_signer_info(pack('H*', $hash), unpack('N', pack('H*', substr($extra, 2, 8)))));
+    @args = ('-rawin', '-in', $file);
+  }
+  spew($file, pack('H*', $hash));
+  push @args, '-passin', "file:$phrasefile" if $phrasefile ne '/dev/null' && -s $phrasefile;
+  my $sig = rungpg_fatal($file, [ $file ], $openssl, 'pkeyutl', @provider, '-inkey', $keyfile, '-sign', @args);
+  unlink($file);
+  my $fingerprint = "\0\0\0\0" x 10;
+  my $pgppubalgo;
+  $pgppubalgo = 100 if length($sig) == 3309;
+  $pgppubalgo = 101 if length($sig) == 4627;
+  die("unsupported signature length\n") unless $pgppubalgo;
+  my $sigdata = encodempi(pack('C', 0x40).$sig);
+  return wrap_into_pgpsig_v4($extra, $fingerprint, $pgppubalgo, $pgphashalgo, $hash, $sigdata) if $replyv4;
+  return wrap_into_pgpsig_v3($extra, $fingerprint, $pgppubalgo, $pgphashalgo, $hash, $sigdata);
+}
+
+sub openssl_pubkey {
+  my ($user) = @_;
+  my ($keyfile, @provider) = openssl_find_key($user);
+  return rungpg_fatal("/dev/null", undef, $openssl, 'pkey', @provider, '-in', $keyfile, '-pubout');
+}
+
+sub openssl_config {
+  my ($cmd, @s) = @_;
+  if ($cmd eq 'openssl:') {
+    $openssl = $s[0];
+  } elsif ($cmd eq 'opensslkeys:') {
+    $opensslkeys = $s[0];
+  } else {
+    return 0;
+  }
+  return 1;
+}
+
+sub openssl_init {
+  my ($config) = @_;
+  $tmpdir = $config->{'tmpdir'};
+  return 1;
+}
+
+return { 'init' => \&openssl_init, 'config' => \&openssl_config };
+# vim: syntax=perl

@@ -36,6 +36,7 @@ tmpdir: $var_dir
 allow: 127.0.0.1
 phrases: $tmp_dir/gnupg/phrases
 ");
+$ENV{SIGN_MODULEPATH} = "$FindBin::Bin/.." if -e "$FindBin::Bin/../signd_gcrypt";
 
 make_path("$tmp_dir/gnupg/phrases");
 spew("$tmp_dir/gnupg/phrases/$user", '');
