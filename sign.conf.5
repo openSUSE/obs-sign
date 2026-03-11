@@ -126,7 +126,8 @@ value for outgoing requests is used if a key has not been set.
 The keyfile/certfile specifies the server certificate, the
 verifydir/verifyfile configures the ca locations to verify
 the client certificate. Note that incoming requests with no
-client certificate are rejected.
+client certificate are rejected unless "ssl_allow_certless"
+is set to true.
 .TP 4
 .BR allow_subject: " x509_subject"
 .TQ
@@ -137,6 +138,10 @@ The X509 subject is converted to a string as specified in RFC-2253
 before doing a match. If the allow_subject list is empty, no
 check is done on the X509 subject but the certificate is
 still verified.
+.TP 4
+.BR ssl_allow_certless: " true|false"
+Do not insist on a client certificate. This conflicts with
+the "allow_subject" option.
 
 .SH FILES
 .I /etc/sign.conf
