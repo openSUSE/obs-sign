@@ -1238,18 +1238,6 @@ keyextend(char *expire, char *pubkey)
 }
 
 static void
-initrandom()
-{
-  unsigned int seed = 0x23468676;
-  struct timeval tv;
-  gettimeofday(&tv, 0);
-  seed ^= (int)tv.tv_sec;
-  seed ^= (int)tv.tv_usec;
-  seed ^= (int)getpid() * 37;
-  srandom(seed);
-}
-
-static void
 createcert(char *pubkey)
 {
   struct x509 cb;
@@ -1964,7 +1952,6 @@ main(int argc, char **argv)
     {
       if (argc != 2)
 	dodie("usage: sign -C <pubkey>");
-      initrandom();
       createcert(argv[1]);
       exit(0);
     }
