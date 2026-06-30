@@ -1510,12 +1510,16 @@ read_sign_conf(const char *conf)
 	{
 	  free(user);
 	  user = strdup(bp);
+	  if (user == NULL)
+	    dodie("sign.conf: strdup failed (user)");
 	  continue;
 	}
       if (!strcmp(buf, "server"))
 	{
 	  free(host);
 	  host = strdup(bp);
+	  if (host == NULL)
+	    dodie("sign.conf: strdup failed (host)");
 	  continue;
 	}
       if (!strcmp(buf, "port"))
@@ -1708,6 +1712,8 @@ main(int argc, char **argv)
   uid = getuid();
   user = strdup("");
   host = strdup("127.0.0.1");
+  if (user == NULL || host == NULL)
+    dodie("sign: strdup failed during init");
   x509_init(&cert);
   x509_init(&othercerts);
 
@@ -1757,6 +1763,8 @@ main(int argc, char **argv)
 	{
 	  free(user);
 	  user = strdup(argv[1]);
+	  if (user == NULL)
+	    dodie("sign: strdup failed during init (user)");
 	  argc--;
 	  argv++;
 	}
