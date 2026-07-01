@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <sys/random.h>
 
 #include "inc.h"
 
@@ -255,10 +256,9 @@ static void
 x509_random_serial(struct x509 *cb)
 {
   int offset = cb->len;
-  int i;
   x509_add(cb, 0, 20);
-  for (i = 0; i < 20; i++)
-    cb->buf[offset + i] = (byte)random();
+  if (getrandom(cb->buf + offset, 20, 0) != 20)
+    dodie("x509_random_serial: could not obtain random bytes");
   cb->buf[offset] &= 0x3f;
   cb->buf[offset] |= 0x40;
   x509_tag(cb, offset, 0x02);

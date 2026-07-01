@@ -1238,18 +1238,6 @@ keyextend(char *expire, char *pubkey)
 }
 
 static void
-initrandom()
-{
-  unsigned int seed = 0x23468676;
-  struct timeval tv;
-  gettimeofday(&tv, 0);
-  seed ^= (int)tv.tv_sec;
-  seed ^= (int)tv.tv_usec;
-  seed ^= (int)getpid() * 37;
-  srandom(seed);
-}
-
-static void
 createcert(char *pubkey)
 {
   struct x509 cb;
@@ -1522,12 +1510,16 @@ read_sign_conf(const char *conf)
 	{
 	  free(user);
 	  user = strdup(bp);
+	  if (user == NULL)
+	    dodie("sign.conf: strdup failed (user)");
 	  continue;
 	}
       if (!strcmp(buf, "server"))
 	{
 	  free(host);
 	  host = strdup(bp);
+	  if (host == NULL)
+	    dodie("sign.conf: strdup failed (host)");
 	  continue;
 	}
       if (!strcmp(buf, "port"))
@@ -1720,6 +1712,8 @@ main(int argc, char **argv)
   uid = getuid();
   user = strdup("");
   host = strdup("127.0.0.1");
+  if (user == NULL || host == NULL)
+    dodie("sign: strdup failed during init");
   x509_init(&cert);
   x509_init(&othercerts);
 
@@ -1769,6 +1763,8 @@ main(int argc, char **argv)
 	{
 	  free(user);
 	  user = strdup(argv[1]);
+	  if (user == NULL)
+	    dodie("sign: strdup failed during init (user)");
 	  argc--;
 	  argv++;
 	}
@@ -1964,7 +1960,6 @@ main(int argc, char **argv)
     {
       if (argc != 2)
 	dodie("usage: sign -C <pubkey>");
-      initrandom();
       createcert(argv[1]);
       exit(0);
     }
