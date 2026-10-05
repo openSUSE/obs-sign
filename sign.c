@@ -1917,8 +1917,8 @@ main(int argc, char **argv)
     hashalgo = HASH_SHA256;	/* always sign certs with at least sha256 */
   if (mode == MODE_APPXSIGN)
     hashalgo = HASH_SHA256;	/* always sign appx with sha256 */
-  if (mode == MODE_PESIGN)
-    hashalgo = HASH_SHA256;	/* always sign PE with sha256 */
+  if (mode == MODE_PESIGN && hashalgo != HASH_SHA512)
+    hashalgo = HASH_SHA256;	/* use at least sha256 to sign PE */
   if (hashalgo == HASH_SHA1)
     algouser = user;
   else
