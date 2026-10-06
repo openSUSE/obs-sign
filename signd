@@ -1172,6 +1172,8 @@ sub reply {
   } else {
     $out = pack('n' x (1 + scalar(@out)), scalar(@out), map {length($_)} @out).join('', @out);
   }
+  ($status, $err, $out) = (1, "output does not fit into reply\n", '') if length($out) >= 65536;
+  $err = substr($err, 0, 65500)." [truncated]\n" if length($err) >= 65536;
   my $ret = pack("nnn", $status, length($out), length($err)).$out.$err;
   swrite(*CLNT, $ret);
   close CLNT;
