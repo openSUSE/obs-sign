@@ -882,7 +882,7 @@ x509_cert2pubalgo(struct x509 *cert)
 
 /* SpcIndirectDataContent */
 int
-x509_appx_contentinfo(struct x509 *cb, unsigned char *digest, int digestlen)
+x509_appx_contentinfo(struct x509 *cb, int digalgo, unsigned char *digest, int digestlen)
 {
    /* SEQUENCE          
     *  OBJECT            :1.3.6.1.4.1.311.2.1.30 [SPC_SIPINFO]
@@ -907,7 +907,7 @@ x509_appx_contentinfo(struct x509 *cb, unsigned char *digest, int digestlen)
   int offset = cb->len;
   int contentlen;
   /* DigestInfo */
-  x509_algoid_digest(cb, hashalgo);
+  x509_algoid_digest(cb, digalgo);
   x509_octed_string(cb, digest, digestlen);
   x509_tag(cb, offset, 0x30);
   /* SpcAttributeTypeAndOptionalValue */
@@ -954,7 +954,7 @@ x509_appx_signedattrs(struct x509 *cb, unsigned char *digest, int digestlen, tim
  */
 
 int
-x509_pe_contentinfo(struct x509 *cb, unsigned char *digest, int digestlen)
+x509_pe_contentinfo(struct x509 *cb, int digalgo, unsigned char *digest, int digestlen)
 {
    /* cons:       SEQUENCE          
     * prim:        OBJECT            :1.3.6.1.4.1.311.2.1.15 [SPC_PE_IMAGE_DATAOBJ]
@@ -971,7 +971,7 @@ x509_pe_contentinfo(struct x509 *cb, unsigned char *digest, int digestlen)
   int offset = cb->len;
   int contentlen;
   /* DigestInfo */
-  x509_algoid_digest(cb, hashalgo);
+  x509_algoid_digest(cb, digalgo);
   x509_octed_string(cb, digest, digestlen);
   x509_tag(cb, offset, 0x30);
   x509_insert(cb, offset, spcpeimagedata, sizeof(spcpeimagedata));

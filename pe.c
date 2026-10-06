@@ -197,7 +197,7 @@ pe_read(struct pedata *pedata, int fd, char *filename, HASH_CONTEXT *hctx, time_
   hash_final(&ctx);
 
   x509_init(&pedata->cb_content);
-  offset = x509_pe_contentinfo(&pedata->cb_content, hash_read(&ctx), hash_len());
+  offset = x509_pe_contentinfo(&pedata->cb_content, hashalgo, hash_read(&ctx), hash_len());
 
   /* hash the spccontent */
   hash_init(&ctx);

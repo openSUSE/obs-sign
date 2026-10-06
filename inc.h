@@ -131,9 +131,9 @@ void x509_signedattrs(struct x509 *cb, unsigned char *digest, int digestlen, tim
 void x509_pkcs7_signed_data(struct x509 *cb, struct x509 *contentinfo, struct x509 *signedattrs, int pubalgo, struct x509 *sigcb, struct x509 *cert, struct x509 *othercerts, int flags);
 int x509_cert2pubalgo(struct x509 *cert);
 
-int x509_appx_contentinfo(struct x509 *cb, unsigned char *digest, int digestlen);
+int x509_appx_contentinfo(struct x509 *cb, int digalgo, unsigned char *digest, int digestlen);
 void x509_appx_signedattrs(struct x509 *cb, unsigned char *digest, int digestlen, time_t signtime);
-int x509_pe_contentinfo(struct x509 *cb, unsigned char *digest, int digestlen);
+int x509_pe_contentinfo(struct x509 *cb, int digalgo, unsigned char *digest, int digestlen);
 void x509_pe_signedattrs(struct x509 *cb, unsigned char *digest, int digestlen, time_t signtime);
 
 #define X509_PKCS7_USE_KEYID (1 << 0)

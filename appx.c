@@ -103,7 +103,7 @@ appx_create_contentinfo(struct appxdata *appxdata, int fd)
   dp += 4 + hlen;
 
   x509_init(&appxdata->cb_content);
-  offset = x509_appx_contentinfo(&appxdata->cb_content, digest, (int)(dp - digest));
+  offset = x509_appx_contentinfo(&appxdata->cb_content, hashalgo, digest, (int)(dp - digest));
   free(digest);
   return offset;
 }
