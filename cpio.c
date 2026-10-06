@@ -66,7 +66,7 @@ cpio_read(int fd, int *typep, int reserve)
   return cpio;
 }
 
-u32
+void
 cpio_name_append(byte *cpio, char *suf)
 {
   u32 namepad, namesize = strlen((char *)cpio + 110);
@@ -75,7 +75,6 @@ cpio_name_append(byte *cpio, char *suf)
   namepad = (6 - (namesize & 3)) & 3;
   memset(cpio + 110 + namesize, 0, namepad);
   cpio_tohex(cpio + 94, namesize);
-  return namepad;
 }
 
 u32

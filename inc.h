@@ -265,7 +265,7 @@ void docopy(int infd, int outfd, u64 len);
 #define CPIO_TYPE_OTHER   2
 
 byte *cpio_read(int fd, int *typep, int reserve);
-u32 cpio_name_append(byte *cpio, char *suf);
+void cpio_name_append(byte *cpio, char *suf);
 u32 cpio_size_set(byte *cpio, u32 size);
 u32 cpio_size_get(byte *cpio, u32 *padp);
 u32 cpio_headnamesize(byte *cpio);
