@@ -751,6 +751,12 @@ sign(char *filename, int isfilter, int mode)
   return 0;
 }
 
+/* This is bound by the size of the result. For a RSA 4K key,
+ * each signature consists of 512 bytes. We have 2 bytes
+ * overhead for each signature, plus 6 + 2 request overhead.
+ * A buffersize of 65536 bytes can thus hold at most 127
+ * RSA 4K signatures.
+ */
 #define	BULK_MAX_ARGC	100
 
 static void
