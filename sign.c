@@ -273,7 +273,7 @@ getrawopensslsig(byte *sig, int sigl, struct x509 *sigcb)
   else if (sigalgo == PUB_MLDSA65 || sigalgo == PUB_MLDSA87)
     nmpis = 1;
   else if (sigalgo == PUB_EDDSA)
-    dodie("EdDSA openssl signing is not supported");
+    nmpis = 2;
   else
     dodie("invalid signature algo");
   off = findsigmpioffset(sig, sigl);
@@ -346,7 +346,7 @@ sign(char *filename, int isfilter, int mode)
   int needsign;
   struct x509 sigcb;
   int sigcbalgo = -1;
-  int cmssig = 0;
+  int cms_pure_algo = 0;
 
   if (bulk_cpio)
     {
@@ -380,6 +380,11 @@ sign(char *filename, int isfilter, int mode)
 	  if (assertpubalgo != pubalgo)
 	    dodie("pubkey algorithm does not match cert");
 	}
+    }
+  if (mode == MODE_RAWOPENSSLSIGN)
+    {
+      if (assertpubalgo == PUB_MLDSA65 || assertpubalgo == PUB_MLDSA87 || assertpubalgo == PUB_EDDSA)
+	dodie("rawopenssl signing not supported for pure algorithms");
     }
 
   /* open input file */
@@ -469,13 +474,13 @@ sign(char *filename, int isfilter, int mode)
 
   if (mode == MODE_CMSSIGN || mode == MODE_KOSIGN)
     {
+      hash_final(&ctx);
       x509_init(&cms_signedattrs);
+      x509_signedattrs(&cms_signedattrs, hash_read(&ctx), hash_len(), signtime);
       if (assertpubalgo == PUB_MLDSA65 || assertpubalgo == PUB_MLDSA87 || assertpubalgo == PUB_EDDSA)
-	cmssig = 1;
-      if (!cmssig)
+	cms_pure_algo = 0x43;
+      if (!cms_pure_algo)
 	{
-	  hash_final(&ctx);
-	  x509_signedattrs(&cms_signedattrs, hash_read(&ctx), hash_len(), signtime);
 	  hash_init(&ctx);
 	  hash_write(&ctx, cms_signedattrs.buf, cms_signedattrs.len);
 	}
@@ -510,18 +515,20 @@ sign(char *filename, int isfilter, int mode)
       else
         hash_write(&ctx, sigtrail, 5);
     }
-  hash_final(&ctx);
+
+  /* finalize the hash, for pure algo we already did it above */
+  if (!cms_pure_algo)
+    hash_final(&ctx);
   p = hash_read(&ctx);
 
   /* hack for pure cms-mode cms signatures */
-  if (cmssig)
+  if (cms_pure_algo)
     {
-      sigtrail[0] = 0x43;
+      sigtrail[0] = cms_pure_algo;
       sigtrail[1] = signtime >> 24;
       sigtrail[2] = signtime >> 16;
       sigtrail[3] = signtime >> 8;
       sigtrail[4] = signtime;
-      x509_signedattrs(&cms_signedattrs, p, hash_len(), signtime);
     }
 
   ph = 0;
