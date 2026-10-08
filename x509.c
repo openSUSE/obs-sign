@@ -340,7 +340,7 @@ x509_algoid(struct x509 *cb, int pubalgo, byte **mpi, int *mpil)
       if (mpi && mpil[0] == gpg_ed25519[0] && !memcmp(mpi[0], gpg_ed25519 + 1, mpil[0]))
 	x509_add_const(cb, oid_ed25519);
       else
-	dodie("x509_pubkey: unsupported EdDSA curve");
+	dodie("x509_algoid: unsupported EdDSA curve");
     }
   else if (pubalgo == PUB_ECDSA)
     {
@@ -355,7 +355,7 @@ x509_algoid(struct x509 *cb, int pubalgo, byte **mpi, int *mpil)
 	  x509_add_const(cb, oid_secp384r1);
         }
       else
-	dodie("x509_pubkey: unsupported ECDSA curve");
+	dodie("x509_algoid: unsupported ECDSA curve");
     }
   else if (pubalgo == PUB_MLDSA65)
     {
@@ -455,6 +455,19 @@ x509_signature(struct x509 *cb, int pubalgo, byte **mpi, int *mpil)
       x509_mpiint(cb, mpi[0], mpil[0]);
       x509_mpiint(cb, mpi[1], mpil[1]);
       x509_tag(cb, 0, 0x30);
+    }
+  else if (pubalgo == PUB_EDDSA)
+    {
+      int l = mpil[0] > mpil[1] ? mpil[0] : mpil[1];
+      l = l < 10 || l > 32 ? 0 : 32;	/* guess the correct length */
+      if (!l)
+	dodie("x509_signature: unsupported eddsa signature type\n");
+      if (mpil[0] < l)
+	x509_add(cb, 0, l - mpil[0]);
+      x509_add(cb, mpi[0], mpil[0]);
+      if (mpil[1] < l)
+	x509_add(cb, 0, l - mpil[1]);
+      x509_add(cb, mpi[1], mpil[1]);
     }
   else
     {
@@ -716,7 +729,19 @@ x509_signerinfo(struct x509 *cb, struct x509 *signedattrs, struct x509 *cert, in
       x509_add(cb, signedattrs->buf, signedattrs->len);
       x509_tag_impl(cb, offset2, 0xa0);	/* CONT | CONS | 0 */
     }
-  x509_algoid(cb, pubalgo, 0, 0);
+  /* the specification says that the SignatureAlgorithmIdentifier can
+   * be a pubkey algorithm with or without a digest.
+   * RSA does not get a digest for historic reasons */ 
+  if (pubalgo == PUB_EDDSA && sigcb->len == 64)
+    {
+      byte *curve = (byte *)gpg_ed25519 + 1;
+      int curvelen = gpg_ed25519[0];
+      x509_algoid(cb, pubalgo, &curve, &curvelen);
+    }
+  else if (pubalgo == PUB_RSA || pubalgo == PUB_EDDSA || pubalgo == PUB_MLDSA65 || pubalgo == PUB_MLDSA87)
+    x509_algoid(cb, pubalgo, 0, 0);
+  else
+    x509_algoid_sig(cb, pubalgo, hashalgo);
   x509_octed_string(cb, sigcb->buf, sigcb->len);
   x509_tag(cb, offset, 0x30);
 }
@@ -983,6 +1008,7 @@ x509_pe_contentinfo(struct x509 *cb, int digalgo, unsigned char *digest, int dig
   return cb->len - contentlen;	/* offset to content */
 }
 
+/* this works like pesign's generate_signed_attributes function */
 void
 x509_pe_signedattrs(struct x509 *cb, unsigned char *digest, int digestlen, time_t signtime)
 {
