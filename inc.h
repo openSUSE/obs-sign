@@ -238,7 +238,7 @@ struct pedata {
   u32 csum;
 };
 
-int pe_read(struct pedata *pedata, int fd, char *filename, HASH_CONTEXT *hctx, time_t t);
+int pe_read(struct pedata *pedata, int fd, char *filename, HASH_CONTEXT *hctx, time_t t, int pure_algo);
 void pe_write(struct pedata *pedata, int outfd, int fd, struct x509 *cert, int pubalgo, struct x509 *sigcb, struct x509 *othercerts);
 void pe_free(struct pedata *pedata);
 

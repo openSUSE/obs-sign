@@ -381,10 +381,18 @@ sign(char *filename, int isfilter, int mode)
 	    dodie("pubkey algorithm does not match cert");
 	}
     }
-  if (mode == MODE_RAWOPENSSLSIGN)
+
+  if (assertpubalgo == PUB_MLDSA65 || assertpubalgo == PUB_MLDSA87 || assertpubalgo == PUB_EDDSA)
     {
-      if (assertpubalgo == PUB_MLDSA65 || assertpubalgo == PUB_MLDSA87 || assertpubalgo == PUB_EDDSA)
+      /* those are "pure" (i.e. not pre-hashed) algorithms in openssl */
+      if (mode == MODE_RAWOPENSSLSIGN)
 	dodie("rawopenssl signing not supported for pure algorithms");
+      if (mode == MODE_APPXSIGN)
+	dodie("appx signing not supported for pure algorithms");
+      if (mode == MODE_CMSSIGN || mode == MODE_KOSIGN)
+	cms_pure_algo = 0x43;
+      if (mode == MODE_PESIGN)
+	cms_pure_algo = 0x50;
     }
 
   /* open input file */
@@ -444,7 +452,7 @@ sign(char *filename, int isfilter, int mode)
   else if (mode == MODE_APPXSIGN)
     needsign = appx_read(&appxdata, fd, filename, &ctx, signtime);
   else if (mode == MODE_PESIGN)
-    needsign = pe_read(&pedata, fd, filename, &ctx, signtime);
+    needsign = pe_read(&pedata, fd, filename, &ctx, signtime, cms_pure_algo);
   else if (mode == MODE_KOSIGN)
     needsign = ko_read(fd, filename, &ctx);
   else if (mode == MODE_APPIMAGESIGN)
@@ -468,23 +476,21 @@ sign(char *filename, int isfilter, int mode)
 	exit(1);
       return 1;
     }
-  /* open the socket and connect to signd (clearsign already opened it) */
-  if (mode != MODE_CLEARSIGN)
-    opensocket();
-
   if (mode == MODE_CMSSIGN || mode == MODE_KOSIGN)
     {
       hash_final(&ctx);
       x509_init(&cms_signedattrs);
       x509_signedattrs(&cms_signedattrs, hash_read(&ctx), hash_len(), signtime);
-      if (assertpubalgo == PUB_MLDSA65 || assertpubalgo == PUB_MLDSA87 || assertpubalgo == PUB_EDDSA)
-	cms_pure_algo = 0x43;
       if (!cms_pure_algo)
 	{
 	  hash_init(&ctx);
 	  hash_write(&ctx, cms_signedattrs.buf, cms_signedattrs.len);
 	}
     }
+
+  /* open the socket and connect to signd (clearsign already opened it) */
+  if (mode != MODE_CLEARSIGN)
+    opensocket();
 
   if (verbose && mode != MODE_KEYID)
     {

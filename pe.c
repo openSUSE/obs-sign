@@ -69,7 +69,7 @@ sectioncmp(const void *av, const void *bv)
 }
 
 int
-pe_read(struct pedata *pedata, int fd, char *filename, HASH_CONTEXT *hctx, time_t t)
+pe_read(struct pedata *pedata, int fd, char *filename, HASH_CONTEXT *hctx, time_t t, int pure_algo)
 {
   unsigned char hdr[4096];
   HASH_CONTEXT ctx;
@@ -207,6 +207,11 @@ pe_read(struct pedata *pedata, int fd, char *filename, HASH_CONTEXT *hctx, time_
   /* create signedattrs */
   x509_init(&pedata->cb_signedattrs);
   x509_pe_signedattrs(&pedata->cb_signedattrs, hash_read(&ctx), hash_len(), t);
+  if (pure_algo)
+    {
+      *hctx = ctx;	/* hack */
+      return 1;
+    }
 
   /* hash signedattrs */
   hash_write(hctx, pedata->cb_signedattrs.buf, pedata->cb_signedattrs.len);
