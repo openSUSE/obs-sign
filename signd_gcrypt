@@ -18,9 +18,10 @@ Crypt::GCrypt::gcrypt_version();	# initialize lib
 sub sign_with_gcrypt {
   my ($info, $hash, $hashalgo, $replyv4) = @_;
   die("sign_with_gcrypt: missing fingerprint\n") unless $info->{'fingerprint'};
-  die("bad hash $hash\n") unless $hash =~ /^((?:[0-9a-fA-F][0-9a-fA-F])+)\@(0[01][0-9a-fA-F]{8})$/;
+  die("bad hash $hash\n") unless $hash =~ /^((?:[0-9a-fA-F][0-9a-fA-F])+)\@((?:00|01|43|50)[0-9a-fA-F]{8})$/;
   my $extra = $2;
   $hash = $1;
+  die("sign_with_gcrypt: cms-pure type not supported for this algorithm ($info->{'algo'})\n") if $extra =~ /^(?:43|50)/ && $info->{'algo'} != 22;
   $hashalgo = lc($hashalgo);
   my $pgphashalgo = get_pgphashalgo($hashalgo);
   die("sign_with_gcrypt: bad hashalgo $hashalgo\n") unless $pgphashalgo;
@@ -62,6 +63,8 @@ sub sign_with_gcrypt {
     my $sv = $res->nth_mpi(1, Crypt::GCrypt::MPI::FMT_USG(), 's');
     $sigdata = $rv->print(Crypt::GCrypt::MPI::FMT_PGP()).$sv->print(Crypt::GCrypt::MPI::FMT_PGP());
   } elsif ($info->{'algo'} == 22) {
+    $hash = unpack('H*', create_cms_signedattrs(pack('H*', $hash), unpack('N', pack('H*', substr($extra, 2, 8))))) if substr($extra, 0, 2) eq '43';
+    $hash = unpack('H*', create_cms_pe_signedattrs(pack('H*', $hash), unpack('N', pack('H*', substr($extra, 2, 8))))) if substr($extra, 0, 2) eq '50';
     my $curve;
     $curve = 'Ed25519' if $info->{'curve'} eq $pgp_curve_ed25519;
     die("sign_with_gcrypt: unsupported EdDSA curve\n") unless $curve;

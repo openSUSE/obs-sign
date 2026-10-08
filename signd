@@ -1118,6 +1118,59 @@ sub do_sign_multiple {
 
 
 ##
+## CMS support
+##
+
+sub pack_cms_signedattrs {
+  my $sa = join('', sort(@_));
+  my $salen = length($sa);
+  die if $salen > 255;
+  return ($salen < 128 ? pack('CC', 0x31, $salen) : pack('CCC', 0x31, 0x81, $salen)).$sa;
+}
+
+sub create_cms_digest_attr {
+  my ($hash) = @_;
+  my $hl = length($hash);
+  die if $hl == 0 || $hl + 15 >= 128;
+  return pack('CCH*CCC', 0x30, $hl + 15, '06092a864886f70d01090431', $hl + 2, 4, $hl).$hash;
+}
+
+sub create_cms_sign_time_attr {
+  my ($t) = @_;
+  my @gt = gmtime($t);
+  if ($gt[5] >= 50 && $gt[5] < 150) {
+    $t = sprintf "%02d%02d%02d%02d%02d%02dZ", $gt[5] % 100, $gt[4] + 1, @gt[3,2,1,0];
+    die unless length($t) == 13;
+    return pack('H*', '301c06092a864886f70d010905310f170d').$t;
+  } else {
+    $t = sprintf "%04d%02d%02d%02d%02d%02dZ", $gt[5] + 1900, $gt[4] + 1, @gt[3,2,1,0];
+    die unless length($t) == 15;
+    return pack('H*', '301e06092a864886f70d0109053111180f').$t;
+  }
+}
+
+# this must match the code of x509_signedattrs() in x509.c
+sub create_cms_signedattrs {
+  my ($hash, $t) = @_;
+  my @sa;
+  push @sa, pack('H*', '301806092a864886f70d010903310b06092a864886f70d010701'); # content type
+  push @sa, create_cms_sign_time_attr($t) if $t;
+  push @sa, create_cms_digest_attr($hash);
+  return pack_cms_signedattrs(@sa);
+}
+
+# this must match the code of x509_pe_signedattrs() in x509.c
+sub create_cms_pe_signedattrs {
+  my ($hash, $t) = @_;
+  my @sa;
+  push @sa, pack('H*', '300f06092a864886f70d01090f31023000');		# empty smime caps
+  push @sa, pack('H*', '301906092a864886f70d010903310c060a2b060104018237020104');	# content type
+  push @sa, create_cms_sign_time_attr($t) if $t;
+  push @sa, create_cms_digest_attr($hash);
+  return pack_cms_signedattrs(@sa);
+}
+
+##
 ## request handling
 ##
 

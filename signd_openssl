@@ -11,32 +11,6 @@ my $opensslkeys = '';
 # copied from main config
 my $tmpdir;
 
-# this must match the code of x509_signedattrs() in x509.c
-sub create_cms_signer_info {
-  my ($hash, $t) = @_;
-  my @sa;
-  my $hl = length($hash);
-  die if $hl == 0 || $hl + 15 >= 128;
-  push @sa, pack('H*', '301806092a864886f70d010903310b06092a864886f70d010701');	# content type
-  if ($t) {
-    my @gt = gmtime($t);
-    if ($gt[5] >= 50 && $gt[5] < 150) {
-      $t = sprintf "%02d%02d%02d%02d%02d%02dZ", $gt[5] % 100, $gt[4] + 1, @gt[3,2,1,0];
-      die unless length($t) == 13;
-      push @sa, pack('H*', '301c06092a864886f70d010905310f170d').$t;		# sign time
-    } else {
-      $t = sprintf "%04d%02d%02d%02d%02d%02dZ", $gt[5] + 1900, $gt[4] + 1, @gt[3,2,1,0];
-      die unless length($t) == 15;
-      push @sa, pack('H*', '301e06092a864886f70d0109053111180f').$t;		# sign time
-    }
-  }
-  push @sa, pack('CCH*CCC', 0x30, $hl + 15, '06092a864886f70d01090431', $hl + 2, 4, $hl).$hash;
-  my $sa = join('', sort(@sa));
-  my $salen = length($sa);
-  die if $salen > 255;
-  return ($salen < 128 ? pack('CC', 0x31, $salen) : pack('CCC', 0x31, 0x81, $salen)).$sa;
-}
-
 sub openssl_find_key {
   my ($user) = @_;
   die("no opensslkeys directory configured\n") unless $opensslkeys;
@@ -52,7 +26,7 @@ sub openssl_find_key {
 
 sub sign_with_openssl {
   my ($phrasefile, $info, $hash, $hashalgo, $replyv4) = @_;
-  die("bad hash $hash\n") unless $hash =~ /^((?:[0-9a-fA-F][0-9a-fA-F])+)\@((?:00|01|43)[0-9a-fA-F]{8})$/;
+  die("bad hash $hash\n") unless $hash =~ /^((?:[0-9a-fA-F][0-9a-fA-F])+)\@((?:00|01|43|50)[0-9a-fA-F]{8})$/;
   my $extra = $2;
   $hash = $1;
   $hashalgo = lc($hashalgo);
@@ -63,7 +37,10 @@ sub sign_with_openssl {
   my @args = ('-pkeyopt', "digest:$hashalgo");
   if (substr($extra, 0, 2) eq '43') {
     # create and sign cms signer info block
-    $hash = unpack('H*', create_cms_signer_info(pack('H*', $hash), unpack('N', pack('H*', substr($extra, 2, 8)))));
+    $hash = unpack('H*', create_cms_signedattrs(pack('H*', $hash), unpack('N', pack('H*', substr($extra, 2, 8)))));
+    @args = ('-rawin', '-in', $file);
+  } elsif (substr($extra, 0, 2) eq '50') {
+    $hash = unpack('H*', create_cms_pe_signedattrs(pack('H*', $hash), unpack('N', pack('H*', substr($extra, 2, 8)))));
     @args = ('-rawin', '-in', $file);
   }
   spew($file, pack('H*', $hash));
