@@ -244,7 +244,7 @@ pe_write(struct pedata *pedata, int outfd, int fd, struct x509 *cert, int pubalg
   /* write signed pe file */
   dowrite(outfd, pedata->hdr, pedata->headersize);
   doseek(fd, pedata->headersize);
-  docopy(outfd, fd, pedata->filesize - pedata->headersize);
+  docopy(fd, outfd, pedata->filesize - pedata->headersize);
   if (filesizepad)
     dowrite(outfd, (const unsigned char *)"\0\0\0\0\0\0\0\0", filesizepad);
   dowrite(outfd, cb.buf, cb.len);
